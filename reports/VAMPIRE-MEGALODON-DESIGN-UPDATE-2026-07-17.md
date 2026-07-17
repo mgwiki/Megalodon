@@ -578,6 +578,34 @@ Validation:
   `fool_atom_lift`, 43 `ennf_formula`, 8 `formula_copy`, 29
   `formula_term_copy`, 122 `paramodulate`, and 102 `substitute` records.
 
+Additional follow-up: Vampire commit `f102adc80` extracts rectification
+renaming metadata into `RenderedKernelRectifyRenaming` and
+`RenderedKernelRectifyRenamings`. The `rectify_formula` kernel record now
+serializes `renaming_count`, bounded `renaming_N_source`,
+`renaming_N_target`, `renaming_N_substitution`, and `renaming_truncated`
+through `MegalodonKernelSyntax`. When source and result formulas are both
+available, the same `RenderedKernelSourceFormulaTransform` record supplies
+the source/result formula context for rectification.
+
+This further reduces the Smolka-style preprocessing migration surface. The
+renamings are still rendered formula/substitution s-expressions, not typed
+Vampire objects and not yet Megalodon proof terms. The next implementation
+step is to make these records typed enough for the Megalodon importer to
+construct the actual rectification proof rather than only validating metadata.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel` passed and produced
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11059`.
+- A fresh 20-case live THF run with 10-way parallelism and a 10-second Vampire
+  cap produced `PASS 20`.
+- The kernel-v1 metadata audit passed on that artifact, covering 738
+  `kernel_v1` records, 77 `rectify_formula` records, and 106 rewrite-position
+  records.
+- The native primitive audit passed on the same artifact, including 77
+  `rectify_formula`, 43 `ennf_formula`, 18 `skolem_formula`, 122
+  `paramodulate`, and 102 `substitute` records.
+
 Additional follow-up: Vampire commit `05fe04c5d` extracts
 subsumption-resolution pivot metadata into
 `RenderedKernelSubsumptionResolutionPivot`. The main/side parent indexes,

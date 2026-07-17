@@ -500,3 +500,28 @@ Validation:
 - native primitive audit on the same artifact, including 330
   `fool_atom_lift`, 43 `ennf_formula`, 8 `formula_copy`, 29
   `formula_term_copy`, 122 `paramodulate`, and 102 `substitute` records
+
+Vampire commit `f102adc80` extracts rectification renaming metadata from the
+large exporter into `RenderedKernelRectifyRenaming` and
+`RenderedKernelRectifyRenamings`. The source/result formula context is reused
+through `RenderedKernelSourceFormulaTransform` when available, while the
+renaming list and truncation marker are serialized by `MegalodonKernelSyntax`.
+
+This is still not a completed Smolka-style proof layer. The record carries
+rendered formulas and substitutions, and Megalodon still needs to consume
+typed rectification records to produce native proof terms. It does, however,
+remove another high-frequency preprocessing metadata cluster from
+`migrationFields` and makes the rectification certificate shape explicit on
+the Vampire side.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel` for
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11059`
+- fresh 20-case live THF run with `JOBS=10` and `VAMPIRE_SECONDS=10`:
+  `PASS 20`
+- kernel-v1 metadata audit on that artifact: 738 `kernel_v1` records, 77
+  `rectify_formula` records, and 106 rewrite-position records
+- native primitive audit on the same artifact, including 77
+  `rectify_formula`, 43 `ennf_formula`, 18 `skolem_formula`, 122
+  `paramodulate`, and 102 `substitute` records
