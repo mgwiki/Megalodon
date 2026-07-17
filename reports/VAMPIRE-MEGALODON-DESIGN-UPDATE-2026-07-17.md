@@ -68,6 +68,35 @@ These failures support the audit's warning. The next implementation needs a
 specified theorem-opening operation with a clear binder invariant, not another
 broad Megalodon-side heuristic.
 
+## Compact Binder Finding
+
+A later focused experiment tested whether Megalodon could repair Vampire's
+compact formula binders by rebinding displayed names in `ALL`/`LAM` bodies
+before proof-term replay. The representative cached failure was
+`hammer.1007.43/u83`, where a `rectify_formula` step differs only in the
+displayed name of a compact anonymous universal binder.
+
+The experiment was intentionally reverted. It showed that broad
+Megalodon-side rebinding is not a safe general fix:
+
+- normalizing formula propositions globally changes the theorem stored for
+  definition-heavy compact Skolem cases such as `hammer.10806.144`;
+- applying the same repair inside FOOL or ENNF proof constructors changes
+  proof obligations for existing passing cases (`u271` and `u292` in the
+  `hammer.10806.144` regression);
+- applying it only inside formula orientation proves a normalized proposition
+  rather than the raw certificate proposition expected by the checker;
+- the existing direct `rectify_formula` proof constructor is not sufficient
+  for these compact formulas because the certificate proposition already
+  mixes step-variable quantification with displayed binder names.
+
+The durable fix should therefore be on the Vampire certificate side: emit
+explicit binder identities/alpha-renaming data, or an already-lowered
+primitive rectification object, so Megalodon checks a small proof object
+instead of guessing which displayed names are real binders and which are
+step variables. This is exactly the Prover9/Ivy direction recommended by the
+audits.
+
 ## Kernel-Opening Requirement
 
 The native checker stores step proofs as theorem-like proof terms:
