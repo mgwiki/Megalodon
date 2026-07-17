@@ -1,5 +1,11 @@
 (*** Shared vocabulary for the Vampire/Megalodon small-kernel certificate. ***)
 
+type literal =
+  | Pos of Syntax.tm
+  | Neg of Syntax.tm
+
+type clause = literal list
+
 let schema = "prover9-small-kernel-v1"
 
 let primitive_contracts = [

@@ -16,11 +16,11 @@ type source =
   | SourceDefinition of string
   | SourceSetReflexivity of string
 
-type literal =
+type literal = Vampire_kernel_syntax.literal =
   | Pos of tm
   | Neg of tm
 
-type clause = literal list
+type clause = Vampire_kernel_syntax.clause
 
 type sat_lit = int * bool
 
