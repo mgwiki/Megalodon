@@ -4742,11 +4742,19 @@ let validate_kernel_v1_metadata_contracts cert =
             (Printf.sprintf
                "%s: strict certificate v1 kernel_v1 avatar_split component_parent_ref_count expected %d but got %d"
                id expected_component_parents component_parent_ref_count);
+        let literal_class_count =
+          require_nonnegative_field_int id fields "literal_class_count"
+        in
         begin match field_value "component_parent_count" fields with
         | Some _ ->
-            require_field_int id fields
-              "component_parent_count"
-              component_parent_ref_count
+            let component_parent_count =
+              require_nonnegative_field_int id fields "component_parent_count"
+            in
+            if component_parent_count < component_parent_ref_count then
+              error
+                (Printf.sprintf
+                   "%s: strict certificate v1 kernel_v1 avatar_split component_parent_count %d is smaller than component_parent_ref_count %d"
+                   id component_parent_count component_parent_ref_count)
         | None -> ()
         end;
         for index = 0 to component_parent_ref_count - 1 do
@@ -4777,9 +4785,6 @@ let validate_kernel_v1_metadata_contracts cert =
           in
           check_avatar_component_split id split_var split_positive component_clause
         done;
-        let literal_class_count =
-          require_nonnegative_field_int id fields "literal_class_count"
-        in
         for class_index = 0 to literal_class_count - 1 do
           let prefix = "literal_class_" ^ string_of_int class_index in
           let literal_count =
@@ -4791,13 +4796,17 @@ let validate_kernel_v1_metadata_contracts cert =
                  (prefix ^ "_literal_" ^ string_of_int literal_index)
                : string)
           done;
-          let matched_split_level =
-            field_int id fields (prefix ^ "_matched_split_level")
-          in
-          if matched_split_level < 0 then
-            error
-              (id ^ ": strict certificate v1 kernel_v1 avatar_split "
-               ^ prefix ^ "_matched_split_level is negative")
+          begin match field_value (prefix ^ "_matched_split_level") fields with
+          | Some _ ->
+              let matched_split_level =
+                field_int id fields (prefix ^ "_matched_split_level")
+              in
+              if matched_split_level < 0 then
+                error
+                  (id ^ ": strict certificate v1 kernel_v1 avatar_split "
+                   ^ prefix ^ "_matched_split_level is negative")
+          | None -> ()
+          end
         done;
         let parent_var_binding_count =
           require_nonnegative_field_int id fields "parent_var_binding_count"

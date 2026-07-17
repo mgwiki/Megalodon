@@ -3537,6 +3537,17 @@ if ! rg -q 'Vampire certificate v1 strict checked 6 steps' "$WORK_DIR/native_cer
   exit 1
 fi
 
+bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_avatar_split_component_count_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_avatar_split_component_count_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_avatar_split_component_count_valid.log"
+
+if ! rg -q 'Vampire certificate v1 strict checked 6 steps' "$WORK_DIR/native_cert_v1_avatar_split_component_count_valid.log"; then
+  echo "strict native certificate v1 checker did not accept AVATAR split metadata with unreferenced component counts" >&2
+  exit 1
+fi
+
 if bin/megalodon \
   -vampirecertv1strict \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_avatar_split_kernel_sat_bad.sexp \
