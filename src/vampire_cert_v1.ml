@@ -11778,6 +11778,76 @@ let native_certificate_source_bindings
     cert =
   ignore (check_certificate_strict cert);
   let variables = native_core_proof_variables ~exclude_names:external_definition_names cert in
+  let type_from_thf_decl_formula formula =
+    try
+      let colon = String.index formula ':' in
+      let close =
+        try String.rindex formula ')'
+        with Not_found -> String.length formula
+      in
+      let start = colon + 1 in
+      let type_text = String.sub formula start (max 0 (close - start)) in
+      let len = String.length type_text in
+      let rec skip i =
+        if i < len && (type_text.[i] = ' ' || type_text.[i] = '\t' || type_text.[i] = '\n') then
+          skip (i + 1)
+        else
+          i
+      in
+      let rec parse_arrow i =
+        let left, i = parse_atom i in
+        let i = skip i in
+        if i < len && type_text.[i] = '>' then
+          let right, j = parse_arrow (skip (i + 1)) in
+          (Ar (left, right), j)
+        else
+          (left, i)
+      and parse_atom i =
+        let i = skip i in
+        if i + 1 < len && type_text.[i] = '$' && type_text.[i + 1] = 'i' then
+          (Set, i + 2)
+        else if i + 1 < len && type_text.[i] = '$' && type_text.[i + 1] = 'o' then
+          (Prop, i + 2)
+        else if i < len && type_text.[i] = '(' then
+          let tp, j = parse_arrow (i + 1) in
+          let j = skip j in
+          if j < len && type_text.[j] = ')' then (tp, j + 1)
+          else raise Not_found
+        else
+          raise Not_found
+      in
+      let tp, i = parse_arrow 0 in
+      if skip i = len then Some tp else None
+    with Not_found | Invalid_argument _ -> None
+  in
+  let local_source_variables =
+    let declared_type name =
+      variables
+      |> List.find_opt (fun (variable_name, _) -> variable_name = native_core_ident name)
+      |> Option.map (fun (variable_name, tp) -> (variable_name, tp))
+    in
+    let local_type_entry entry =
+      let source_name = native_core_ident entry.source_map_source_name in
+      match declared_type source_name with
+      | Some variable -> Some variable
+      | None ->
+          begin match entry.source_map_decl_formula with
+          | Some formula ->
+              Option.map (fun tp -> (source_name, tp)) (type_from_thf_decl_formula formula)
+          | None -> None
+          end
+    in
+    let ordered =
+      source_map
+      |> List.filter_map
+           (fun entry ->
+              if entry.source_map_kind = "local_type" then
+                local_type_entry entry
+              else
+                None)
+    in
+    if ordered = [] then variables else ordered
+  in
   let symbol_table = native_core_symbol_table cert in
   let typed_steps =
     List.map
@@ -11831,6 +11901,11 @@ let native_certificate_source_bindings
         | None -> false
         end
   in
+  let source_local_variables source =
+    match native_core_source_map_entry source_map source with
+    | Some entry when entry.source_map_kind = "local_definition" -> variables
+    | _ -> local_source_variables
+  in
   let close_source_variables source variables prop =
     if source_keeps_local_variables source then prop
     else close_global_source_variables variables prop
@@ -11840,7 +11915,7 @@ let native_certificate_source_bindings
        match step with
        | Input (id, source, clause) ->
            let source_variables =
-             if source_keeps_local_variables source then variables
+             if source_keeps_local_variables source then source_local_variables source
              else source_variables_for_clause clause
            in
            let proposition =
@@ -11850,7 +11925,7 @@ let native_certificate_source_bindings
            bindings @ [native_core_source_binding source_map id source proposition]
        | FormulaInput (id, source, literal) ->
            let source_variables =
-             if source_keeps_local_variables source then variables
+             if source_keeps_local_variables source then source_local_variables source
              else source_variables (literal_terms literal)
            in
            let proposition =
@@ -11861,7 +11936,7 @@ let native_certificate_source_bindings
        | FormulaTermInput (id, source, formula) ->
            let step_variables = native_core_step_variables cert id in
            let source_variables =
-             if source_keeps_local_variables source then variables
+             if source_keeps_local_variables source then source_local_variables source
              else source_variables [formula]
            in
            let proposition =

@@ -1394,7 +1394,12 @@ let vampire_context_terms_of_type cxtm target_tp =
         let rest = scan (i + 1) rest in
         if tp = target_tp then DB(i) :: rest else rest
   in
-  scan 0 cxtm
+  let candidates = scan 0 cxtm in
+  match target_tp with
+  | Prop ->
+      List.sort_uniq compare
+        (candidates @ [TmH(!fal); vampire_native_core_false_tm])
+  | _ -> candidates
 
 let vampire_reconstruct_current_goal_from_refutation ?source_map ?extra_delta ?extra_symbols claimtm cxtm cxpf proof proposition =
   let rec try_proof depth proof proposition =

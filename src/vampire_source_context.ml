@@ -168,6 +168,11 @@ let rec tm_mentions_head name = function
   | DB _ | Prim _ -> false
 
 let local_definition_delta context =
+  let local_definition_aliases name =
+    match Hashtbl.find_opt context.proof_delta name with
+    | Some (0, TmH alias) when alias <> name -> [name; alias]
+    | _ -> [name]
+  in
   let rec localize depth = function
     | TmH name ->
         begin match List.find_opt (fun (local_name, _, _) -> local_name = name) context.local_terms with
@@ -184,7 +189,10 @@ let local_definition_delta context =
   let delta = Hashtbl.copy context.proof_delta in
   List.iter
     (fun (name, _, definition) ->
-       Hashtbl.replace delta name (0, localize 0 definition))
+       List.iter
+         (fun alias ->
+            Hashtbl.replace delta alias (0, localize 0 definition))
+         (local_definition_aliases name))
     context.local_definitions;
   delta
 
@@ -605,21 +613,18 @@ let local_definition_proof context name proposition =
   match local_definition_matches context name with
   | None -> None
   | Some (_, tp, _) ->
-      if not (tm_mentions_head name proposition) then
-        None
-      else
-        begin match local_definition_candidate_proof tp proposition with
-        | Some proof when local_definition_candidate_checks context proof proposition ->
-            Some proof
-        | Some _ | None ->
-            if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
-              prerr_endline
-                ("source-context local definition mismatch for "
-                 ^ name
-                 ^ ": proposition="
-                 ^ tm_to_str proposition);
-            None
-        end
+      begin match local_definition_candidate_proof tp proposition with
+      | Some proof when local_definition_candidate_checks context proof proposition ->
+          Some proof
+      | Some _ | None ->
+          if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+            prerr_endline
+              ("source-context local definition mismatch for "
+               ^ name
+               ^ ": proposition="
+               ^ tm_to_str proposition);
+          None
+      end
 
 let add_source_proof step proof audit =
   { audit with source_proofs = (step, proof) :: audit.source_proofs }
@@ -720,7 +725,8 @@ let resolve_one context audit binding =
               ^ " is not a provable reflexive Megalodon equality: "
               ^ tm_to_str proposition))
     end
-  else if binding.core_native_certificate_source_kind = "negated_conjecture"
+  else if (binding.core_native_certificate_source_kind = "conjecture"
+           || binding.core_native_certificate_source_kind = "negated_conjecture")
           && conjecture_source_kind kind then
     { audit with conjecture_checked = audit.conjecture_checked + 1 }
   else
@@ -744,7 +750,47 @@ let resolve ?(strict=false) context bindings =
          || audit.local_mismatch > 0
          || audit.definition_missing > 0
          || audit.unresolved > 0) then
+    begin
+    let issue_sample =
+      audit.issues
+      |> List.rev
+      |> List.fold_left
+           (fun (count, samples) issue ->
+              if count >= 4 then (count + 1, samples)
+              else
+                (count + 1,
+                 (issue.issue_reason
+                  ^ ":"
+                  ^ issue.issue_step
+                  ^ ":"
+                  ^ issue.issue_kind
+                  ^ ":"
+                  ^ issue.issue_name)
+                 :: samples))
+           (0, [])
+    in
+    let issue_count, samples = issue_sample in
+    let samples = List.rev samples in
+    let suffix =
+      if issue_count = 0 then ""
+      else
+        "; sample="
+        ^ String.concat "," samples
+        ^ if issue_count > List.length samples then
+            Printf.sprintf " and %d more" (issue_count - List.length samples)
+          else
+            ""
+    in
     raise
       (Vampire_cert_v1.Error
-         "strict source-context audit failed: at least one source did not resolve to a checked proof in the Megalodon context");
+         (Printf.sprintf
+            "strict source-context audit failed: known_missing=%d known_mismatch=%d local_missing=%d local_mismatch=%d definition_missing=%d unresolved=%d%s"
+            audit.known_missing
+            audit.known_mismatch
+            audit.local_missing
+            audit.local_mismatch
+            audit.definition_missing
+            audit.unresolved
+            suffix))
+    end;
   audit
