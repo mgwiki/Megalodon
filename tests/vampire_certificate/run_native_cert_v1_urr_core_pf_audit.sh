@@ -11,6 +11,7 @@ CASE_LIST=${CASE_LIST:-}
 WORK_DIR=${WORK_DIR:-"$(mktemp -d "$TMPDIR/native_cert_v1_urr_core_pf_audit.XXXXXX")"}
 JOBS=${JOBS:-10}
 MIN_URR_CORE_PF=${MIN_URR_CORE_PF:-1}
+ORIGIN_CONTEXT_CASES=${ORIGIN_CONTEXT_CASES:-hammer.11453.77}
 
 mkdir -p "$WORK_DIR/cases"
 ln -sfn "$WORK_DIR" "$TMPDIR/latest_native_cert_v1_urr_core_pf_audit"
@@ -132,6 +133,48 @@ fi
 if awk -F '\t' '$2 != "URR_CORE_PF_PASS" {bad=1} END {exit bad ? 0 : 1}' "$WORK_DIR/summary.tsv"; then
   echo "native certificate v1 URR core proof-term audit has failures" >&2
   sed -n '1,80p' "$WORK_DIR/summary.tsv" >&2
+  exit 1
+fi
+
+origin_loaded_dir="$WORK_DIR/origin_loaded"
+mkdir -p "$origin_loaded_dir"
+: > "$origin_loaded_dir/summary.tsv"
+for base in $ORIGIN_CONTEXT_CASES; do
+  native="$CASES_DIR/$base.native.sexp"
+  source="$CASES_DIR/$base.th0.p"
+  origin="$ROOT/examples/hammer/100thms_12_h.mg"
+  case_dir="$origin_loaded_dir/$base"
+  mkdir -p "$case_dir"
+  if [[ ! -s "$native" || ! -s "$source" || ! -s "$origin" ]]; then
+    printf '%s\tORIGIN_CORE_PF_MISSING_INPUT\n' "$base" >> "$origin_loaded_dir/summary.tsv"
+    continue
+  fi
+  if ! "$MEGALODON" \
+      -allowincompleteqed \
+      -vampirecertv1sourcecontext \
+      -vampirecertv1corepfcheck \
+      -vampirecertv1 "$native" \
+      -vampirecertv1source "$source" \
+      "$origin" > "$case_dir/check.out" 2> "$case_dir/check.err"; then
+    err=$(tail -1 "$case_dir/check.err" | tr '\t' ' ')
+    printf '%s\tORIGIN_CORE_PF_FAIL\t%s\n' "$base" "$err" >> "$origin_loaded_dir/summary.tsv"
+    continue
+  fi
+  if ! rg -q 'Vampire certificate v1 native core proof term checked ' "$case_dir/check.out"; then
+    printf '%s\tORIGIN_CORE_PF_MISSING_CONFIRMATION\n' "$base" >> "$origin_loaded_dir/summary.tsv"
+    continue
+  fi
+  if ! rg -q 'Vampire certificate v1 native core source assumptions remaining by kind known=0 local=0 definition=0 generated=0 conjecture=1 unresolved=0' "$case_dir/check.out"; then
+    printf '%s\tORIGIN_CORE_PF_UNEXPECTED_SOURCE_SUMMARY\n' "$base" >> "$origin_loaded_dir/summary.tsv"
+    continue
+  fi
+  printf '%s\tORIGIN_CORE_PF_PASS\n' "$base" >> "$origin_loaded_dir/summary.tsv"
+done
+
+cat "$origin_loaded_dir/summary.tsv" | sort | tee "$origin_loaded_dir/counts.txt"
+if awk -F '\t' '$2 != "ORIGIN_CORE_PF_PASS" {bad=1} END {exit bad ? 0 : 1}' "$origin_loaded_dir/summary.tsv"; then
+  echo "native certificate v1 origin-loaded core proof-term regression has failures" >&2
+  sed -n '1,80p' "$origin_loaded_dir/summary.tsv" >&2
   exit 1
 fi
 

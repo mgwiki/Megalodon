@@ -9263,6 +9263,20 @@ let native_core_true_eq_from_proof source target proof =
       Some (native_core_prop_ext_eq native_core_true atom true_to_atom atom_to_true)
   | _ -> None
 
+let native_core_false_eq_from_proof source target proof =
+  match native_core_equality_sides target with
+  | Some (Prop, left, right) when left = source && right = native_core_false ->
+      let atom = left in
+      let atom_to_false = proof in
+      let false_to_atom = PLam (native_core_false, PTmAp (Hyp 0, atom)) in
+      Some (native_core_prop_ext_eq atom native_core_false atom_to_false false_to_atom)
+  | Some (Prop, left, right) when left = native_core_false && right = source ->
+      let atom = right in
+      let atom_to_false = proof in
+      let false_to_atom = PLam (native_core_false, PTmAp (Hyp 0, atom)) in
+      Some (native_core_prop_ext_eq native_core_false atom false_to_atom atom_to_false)
+  | _ -> None
+
 let native_core_proof_from_true_eq source target proof =
   match native_core_equality_sides target with
   | Some (Prop, left, right) when left = source && right = native_core_true ->
@@ -9275,6 +9289,24 @@ let native_core_proof_from_true_eq source target proof =
       let atom_to_true = PLam (atom, native_core_true_proof) in
       let motive = Lam (Prop, Lam (Prop, Imp (DB 0, DB 1))) in
       Some (PPfAp (PPfAp (PTmAp (proof, motive), atom_to_true), native_core_true_proof))
+  | _ -> None
+
+let native_core_proof_from_false_eq source target proof =
+  match native_core_equality_sides target with
+  | Some (Prop, left, right) when left = source && right = native_core_false ->
+      let atom = left in
+      let motive = Lam (Prop, Lam (Prop, DB 1)) in
+      Some
+        (PLam
+           (atom,
+            PPfAp (PTmAp (pfshift 0 1 proof, motive), Hyp 0)))
+  | Some (Prop, left, right) when left = native_core_false && right = source ->
+      let atom = right in
+      let motive = Lam (Prop, Lam (Prop, DB 0)) in
+      Some
+        (PLam
+           (atom,
+            PPfAp (PTmAp (pfshift 0 1 proof, motive), Hyp 0)))
   | _ -> None
 
 let native_core_bind_result_step_variables variables result_step_variables body_proof =
@@ -9433,15 +9465,23 @@ let native_core_fool_formula_proof
               begin match native_core_true_eq_from_proof source target proof with
               | Some proof -> proof
               | None ->
-                  error
-                    (id ^ ": native preprocess proof-term fool_formula cannot lift atom")
+                  begin match native_core_false_eq_from_proof source target proof with
+                  | Some proof -> proof
+                  | None ->
+                      error
+                        (id ^ ": native preprocess proof-term fool_formula cannot lift atom")
+                  end
               end
           | `Backward ->
               begin match native_core_proof_from_true_eq source target proof with
               | Some proof -> proof
               | None ->
-                  error
-                    (id ^ ": native preprocess proof-term fool_formula cannot lower atom")
+                  begin match native_core_proof_from_false_eq source target proof with
+                  | Some proof -> proof
+                  | None ->
+                      error
+                        (id ^ ": native preprocess proof-term fool_formula cannot lower atom")
+                  end
               end
           end
   in

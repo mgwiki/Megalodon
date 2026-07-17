@@ -7982,7 +7982,7 @@ let check_vampire_cert_v1_file fn =
       let merged = Hashtbl.copy sigdelta in
       Hashtbl.iter
         (fun h v ->
-           if not (Hashtbl.mem merged h) then Hashtbl.add merged h v)
+           Hashtbl.replace merged h v)
         (Vampire_cert_v1.approved_native_sgdelta ());
       Hashtbl.iter
         (fun h v ->
