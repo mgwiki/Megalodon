@@ -11836,6 +11836,25 @@ let native_core_open_step_theorem_body_in_result_context
     (if shift_parent_proof then pftmshift 0 result_variable_count proof else proof)
     parent_step_variables
 
+let native_core_truth_conflict_in_result_context
+    cert id variables parent_id parent_clause parent_proof literal_index result =
+  let result_step_variables = native_core_step_variables cert id in
+  let close_tm tm = native_core_close_tm (variables @ result_step_variables) tm in
+  let close_literal = function
+    | Pos atom -> Pos (close_tm atom)
+    | Neg atom -> Neg (close_tm atom)
+  in
+  let parent_clause = List.map close_literal parent_clause in
+  let result = List.map close_literal result in
+  let parent_proof =
+    native_core_open_step_theorem_body_in_result_context
+      cert id variables parent_id [] parent_proof
+  in
+  let body_proof =
+    native_core_truth_conflict id parent_clause parent_proof literal_index result
+  in
+  native_core_bind_result_step_variables variables result_step_variables body_proof
+
 let native_core_instantiate_step_proof_in_result_context
     cert id variables parent_id subst proof =
   let result_step_variables = native_core_step_variables cert id in
@@ -13482,7 +13501,8 @@ let elaborate_core_resolution_refutation_native
 	      | TruthConflict (id, parent_id, literal_index, result) ->
 	          let parent_clause, parent_proof = lookup parent_id in
 	          let proof =
-	            native_core_truth_conflict id parent_clause parent_proof literal_index result
+	            native_core_truth_conflict_in_result_context
+                cert id variables parent_id parent_clause parent_proof literal_index result
 	          in
 	          store id result proof
 	      | SubsumptionResolution (id, main_parent_id, side_parent_id, selected, side_pivot, side_subst, result) ->
@@ -14134,7 +14154,8 @@ let elaborate_preprocess_refutation_native
 	      | TruthConflict (id, parent_id, literal_index, result) ->
 	          let parent_clause, parent_proof = lookup_clause parent_id in
 	          store_clause id result
-	            (native_core_truth_conflict id parent_clause parent_proof literal_index result)
+	            (native_core_truth_conflict_in_result_context
+               cert id variables parent_id parent_clause parent_proof literal_index result)
 	      | SubsumptionResolution (id, main_parent_id, side_parent_id, selected, side_pivot, side_subst, result) ->
 	          let main_clause, main_proof = lookup_clause main_parent_id in
 	          let side_clause, side_proof = lookup_clause side_parent_id in
