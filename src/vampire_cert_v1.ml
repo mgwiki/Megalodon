@@ -9318,7 +9318,73 @@ let native_core_certificate_sgdelta cert symbol_table =
           add all_index context right rest
       | _ -> subst
     in
-    ignore (add 0 [] source subst)
+    let add_skolem_definitions_from_parent_formulas () =
+      let parse_tm_field key =
+        match native_core_metadata_step_extra_field cert id "kernel_v1" key with
+        | Some value -> Some (parse_tm (parse_sexpr value))
+        | None -> None
+      in
+      let introduced_count =
+        match native_core_metadata_step_extra_field
+                cert id "kernel_v1" "introduced_count"
+        with
+        | Some value ->
+            begin try int_of_string value
+            with Failure _ -> 0
+            end
+        | None -> 0
+      in
+      let rec peel_foralls all_index context = function
+        | All (tp, body) ->
+            let name = variable_name all_index tp in
+            peel_foralls (all_index + 1) (context @ [(name, tp)]) body
+        | body -> context, body
+      in
+      let rec contains_tm needle tm =
+        tm = needle ||
+        match tm with
+        | TpAp (body, _) -> contains_tm needle body
+        | Ap (left, right) | Imp (left, right) ->
+            contains_tm needle left || contains_tm needle right
+        | Lam (_, body) | All (_, body) -> contains_tm (tmshift 0 1 needle) body
+        | TmH _ | DB _ | Prim _ -> false
+      in
+      let parent_definition_source formula =
+        let context, body = peel_foralls 0 [] formula in
+        match body with
+        | Imp (Ap (TmH "vampire_exists_prop", Lam (witness_tp, exists_body)), target_body) ->
+            Some (context, witness_tp, exists_body, target_body)
+        | _ -> None
+      in
+      let witnesses =
+        List.init introduced_count (fun index ->
+          parse_tm_field ("introduced_" ^ string_of_int index ^ "_witness_term"))
+        |> List.filter_map (fun x -> x)
+      in
+      for index = 0 to introduced_count - 1 do
+        match
+          parse_tm_field ("parent_" ^ string_of_int (index + 1) ^ "_formula")
+        with
+        | Some parent_formula ->
+            begin match parent_definition_source parent_formula with
+            | Some (context, witness_tp, body, target_body) ->
+                begin match
+                  witnesses
+                  |> List.find_opt
+                       (fun witness ->
+                          let closed_witness = native_core_close_tm context witness in
+                          contains_tm closed_witness target_body)
+                with
+                | Some witness -> add_definition context witness_tp body witness
+                | None -> ()
+                end
+            | None -> ()
+            end
+        | _ -> ()
+      done
+    in
+    ignore (add 0 [] source subst);
+    add_skolem_definitions_from_parent_formulas ()
   in
   let add_skolem_definition id symbol source =
     Hashtbl.replace
@@ -9610,7 +9676,7 @@ let native_core_avatar_split_proof cert id parent_ids result clause_table avatar
                 (id ^ ": native preprocess proof-term avatar_split references unknown avatar definition")
           in
           match component_literals, native_core_step_variables cert definition_id with
-          | [component_literal], [component_var, component_tp] ->
+          | _ :: _, ([] | [_]) ->
               let split_literal = split_literal_for split_name in
               let split_prop = native_core_literal_prop split_literal in
               let component_to_split =
@@ -9619,23 +9685,29 @@ let native_core_avatar_split_proof cert id parent_ids result clause_table avatar
                   (Imp (definition_component_prop, split_prop))
                   definition_proof
               in
-              let open_component_prop =
-                native_core_literal_prop component_literal
-              in
-              let component_body =
-                subst_named_tm component_var open_component_prop
-              in
-              let component_predicate =
-                Lam (component_tp, component_body)
-              in
-              let neg_component_predicate =
-                Lam (component_tp, Imp (component_body, native_core_false))
-              in
-              let witness =
-                Ap (TmH (native_core_eps_symbol component_tp), neg_component_predicate)
-              in
-              let instantiated_literal =
-                subst_literal [(component_var, witness)] component_literal
+              let component_witness =
+                match native_core_step_variables cert definition_id with
+                | [] -> None
+                | [component_var, component_tp] ->
+                    let open_component_prop =
+                      native_core_clause_prop id component_literals
+                    in
+                    let component_body =
+                      subst_named_tm component_var open_component_prop
+                    in
+                    let component_predicate =
+                      Lam (component_tp, component_body)
+                    in
+                    let neg_component_predicate =
+                      Lam (component_tp, Imp (component_body, native_core_false))
+                    in
+                    let witness =
+                      Ap (TmH (native_core_eps_symbol component_tp), neg_component_predicate)
+                    in
+                    Some
+                      (component_var, component_tp, component_body,
+                       component_predicate, neg_component_predicate, witness)
+                | _ -> assert false
               in
               let split_to_target =
                 PLam
@@ -9643,20 +9715,22 @@ let native_core_avatar_split_proof cert id parent_ids result clause_table avatar
                    native_core_prove_literal_to_clause
                      id result split_literal (Hyp 0))
               in
-              (definition_id, split_name, component_var, component_tp,
-               component_literal, instantiated_literal, component_body,
-               component_predicate, neg_component_predicate, definition_component_prop,
-               component_to_split, witness, split_prop, split_to_target)
+              (definition_id, split_name, component_literals, component_witness,
+               definition_component_prop, component_to_split, split_prop,
+               split_to_target)
           | _ ->
               error
-                (id ^ ": native preprocess proof-term avatar_split quantified component needs one component literal and one component variable")
+                (id ^ ": native preprocess proof-term avatar_split quantified component needs at least one component literal and at most one component variable")
         in
         let infos = List.map definition_info definition_ids in
         let substitution =
-          List.map
-            (fun (_, _, component_var, _, _, _, _, _, _, _, _, witness, _, _) ->
-               (component_var, witness))
-            infos
+          infos
+          |> List.filter_map
+               (fun (_, _, _, component_witness, _, _, _, _) ->
+                  match component_witness with
+                  | Some (component_var, _, _, _, _, witness) ->
+                      Some (component_var, witness)
+                  | None -> None)
         in
         let instantiated_source_clause = subst_clause substitution source_clause in
         let source_step_variables = native_core_step_variables cert source_id in
@@ -9675,10 +9749,9 @@ let native_core_avatar_split_proof cert id parent_ids result clause_table avatar
             source_step_variables
         in
         let source_literal_not_proofs =
-          List.map
-            (fun (_, _, _, component_tp, _, instantiated_literal,
-                  component_body, component_predicate, neg_component_predicate,
-                  definition_component_prop, component_to_split, _, split_prop,
+          List.concat_map
+            (fun (_, _, component_literals, component_witness,
+                  definition_component_prop, component_to_split, split_prop,
                   split_to_target) ->
                let not_split =
                  PLam
@@ -9694,30 +9767,54 @@ let native_core_avatar_split_proof cert id parent_ids result clause_table avatar
                       (pfshift 0 1 not_split,
                        PPfAp (pfshift 0 1 component_to_split, Hyp 0)))
                in
-               let pointwise =
-                 TLam
-                   (component_tp,
-                    PLam (Imp (component_body, native_core_false), Hyp 0))
-               in
-               let exists_neg_component =
-                 PPfAp
-                   (PPfAp
-                      (PTmAp
+               let instantiated_component_literals, not_instantiated_component =
+                 match component_witness with
+                 | None -> component_literals, not_closed_component
+                 | Some (component_var, component_tp, component_body,
+                         component_predicate, neg_component_predicate, witness) ->
+                     let pointwise =
+                       TLam
+                         (component_tp,
+                          PLam (Imp (component_body, native_core_false), Hyp 0))
+                     in
+                     let exists_neg_component =
+                       PPfAp
+                         (PPfAp
+                            (PTmAp
+                               (PTmAp
+                                  (Known (native_core_not_forall_exists_hash component_tp),
+                                   component_predicate),
+                                neg_component_predicate),
+                             pointwise),
+                          not_closed_component)
+                     in
+                     let not_instantiated_component =
+                       PPfAp
                          (PTmAp
-                            (Known (native_core_not_forall_exists_hash component_tp),
-                             component_predicate),
-                          neg_component_predicate),
-                       pointwise),
-                    not_closed_component)
+                            (Known (native_core_exists_choice_hash component_tp),
+                             neg_component_predicate),
+                          exists_neg_component)
+                     in
+                     subst_clause [(component_var, witness)] component_literals,
+                     not_instantiated_component
                in
-               let not_instantiated_component =
-                 PPfAp
-                   (PTmAp
-                      (Known (native_core_exists_choice_hash component_tp),
-                       neg_component_predicate),
-                    exists_neg_component)
-               in
-               (instantiated_literal, not_instantiated_component))
+               List.map
+                 (fun instantiated_literal ->
+                    let literal_prop = native_core_literal_prop instantiated_literal in
+                    let literal_to_component =
+                      native_core_prove_literal_to_clause
+                        id
+                        instantiated_component_literals
+                        instantiated_literal
+                        (Hyp 0)
+                    in
+                    (instantiated_literal,
+                     PLam
+                       (literal_prop,
+                        PPfAp
+                          (pfshift 0 1 not_instantiated_component,
+                           literal_to_component))))
+                 instantiated_component_literals)
             infos
         in
         let not_proof_for literal =
