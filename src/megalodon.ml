@@ -634,7 +634,8 @@ let vampire_source_context_delta_with_locals cxtm =
   List.iter
     (fun (name, (_, definition)) ->
        match definition with
-       | Some tm -> Hashtbl.replace delta name (0, localize 0 tm)
+       | Some tm ->
+           Hashtbl.replace delta name (0, localize 0 tm)
        | None -> ())
     cxtm;
   delta
@@ -734,7 +735,14 @@ let vampire_source_proof source_audit step =
   List.assoc_opt step source_audit.Vampire_source_context.source_proofs
 
 let vampire_check_current_goal_proof claimtm cxtm cxpf proof =
-  let cx = List.map (fun (_, (tp, _)) -> tp) cxtm in
+  let cx =
+    List.filter_map
+      (fun (_, (tp, definition)) ->
+         match definition with
+         | None -> Some tp
+         | Some _ -> None)
+      cxtm
+  in
   let hyps = List.map snd cxpf in
   let proof_delta = vampire_source_context_delta_with_locals cxtm in
   let debug = Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" in
@@ -786,7 +794,9 @@ let vampire_xm_double_negation_elim claimtm cxtm cxpf dnotnot =
 let vampire_context_terms_of_type cxtm target_tp =
   let rec scan i = function
     | [] -> []
-    | (_, (tp, _)) :: rest ->
+    | (_, (_, Some _)) :: rest ->
+        scan i rest
+    | (_, (tp, None)) :: rest ->
         let rest = scan (i + 1) rest in
         if tp = target_tp then DB(i) :: rest else rest
   in
@@ -832,6 +842,46 @@ let vampire_instantiate_source_binding binding tm =
       tmsubst binding.Vampire_cert_v1.core_native_source_proposition 0 tm;
   }
 
+let vampire_definition_transport_proofs source_audit expected actual actual_proof =
+  let debug = Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" in
+  let shifted_actual = tmshift 0 1 actual in
+  let transport_from_definition definition_prop definition_proof =
+    match definition_prop with
+    | All (Ar (tp_left, Ar (tp_right, Prop)),
+           Imp (Ap (Ap (DB 0, left), right),
+                Ap (Ap (DB 0, right_again), left_again)))
+        when tp_left = tp_right
+             && left = left_again
+             && right = right_again ->
+        if shifted_actual = right then
+          let motive = Lam (tp_left, Lam (tp_left, DB 0)) in
+          if debug then
+            prerr_endline
+              ("source-context local definition transport right-to-left expected="
+               ^ tm_to_str expected
+               ^ " actual="
+               ^ tm_to_str actual);
+          [PPfAp (PTmAp (definition_proof, motive), actual_proof)]
+        else if shifted_actual = left then
+          let motive = Lam (tp_left, Lam (tp_left, DB 1)) in
+          if debug then
+            prerr_endline
+              ("source-context local definition transport left-to-right expected="
+               ^ tm_to_str expected
+               ^ " actual="
+               ^ tm_to_str actual);
+          [PPfAp (PTmAp (definition_proof, motive), actual_proof)]
+        else
+          []
+    | _ -> []
+  in
+  source_audit.Vampire_source_context.resolved
+  |> List.concat_map
+       (function
+         | _, Vampire_source_context.Definitional (definition_prop, definition_proof) ->
+             transport_from_definition definition_prop definition_proof
+         | _ -> [])
+
 let vampire_instantiated_refutation_candidates cxtm proof proposition source_bindings =
   let rec collect depth proof proposition source_bindings =
     let current = [(proof,proposition,source_bindings)] in
@@ -870,8 +920,21 @@ let vampire_apply_available_source_bindings source_audit proof proposition bindi
           match vampire_source_proof source_audit binding.Vampire_cert_v1.core_native_source_step,
                 proposition
           with
-          | Some source_proof, Imp(_,target_prop) ->
-              apply (PPfAp(proof,source_proof)) target_prop rest
+          | Some source_proof, Imp(expected_prop,target_prop) ->
+              let actual_prop = binding.Vampire_cert_v1.core_native_source_proposition in
+              let source_proofs =
+                source_proof ::
+                vampire_definition_transport_proofs
+                  source_audit
+                  expected_prop
+                  actual_prop
+                  source_proof
+              in
+              List.concat
+                (List.map
+                   (fun source_proof ->
+                      apply (PPfAp(proof,source_proof)) target_prop rest)
+                   source_proofs)
           | _ -> []
         in
         applied @ skipped
@@ -888,7 +951,11 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
       ~external_definition_names:(vampire_source_context_local_definition_names cxtm)
       cert
   in
-  let remaining_bindings = native_core.Vampire_cert_v1.core_native_source_bindings in
+  let remaining_bindings =
+    vampire_remaining_source_bindings_for_proofs
+      source_proofs_for_core
+      native_core.Vampire_cert_v1.core_native_source_bindings
+  in
   List.iter
     (vampire_debug_source_binding "Vampire native core source")
     native_core.Vampire_cert_v1.core_native_source_bindings;
