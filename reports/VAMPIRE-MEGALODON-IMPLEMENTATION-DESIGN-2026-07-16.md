@@ -475,9 +475,9 @@ The importer should resolve each certificate input by source kind:
   contradiction;
 - generated transformation: use the preprocessing proof chain.
 
-This remains the main Tier 1 gap. The branch-5 live path closes the first
+This remains the main E1 gap. The branch-5 live path closes the first
 small piece of it for local facts plus conjecture negation, while exported-THF
-source checking by itself remains Tier 2 evidence and is not enough to claim
+source checking by itself remains E2 evidence and is not enough to claim
 general original Megalodon reconstruction.
 
 ## Smolka-Style Transformation Plan
@@ -528,30 +528,33 @@ Permanent constraints:
 - focus iteration on the first failing proof-term frontier, not on full
   expensive sweeps after every edit.
 
-Test tiers:
+Test stages and evidence classes:
 
-1. Unit fixtures for each primitive constructor:
+1. T0 unit fixtures for each primitive constructor:
    - positive certificate;
    - malformed schema;
    - invalid side condition;
    - proof-term check.
 
-2. Native core proof-term gate:
+2. T1/T2 native core proof-term gate:
    - `tests/vampire_certificate/run_native_cert_v1_core_closed_audit.sh`
-   - counts only certificates on the small clausal core path.
+   - counts only certificates on the small clausal core path;
+   - reports E3 unless the certificate is also linked to the original
+     Megalodon context.
 
-3. Native preprocess structural frontier:
+3. T1/T3 native preprocess structural frontier:
    - `tests/vampire_certificate/run_native_live_preprocess_pf_frontier.sh`
    - runs live Vampire in parallel over the fixed solvable 100-case list with
      explicit transitional-known diagnostic opt-in;
-   - this is structural evidence only, not counted proof reconstruction.
+   - this is E4 structural evidence only, not counted proof reconstruction.
 
-4. Strict live 100-case gate:
+4. T3 strict live 100-case gate:
    - `tests/vampire_certificate/run_native_live_parallel.sh`
    - requires source linkage, strict certificates, primitive audit, kernel
-     metadata audit, and substitute metadata audit.
+     metadata audit, and substitute metadata audit;
+   - this is E4 unless a closed proof term is checked.
 
-5. Original-context gate:
+5. T4 original-context gate:
    - new gate to be added;
    - exports from original Megalodon files;
    - imports the Vampire certificate;

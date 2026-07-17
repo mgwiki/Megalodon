@@ -69,14 +69,15 @@ Recent local progress on 2026-07-16:
 - A subsumption-resolution case was moved away from the broad macro checker:
   Vampire emits the primitive expansion and a final identity alias, and
   Megalodon audits the symmetry/substitution chain.
-- A focused subsumption run passed:
+- A focused subsumption diagnostic, run before the July 16 audit reset, passed:
 
 ```text
-PREPROCESS_PF_PASS 1
+PREPROCESS_STRUCTURAL_PASS 1
 artifact: /project/tmp/live_subsumption_after_audit_chain
 ```
 
-Current focused six-case proof-term frontier:
+Current focused six-case structural frontier, using the old pre-audit label in
+the artifact output:
 
 ```text
 PREPROCESS_PF_PASS       2
@@ -85,6 +86,11 @@ ILL_FORMED_PROOF_TERM    2
 WRONG_PROPOSITION        1
 artifact: /project/tmp/live_preprocess_pf_frontier6_plan_baseline
 ```
+
+Those `PREPROCESS_PF_PASS` labels are now reclassified as
+`PREPROCESS_STRUCTURAL_PASS` unless the run is repeated without transitional
+certificate-derived `Known` propositions. They are useful for finding the next
+missing primitive, not for claiming proof reconstruction.
 
 Remaining focused failures:
 
@@ -399,7 +405,7 @@ Near-term rules:
 
 ### Original-Context Source Glue
 
-This is the main Tier 1 gap.
+This is the main E1 gap.
 
 For every certificate input, the importer needs a source object:
 
@@ -423,7 +429,7 @@ Resolution policy:
 - conjecture negation: introduce the negated target for contradiction;
 - generated preprocessing fact: follow the transformation proof chain.
 
-The current exported-THF formula comparison remains useful, but it is Tier 2
+The current exported-THF formula comparison remains useful, but it is E2
 evidence. It is not enough for original-context reconstruction.
 
 The current live composition covers only the small core case where local facts
@@ -596,17 +602,27 @@ Development runs should be frontier-oriented:
 - run focused 1-case or small frontier sets during implementation;
 - run the 100-case gate only after focused fixes.
 
-Test tiers:
+Test stages:
 
 ```text
-Tier 4: parser/shape/unit fixtures
-Tier 3: synthetic closed core certificates
-Tier 2: exported-THF-bound source-linked certificates
-Tier 1: original-context native Megalodon proofs
+T0: parser/shape/unit fixtures
+T1: focused frontier tests
+T2: cached solved-problem regression
+T3: parallel live 100 integration gate
+T4: original-context gate
 ```
 
-Pass counts must always name their tier. A Tier 2 exported-THF-bound pass is
-not an original-context proof.
+Evidence classes:
+
+```text
+E1: original-context, source-bound, closed native proof terms
+E2: exported-THF-bound closed checked proofs
+E3: synthetic or live primitive-kernel native proof-term checks
+E4: structural certificate/source/metadata validation and transitional diagnostics
+```
+
+Pass counts must always name their evidence class and test stage. An E4/T3
+strict live pass is not an original-context proof.
 
 Required gates:
 

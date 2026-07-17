@@ -156,7 +156,7 @@ Result:
 
 After the July 16 audit this is classified as integration/metadata evidence:
 exported-THF-bound, source-linked, structurally checked certificate data. It
-is not closed proof reconstruction and not Tier 1 original-context proof
+is not closed proof reconstruction and not E1 original-context proof
 reconstruction.
 
 Synthetic core native proof-term gate:
@@ -586,7 +586,7 @@ Responsibilities:
 - Resolve approved logical principles such as classical `xm` from the library.
 - Compose preprocessing proofs with the clausal refutation.
 
-This is required for Tier 1 success.
+This is required for E1 success.
 
 ## Primitive Rule Specification
 
@@ -606,7 +606,7 @@ Fields:
 Megalodon checker:
 
 - obtains or assumes the clause proof from the source/preprocessing context;
-- does not treat arbitrary certificate input as trusted in Tier 1.
+- does not treat arbitrary certificate input as trusted in E1.
 
 ### `instantiate`
 
@@ -1241,7 +1241,7 @@ TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_core_pf_audit.s
 
 Goal:
 
-- at least ten Tier 1 examples:
+- at least ten E1 examples:
   original-context, source-bound, closed native proof terms.
 
 Actions:
@@ -1370,14 +1370,17 @@ tests/vampire_certificate/run_native_live_parallel.sh
 
 ### Scoreboard
 
-Report results by tier:
+Report results by evidence class and test stage:
 
-1. Tier 1: original-context, source-bound, closed native proof terms.
-2. Tier 2: exported-THF-bound closed checked proofs.
-3. Tier 3: synthetic/core native proof-term fixtures.
-4. Tier 4: broad textual integration scripts without holes.
+1. E1: original-context, source-bound, closed native proof terms.
+2. E2: exported-THF-bound closed checked proofs.
+3. E3: synthetic or live primitive-kernel native proof-term checks.
+4. E4: structural certificate/source/metadata validation and transitional
+   preprocessing diagnostics.
 5. Non-qualifying: anything with admissions, bridges, unsupported source
    assumptions, or textual fallback counted as final proof reconstruction.
+
+Use T0-T4 for test stages, with T4 reserved for original-context checking.
 
 ## Concrete Next Tasks
 

@@ -397,7 +397,7 @@ inside the importer.
 
 The test suite should be tiered.
 
-### Tier 0: Handwritten Unit Certificates
+### T0: Handwritten Unit Certificates
 
 Purpose: keep each primitive rule honest.
 
@@ -413,7 +413,7 @@ Contents:
 
 These tests should be fast and run on every edit.
 
-### Tier 1: Focused Frontier Tests
+### T1: Focused Frontier Tests
 
 Purpose: iterate quickly on the current blocker.
 
@@ -444,7 +444,7 @@ Expected current failure before the next Vampire-side fix:
 UNSUPPORTED_RULE_unit_resulting_resolution
 ```
 
-### Tier 2: Cached Solved-Problem Regression
+### T2: Cached Solved-Problem Regression
 
 Purpose: avoid wasting time rerunning unsolved Vampire searches.
 
@@ -455,7 +455,7 @@ Rules:
 - replay reconstruction repeatedly against cached certificates;
 - regenerate only when Vampire exporter code changes.
 
-### Tier 3: Parallel Live 100 Gate
+### T3: Parallel Live 100 Gate
 
 Purpose: check the exported-THF/source-linked pipeline.
 
@@ -475,7 +475,7 @@ tests/vampire_certificate/run_native_live_parallel.sh
 
 This is not yet the final success criterion because it is exported-THF-bound.
 
-### Tier 4: Original-Context Gate
+### T4: Original-Context Gate
 
 Purpose: count real project success.
 
