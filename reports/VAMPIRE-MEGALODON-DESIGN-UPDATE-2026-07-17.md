@@ -476,3 +476,26 @@ Validation:
   `resolve` primitive records.
 - The kernel-v1 metadata audit passed on that artifact, covering 738
   `kernel_v1` records and 106 rewrite-position records.
+
+Additional follow-up: Vampire commit `99256e4cf` separates the residual
+string payload in `MegalodonKernelStep` into explicit `MigrationField` values.
+The builder now has typed rendered records for the certificate fields already
+extracted, plus a separately named migration bridge for legacy fields that
+have not yet been converted.
+
+This keeps the external certificate stable while making the architectural
+debt visible in the type. Future commits should shrink `migrationFields` by
+moving one field cluster at a time into typed records rather than adding new
+unstructured strings to the builder.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel` passed and produced
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11054`.
+- A fresh 5-case live THF run with 5-way parallelism and a 10-second Vampire
+  cap produced `PASS 5`.
+- The kernel-v1 metadata audit passed on that artifact, covering 280
+  `kernel_v1` records and 37 rewrite-position records.
+- The native primitive audit passed with small-sample minima relaxed; the
+  artifact covered 37 `paramodulate`, 46 `substitute`, 36
+  `equality_resolution`, and 7 `resolve` records.

@@ -386,3 +386,27 @@ Validation:
   `resolve` records
 - kernel-v1 metadata audit on the same artifact, covering 738 `kernel_v1`
   records and 106 rewrite-position records
+
+Vampire commit `99256e4cf` makes the remaining unstructured payload explicit
+by renaming the builder's residual string vector to `migrationFields` and
+wrapping each entry as a `MigrationField`. This does not add proof power and
+does not change the emitted certificate format. Its purpose is architectural:
+new typed rendered records and old bridge data are now visibly separate in the
+Vampire-side object.
+
+The next audit-relevant action is to reduce `migrationFields`, not grow it.
+Good candidates are primitive parent substitutions, subsumption-resolution
+side pivots, Skolem introduced-symbol records, and preprocessing
+source/result formula pairs.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel`
+- fresh 5-case live THF run with
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11054`,
+  `JOBS=5`, and `VAMPIRE_SECONDS=10`: `PASS 5`
+- kernel-v1 metadata audit on the artifact, covering 280 `kernel_v1` records
+  and 37 rewrite-position records
+- native primitive audit with small-sample minima relaxed, covering 37
+  `paramodulate`, 46 `substitute`, 36 `equality_resolution`, and 7 `resolve`
+  records
