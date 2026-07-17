@@ -1,5 +1,5 @@
 (certificate vampire-megalodon 1
-  (problem "native-cert-v1-subsumption-resolution-kernel-valid")
+  (problem "native-cert-v1-subsumption-resolution-primitive-payload-bad")
   (input "u1" (source axiom "pq")
     (clause
       (pos (TMH "p"))
@@ -21,7 +21,7 @@
      "primitive_expansion_step_0_parent_0_id=u1"
      "primitive_expansion_step_0_parent_1_id=u2"
      "primitive_expansion_step_0_result_clause=(clause (pos (TMH \"q\")))"
-     "primitive_expansion_step_0_pivot_left=0"
+     "primitive_expansion_step_0_pivot_left=1"
      "primitive_expansion_step_0_pivot_right=0"
      "primitive_expansion_requires_count=1"
      "primitive_expansion_requires_0=resolve"

@@ -2244,6 +2244,22 @@ if ! rg -q 'field side_pivot_substituted does not match the certificate literal'
   exit 1
 fi
 
+if bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_subsumption_resolution_primitive_payload_bad.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_subsumption_resolution_kernel_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_subsumption_resolution_primitive_payload_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_subsumption_resolution_primitive_payload_bad.err"; then
+  echo "strict native certificate v1 checker accepted mismatched subsumption-resolution primitive payload metadata" >&2
+  exit 1
+fi
+
+if ! rg -q 'field primitive_expansion_step_0_pivot_left has value 1 but expected 0' \
+    "$WORK_DIR/native_cert_v1_subsumption_resolution_primitive_payload_bad.err"; then
+  echo "strict native certificate v1 subsumption-resolution failure did not explain bad primitive payload metadata" >&2
+  exit 1
+fi
+
 bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_equality_resolution_kernel_valid.sexp \
   "$dummy" >"$WORK_DIR/native_cert_v1_equality_resolution_kernel_valid.log"

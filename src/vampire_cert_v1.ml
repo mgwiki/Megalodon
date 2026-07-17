@@ -6720,6 +6720,186 @@ let validate_primitive_expansion_contracts cert =
         done
     end
   in
+  let validate_subsumption_resolution_primitive_chain id fields =
+    let fail message =
+      error (id ^ ": strict certificate v1 " ^ message)
+    in
+    let field_required key =
+      match field_value key fields with
+      | Some value -> value
+      | None -> fail ("requires " ^ key)
+    in
+    let field_int key =
+      let value = field_required key in
+      try int_of_string value with Failure _ ->
+        fail ("field " ^ key ^ " is not an integer")
+    in
+    let parse_clause_field key =
+      let value = field_required key in
+      try parse_clause (parse_sexpr value) with
+      | Error msg ->
+          fail
+            ("subsumption_resolution field " ^ key
+             ^ " is malformed: " ^ msg)
+    in
+    let parse_substitution_field key =
+      let value = field_required key in
+      try parse_substitution (parse_sexpr value) with
+      | Error msg ->
+          fail
+            ("subsumption_resolution field " ^ key
+             ^ " is malformed: " ^ msg)
+    in
+    let require_int_field key expected =
+      let actual = field_int key in
+      if actual <> expected then
+        fail
+          (Printf.sprintf
+             "field %s has value %d but expected %d"
+             key actual expected)
+    in
+    let step_count = field_int "primitive_expansion_step_count" in
+    if step_count <= 0 then
+      fail "subsumption_resolution primitive_expansion_step_count must be positive";
+    let final_result_clause =
+      parse_clause_field "primitive_expansion_final_result_clause"
+    in
+    let result_clause = parse_clause_field "result_clause" in
+    if not (same_clause_multiset final_result_clause result_clause) then
+      fail
+        "subsumption_resolution primitive final result does not match result_clause";
+    begin match field_value "conclusion_clause" fields with
+    | Some _ ->
+        let conclusion_clause = parse_clause_field "conclusion_clause" in
+        if not (same_clause_multiset final_result_clause conclusion_clause) then
+          fail
+            "subsumption_resolution primitive final result does not match conclusion_clause"
+    | None -> ()
+    end;
+    let expected_parent_count = function
+      | "resolve" -> 2
+      | "substitute" | "equality_symmetry" | "factor" -> 1
+      | rule ->
+          fail
+            ("subsumption_resolution primitive expansion uses unsupported primitive rule "
+             ^ rule)
+    in
+    let has_required_resolve = ref false in
+    for index = 0 to step_count - 1 do
+      let key_prefix =
+        "primitive_expansion_step_" ^ string_of_int index
+      in
+      let rule = field_required (key_prefix ^ "_rule") in
+      let step_id = field_required (key_prefix ^ "_id") in
+      let parent_count = field_int (key_prefix ^ "_parent_count") in
+      let expected = expected_parent_count rule in
+      if parent_count <> expected then
+        fail
+          (Printf.sprintf
+             "subsumption_resolution primitive step %s rule %s expected %d parents but got %d"
+             step_id rule expected parent_count);
+      for parent_index = 0 to parent_count - 1 do
+        let parent_id =
+          field_required
+            (key_prefix ^ "_parent_" ^ string_of_int parent_index ^ "_id")
+        in
+        begin match step_by_id parent_id with
+        | Some _ -> ()
+        | None ->
+            fail
+              ("subsumption_resolution primitive step " ^ step_id
+               ^ " references missing parent " ^ parent_id)
+        end
+      done;
+      let step_result_clause =
+        let value = field_required (key_prefix ^ "_result_clause") in
+        try parse_clause (parse_sexpr value) with
+        | Error msg ->
+            fail
+              ("subsumption_resolution primitive step " ^ step_id
+               ^ " malformed result clause: " ^ msg)
+      in
+      begin match step_by_id step_id with
+      | Some step ->
+          begin match step_clause_opt step with
+          | Some clause when same_clause_multiset step_result_clause clause -> ()
+          | Some _ ->
+              fail
+                ("subsumption_resolution primitive step " ^ step_id
+                 ^ " result_clause does not match certificate step")
+          | None ->
+              fail
+                ("subsumption_resolution primitive step " ^ step_id
+                 ^ " does not have a clause result")
+          end
+      | None ->
+          fail
+            ("subsumption_resolution primitive step " ^ step_id
+             ^ " is not present in certificate")
+      end;
+      begin match rule, step_by_id step_id with
+      | "substitute", Some (Substitute (_, _, subst, _)) ->
+          let actual =
+            parse_substitution_field (key_prefix ^ "_substitution")
+          in
+          if actual <> subst then
+            fail
+              ("subsumption_resolution primitive substitute step "
+               ^ step_id ^ " substitution payload does not match certificate step")
+      | "resolve", Some (Resolve (_, _, _, left_index, right_index, _)) ->
+          has_required_resolve := true;
+          require_int_field (key_prefix ^ "_pivot_left") left_index;
+          require_int_field (key_prefix ^ "_pivot_right") right_index
+      | "equality_symmetry", Some (EqualitySymmetry (_, _, literal_index, _)) ->
+          require_int_field (key_prefix ^ "_literal") literal_index
+      | "factor", Some (Factor (_, _, left_index, right_index, _)) ->
+          require_int_field (key_prefix ^ "_literal_left") left_index;
+          require_int_field (key_prefix ^ "_literal_right") right_index
+      | "substitute", Some _ ->
+          fail
+            ("subsumption_resolution primitive step " ^ step_id
+             ^ " declares substitute but is not a substitute certificate step")
+      | "resolve", Some _ ->
+          fail
+            ("subsumption_resolution primitive step " ^ step_id
+             ^ " declares resolve but is not a resolve certificate step")
+      | "equality_symmetry", Some _ ->
+          fail
+            ("subsumption_resolution primitive step " ^ step_id
+             ^ " declares equality_symmetry but is not an equality_symmetry certificate step")
+      | "factor", Some _ ->
+          fail
+            ("subsumption_resolution primitive step " ^ step_id
+             ^ " declares factor but is not a factor certificate step")
+      | _, None ->
+          fail
+            ("subsumption_resolution primitive step " ^ step_id
+             ^ " is not present in certificate")
+      | _ -> ()
+      end
+    done;
+    let final_step_result =
+      parse_clause_field
+        ("primitive_expansion_step_"
+         ^ string_of_int (step_count - 1) ^ "_result_clause")
+    in
+    if not (same_clause_multiset final_result_clause final_step_result) then
+      fail
+        "subsumption_resolution primitive final result does not match final primitive step";
+    begin match field_value "primitive_expansion_requires_count" fields with
+    | Some _ ->
+        let requires_count = field_int "primitive_expansion_requires_count" in
+        for index = 0 to requires_count - 1 do
+          if field_required
+               ("primitive_expansion_requires_" ^ string_of_int index)
+             = "resolve" then
+            has_required_resolve := true
+        done
+    | None -> ()
+    end;
+    if not !has_required_resolve then
+      fail "subsumption_resolution primitive_expansion_requires_N must include resolve"
+  in
   let validate_urr_primitive_chain id fields =
     let fail message =
       error (id ^ ": strict certificate v1 " ^ message)
@@ -7034,8 +7214,13 @@ let validate_primitive_expansion_contracts cert =
                  | None -> ()
                  end
              end;
-             if kernel_rule = "unit_resulting_resolution" then
-               validate_urr_primitive_chain id fields
+             begin
+               if kernel_rule = "unit_resulting_resolution" then
+                 validate_urr_primitive_chain id fields;
+               if kernel_rule = "subsumption_resolution"
+                  && field_value "primitive_expansion_step_count" fields <> None then
+                 validate_subsumption_resolution_primitive_chain id fields
+             end
          end)
     cert.metadata.step_extras
 
