@@ -2754,6 +2754,17 @@ if ! rg -q 'Vampire certificate v1 strict checked 6 steps' "$WORK_DIR/native_cer
   exit 1
 fi
 
+bin/megalodon \
+  -vampirecertv1corepfcheck \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_core_skolemize_direct_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_core_skolemize_direct_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_core_skolemize_direct_valid.log"
+
+if ! rg -q 'Vampire certificate v1 native core proof term checked 6 steps' "$WORK_DIR/native_cert_v1_core_skolemize_direct_valid.log"; then
+  echo "native certificate v1 core proof checker did not accept direct Skolem choice proof term" >&2
+  exit 1
+fi
+
 if bin/megalodon \
   -vampirecertv1strict \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_kernel_skolemize_dependency_count_bad.sexp \

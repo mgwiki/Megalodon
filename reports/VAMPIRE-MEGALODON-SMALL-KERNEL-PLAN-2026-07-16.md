@@ -22,6 +22,18 @@ proof-producing source/preprocessing certificate layer for `formula_input` and
 `formula_term_input`, plus continued Vampire-side primitive lowering for the
 clausal part that follows.
 
+Progress note, 2026-07-17: the core proof-term path now handles one narrow
+Skolemization case without admissions or dynamic `Known` injection:
+direct nullary existential Skolemization with explicit Vampire
+`kernel_v1` metadata, zero dependencies, an introduced-symbol declaration,
+and `classical_choice`. Megalodon adds a generated delta definition
+`sk = Eps_i (fun x => P x)`, closes that definition over the original
+certificate variables, and checks the step by applying the fixed choice
+principle to the parent existential proof. This is a real `Syntax.pf` step,
+but it is not yet the full Skolemization solution: dependent Skolem functions,
+multiple simultaneous introductions, and broader Smolka-style preprocessing
+still remain frontier work.
+
 Primary repositories:
 
 - Megalodon: `/project/Megalodon`
@@ -1097,10 +1109,28 @@ Fields should include:
 - choice/epsilon term used in Megalodon;
 - proof term showing the transformation is classically valid.
 
-Megalodon proof:
+Implemented narrow case, 2026-07-17:
+
+- direct source formula `exists X:tp, P X`;
+- one introduced nullary Skolem symbol;
+- `introduced_0_dependency_count=0`;
+- `introduced_0_choice_principle=classical_choice`;
+- generated declaration from Vampire metadata is imported into the native
+  symbol table;
+- Megalodon defines the symbol by the appropriate epsilon operator and proves
+  `P sk` by applying the fixed choice theorem to the parent existential proof.
+
+Remaining Megalodon proof work:
 
 - use classical choice/epsilon principle already accepted in Megalodon;
 - make dependencies explicit.
+
+The dependent case should generalize the same pattern by abstracting the
+surrounding universal variables into the generated Skolem definition, then
+applying the appropriate choice theorem under those binders. It should still
+be driven by Vampire-emitted source/result formulae, dependency metadata,
+sorts, generated declarations, and witness terms; Megalodon should reject any
+case where those fields are absent or inconsistent.
 
 This should not block the first small clausal kernel milestone. It is required
 for full larger-development reconstruction.
@@ -1398,9 +1428,12 @@ The immediate engineering queue should be:
    library.
 6. Implement set-generated equality inputs by reflexivity/definitional
    conversion.
-7. Define the first preprocessing certificate rules for conjecture negation,
-   simple definition unfolding, FOOL/ENNF fragments, CNF projection, and then
-   Skolemization.
+7. Generalize the 2026-07-17 direct Skolem proof-term rule to dependent
+   Skolem functions and multiple introductions, still from explicit Vampire
+   metadata.
+8. Define the remaining preprocessing certificate rules for conjecture
+   negation, simple definition unfolding, FOOL/ENNF fragments, and CNF
+   projection in the same proof-producing style.
 
 ## Alignment Checklist
 

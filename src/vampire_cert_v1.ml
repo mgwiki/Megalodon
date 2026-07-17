@@ -5930,7 +5930,25 @@ let validate_certificate_core_fragment cert =
          && field_value "rule" fields = Some "instantiation")
       cert.metadata.step_extras
   in
+  let has_direct_skolem_metadata id =
+    List.exists
+      (fun (step_id, kind, fields) ->
+         step_id = id
+         && kind = "kernel_v1"
+         && field_value "rule" fields = Some "skolemize"
+         && field_value "introduced_0_dependency_count" fields = Some "0"
+         && field_value "introduced_0_choice_principle" fields = Some "classical_choice")
+      cert.metadata.step_extras
+  in
+  let direct_skolem_formula = function
+    | SkolemFormula
+        (id, _, Some (Ap (TmH "vampire_exists_prop", Lam _)),
+         [_], [_], _)
+        when has_direct_skolem_metadata id -> true
+    | _ -> false
+  in
   let allowed = function
+    | SkolemFormula _ as step when direct_skolem_formula step -> true
     | Input _
     | FormulaInput _
     | FormulaTermInput _
@@ -6151,6 +6169,11 @@ let native_core_symbol_table cert =
       ("vampire_eq_prop", "prop->prop->prop");
       ("vPI", "(set->prop)->prop");
       ("vLAM", "set->set->set");
+      ("Eps_i", "(set->prop)->set");
+      ("Eps_prop", "(prop->prop)->prop");
+      ("Eps_set_prop", "((set->prop)->prop)->set->prop");
+      ("Eps_set_set", "((set->set)->prop)->set->set");
+      ("Eps_set_set_prop", "((set->set->prop)->prop)->set->set->prop");
     ];
   for i = 0 to 31 do
     add_simple ("db" ^ string_of_int i) "set"
@@ -6179,6 +6202,24 @@ let native_core_symbol_table cert =
           add_simple name typ
   in
   List.iter parse_decl cert.metadata.symbol_declarations;
+  List.iter
+    (fun (_, _, fields) ->
+       List.iter
+         (fun field ->
+            match String.index_opt field '=' with
+            | None -> ()
+            | Some eq ->
+                let key = String.sub field 0 eq in
+                let suffix = "_declaration" in
+                let suffix_len = String.length suffix in
+                if String.length key >= suffix_len
+                   && String.sub key (String.length key - suffix_len) suffix_len = suffix then
+                  let value =
+                    String.sub field (eq + 1) (String.length field - eq - 1)
+                  in
+                  parse_decl value)
+         fields)
+    cert.metadata.step_extras;
   List.iter
     (function
       | AvatarDefinition (_, split_var, _, _) when split_var > 0 ->
@@ -6695,6 +6736,14 @@ let native_core_close_pf variables proof =
     | TLam (tp, proof) -> TLam (tp, close (depth + 1) proof)
   in
   close 0 proof
+
+let native_core_close_delta_table variables delta =
+  let closed = Hashtbl.create (Hashtbl.length delta) in
+  Hashtbl.iter
+    (fun h (arity, tm) ->
+       Hashtbl.replace closed h (arity, native_core_close_tm variables tm))
+    delta;
+  closed
 
 let native_core_equality_sides = function
   | Ap (Ap (TpAp (TmH h, tp), left), right)
@@ -7290,6 +7339,22 @@ let native_core_not_forall_exists_hash = function
   | Ar (Set, Ar (Set, Prop)) -> "vampire_not_forall_exists_set_set_prop"
   | _ -> "vampire_not_forall_exists_unsupported"
 
+let native_core_eps_symbol = function
+  | Set -> "Eps_i"
+  | Prop -> "Eps_prop"
+  | Ar (Set, Prop) -> "Eps_set_prop"
+  | Ar (Set, Set) -> "Eps_set_set"
+  | Ar (Set, Ar (Set, Prop)) -> "Eps_set_set_prop"
+  | _ -> "Eps_unsupported"
+
+let native_core_exists_choice_hash = function
+  | Set -> "vampire_exists_set_choice"
+  | Prop -> "vampire_exists_prop_choice"
+  | Ar (Set, Prop) -> "vampire_exists_set_prop_choice"
+  | Ar (Set, Set) -> "vampire_exists_set_set_choice"
+  | Ar (Set, Ar (Set, Prop)) -> "vampire_exists_set_set_prop_choice"
+  | _ -> "vampire_exists_unsupported_choice"
+
 let native_core_eq_prop left right =
   Ap (Ap (TpAp (TmH megalodon_eq_poly_hash, Prop), left), right)
 
@@ -7329,6 +7394,14 @@ let native_core_not_forall_exists_prop tp =
              (Imp (All (tp, Ap (DB 2, DB 0)), native_core_false),
               native_core_exists tp (Ap (DB 1, DB 0))))))
 
+let native_core_exists_choice_prop tp =
+  let eps = native_core_eps_symbol tp in
+  All
+    (Ar (tp, Prop),
+     Imp
+       (native_core_exists tp (Ap (DB 1, DB 0)),
+        Ap (DB 0, Ap (TmH eps, DB 0))))
+
 let native_core_approved_sgdelta () =
   let sgdelta = Hashtbl.create 2 in
   Hashtbl.add sgdelta native_core_prop_ext_hash (0, native_core_prop_ext_prop);
@@ -7340,12 +7413,44 @@ let native_core_approved_sgdelta () =
          (native_core_not_forall_exists_hash tp)
          (0, native_core_not_forall_exists_prop tp))
     [Set; Prop; Ar (Set, Prop); Ar (Set, Set); Ar (Set, Ar (Set, Prop))];
+  List.iter
+    (fun tp ->
+       Hashtbl.add
+         sgdelta
+         (native_core_exists_choice_hash tp)
+         (0, native_core_exists_choice_prop tp))
+    [Set; Prop; Ar (Set, Prop); Ar (Set, Set); Ar (Set, Ar (Set, Prop))];
   sgdelta
 
 let native_core_certificate_sgdelta cert symbol_table =
   let sgdelta = native_core_approved_sgdelta () in
   let definitions = native_core_definition_delta_table cert symbol_table in
   let avatar_definitions = native_core_avatar_delta_table cert in
+  let add_direct_skolem_definition id symbol tp body =
+    let eps = native_core_eps_symbol tp in
+    if eps = "Eps_unsupported" then
+      error
+        (id ^ ": native core proof-term skolemization has no epsilon operator for witness sort");
+    let predicate = Lam (tp, native_core_formula_prop body) in
+    let definition = Ap (TmH eps, predicate) |> tm_beta_eta_norm in
+    Hashtbl.replace definitions symbol (0, definition)
+  in
+  List.iter
+    (function
+      | SkolemFormula
+          (id, _, Some (Ap (TmH "vampire_exists_prop", Lam (tp, body))),
+           [{ skolem_intro_symbol = symbol; _ }],
+           [(_, TmH witness_symbol)], _)
+          when symbol = witness_symbol ->
+          begin match
+            native_core_metadata_step_extra_field
+              cert id "kernel_v1" "introduced_0_dependency_count"
+          with
+          | Some "0" -> add_direct_skolem_definition id symbol tp body
+          | _ -> ()
+          end
+      | _ -> ())
+    cert.steps;
   Hashtbl.iter
     (fun h v -> Hashtbl.replace sgdelta h v)
     definitions;
@@ -7362,6 +7467,20 @@ let approved_native_sgdelta () =
 
 let native_core_true_proof =
   TLam (Prop, PLam (DB 0, Hyp 0))
+
+let native_core_direct_skolem_formula_proof id source result proof =
+  match source with
+  | Ap (TmH "vampire_exists_prop", Lam (tp, body)) ->
+      let choice = native_core_exists_choice_hash tp in
+      if choice = "vampire_exists_unsupported_choice" then
+        error
+          (id ^ ": native core proof-term skolemization has no choice theorem for witness sort");
+      let predicate = Lam (tp, native_core_formula_prop body) in
+      ignore result;
+      PPfAp (PTmAp (Known choice, predicate), proof)
+  | _ ->
+      error
+        (id ^ ": native core proof-term skolemization supports only direct existential sources")
 
 let native_core_xm_proof prop =
   let shifted_prop = tmshift 0 1 prop in
@@ -9861,6 +9980,8 @@ let elaborate_core_resolution_refutation_native
     @ external_hypotheses
   in
   let proof_delta, definition_delta = native_core_certificate_sgdelta cert symbol_table in
+  let proof_delta = native_core_close_delta_table variables proof_delta in
+  let definition_delta = native_core_close_delta_table variables definition_delta in
   let proof_delta = native_core_merge_external_delta proof_delta external_delta_table in
   let check_step_proof id clause proof =
     let step_variables = native_core_step_variables cert id in
@@ -10039,6 +10160,20 @@ let elaborate_core_resolution_refutation_native
           store_formula id result
             (native_core_ennf_formula_proof
                id variables result_step_variables parent_formula result parent_proof)
+      | SkolemFormula (id, parent_id, source, introductions, subst, result) ->
+          let parent_formula, parent_proof = lookup_formula parent_id in
+          check_skolem_formula
+            [(parent_id, CheckedFormula parent_formula)]
+            id parent_id source introductions subst result;
+          begin match source with
+          | Some (Ap (TmH "vampire_exists_prop", Lam _)) ->
+              store_formula id result
+                (native_core_direct_skolem_formula_proof
+                   id parent_formula result parent_proof)
+          | _ ->
+              error
+                (id ^ ": native core proof-term skolemization supports only explicit direct source formulas")
+          end
       | FormulaCopy (id, parent_id, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
           if native_core_normalize_bool_constants (native_core_literal_prop result)
@@ -10275,6 +10410,8 @@ let elaborate_preprocess_refutation_native
     @ external_hypotheses
   in
   let proof_delta, definition_delta = native_core_certificate_sgdelta cert symbol_table in
+  let proof_delta = native_core_close_delta_table variables proof_delta in
+  let definition_delta = native_core_close_delta_table variables definition_delta in
   let proof_delta = native_core_merge_external_delta proof_delta external_delta_table in
   let check_step_proof id prop proof =
     let step_variables = native_core_step_variables cert id in
