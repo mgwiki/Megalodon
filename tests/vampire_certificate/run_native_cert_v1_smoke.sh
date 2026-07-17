@@ -388,6 +388,11 @@ if ! rg -q 'Vampire certificate v1 native core source assumptions remaining 2' \
   echo "native certificate v1 core checker did not discharge the hash-backed source proof from assumptions" >&2
   exit 1
 fi
+if ! rg -q 'Vampire certificate v1 native core source assumptions remaining by kind known=0 local=2 definition=0 generated=0 conjecture=0 unresolved=0' \
+    "$WORK_DIR/native_cert_v1_source_context_core_pf.log"; then
+  echo "native certificate v1 core checker did not classify remaining local source assumptions" >&2
+  exit 1
+fi
 
 known_false_mg="$WORK_DIR/native_cert_v1_known_false_source_context.mg"
 known_false_th0="$WORK_DIR/native_cert_v1_known_false_source_context.th0.p"
@@ -430,6 +435,11 @@ fi
 if ! rg -q 'Vampire certificate v1 native core source assumptions remaining 0' \
     "$WORK_DIR/native_cert_v1_known_false_source_context_core_pf.log"; then
   echo "native certificate v1 core checker did not fully discharge the hash-backed false source proof" >&2
+  exit 1
+fi
+if ! rg -q 'Vampire certificate v1 native core source assumptions remaining by kind known=0 local=0 definition=0 generated=0 conjecture=0 unresolved=0' \
+    "$WORK_DIR/native_cert_v1_known_false_source_context_core_pf.log"; then
+  echo "native certificate v1 core checker did not report an empty remaining source summary" >&2
   exit 1
 fi
 
@@ -863,6 +873,11 @@ if [[ "${SOURCE_CONTEXT_ONLY:-0}" = "1" ]]; then
   if ! rg -q 'Vampire certificate v1 native core source assumptions remaining 1' \
       "$WORK_DIR/native_cert_v1_source_map_set_reflexivity_corepf.log"; then
     echo "focused source-context smoke did not discharge generated set-reflexivity correctly" >&2
+    exit 1
+  fi
+  if ! rg -q 'Vampire certificate v1 native core source assumptions remaining by kind known=1 local=0 definition=0 generated=0 conjecture=0 unresolved=0' \
+      "$WORK_DIR/native_cert_v1_source_map_set_reflexivity_corepf.log"; then
+    echo "focused source-context smoke did not classify remaining source assumptions after set-reflexivity" >&2
     exit 1
   fi
 
@@ -2512,6 +2527,10 @@ if ! rg -q 'Vampire certificate v1 native core proof term checked 4 steps' "$WOR
 fi
 if ! rg -q 'Vampire certificate v1 native core source assumptions remaining 1' "$WORK_DIR/native_cert_v1_source_map_set_reflexivity_corepf.log"; then
   echo "native certificate v1 core proof-term checker left set_reflexivity as a source assumption" >&2
+  exit 1
+fi
+if ! rg -q 'Vampire certificate v1 native core source assumptions remaining by kind known=1 local=0 definition=0 generated=0 conjecture=0 unresolved=0' "$WORK_DIR/native_cert_v1_source_map_set_reflexivity_corepf.log"; then
+  echo "native certificate v1 core proof-term checker did not classify remaining source assumptions after set_reflexivity" >&2
   exit 1
 fi
 

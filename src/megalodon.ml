@@ -875,6 +875,50 @@ let vampire_debug_source_binding prefix binding =
       flush stdout
     end
 
+let vampire_source_binding_report_kind binding =
+  let map_kind = binding.Vampire_cert_v1.core_native_source_map_kind in
+  let cert_kind = binding.Vampire_cert_v1.core_native_certificate_source_kind in
+  if map_kind = "known" || map_kind = "axiom" then "known"
+  else if map_kind = "local_fact" then "local"
+  else if map_kind = "def"
+          || map_kind = "definition"
+          || map_kind = "local_definition" then "definition"
+  else if vampire_generated_source_kind map_kind then "generated"
+  else if cert_kind = "negated_conjecture"
+          || map_kind = "conjecture"
+          || map_kind = "negated_conjecture" then "conjecture"
+  else "unresolved"
+
+let vampire_source_binding_report_counts bindings =
+  List.fold_left
+    (fun (known, local, definition, generated, conjecture, unresolved) binding ->
+       match vampire_source_binding_report_kind binding with
+       | "known" -> (known + 1, local, definition, generated, conjecture, unresolved)
+       | "local" -> (known, local + 1, definition, generated, conjecture, unresolved)
+       | "definition" -> (known, local, definition + 1, generated, conjecture, unresolved)
+       | "generated" -> (known, local, definition, generated + 1, conjecture, unresolved)
+       | "conjecture" -> (known, local, definition, generated, conjecture + 1, unresolved)
+       | _ -> (known, local, definition, generated, conjecture, unresolved + 1))
+    (0, 0, 0, 0, 0, 0)
+    bindings
+
+let vampire_print_remaining_source_summary prefix source_proofs source_bindings =
+  let remaining =
+    vampire_remaining_source_bindings_for_proofs source_proofs source_bindings
+  in
+  let known, local, definition, generated, conjecture, unresolved =
+    vampire_source_binding_report_counts remaining
+  in
+  Printf.printf
+    "%s source assumptions remaining by kind known=%d local=%d definition=%d generated=%d conjecture=%d unresolved=%d.\n"
+    prefix
+    known
+    local
+    definition
+    generated
+    conjecture
+    unresolved
+
 let vampire_core_source_proofs source_audit =
   List.filter
     (fun (step, _) ->
@@ -7968,6 +8012,10 @@ let check_vampire_cert_v1_file fn =
           Printf.printf
             "Vampire certificate v1 native core source assumptions remaining %d.\n"
             native_core.Vampire_cert_v1.core_native_source_assumptions;
+          vampire_print_remaining_source_summary
+            "Vampire certificate v1 native core"
+            !source_proofs_for_native
+            native_core.Vampire_cert_v1.core_native_source_bindings;
           Printf.printf
             "Vampire certificate v1 native core source propositions recorded %d assumption%s.\n"
             (List.length
@@ -8006,6 +8054,10 @@ let check_vampire_cert_v1_file fn =
           Printf.printf
             "Vampire certificate v1 native preprocess source assumptions remaining %d.\n"
             native_preprocess.Vampire_cert_v1.core_native_source_assumptions;
+          vampire_print_remaining_source_summary
+            "Vampire certificate v1 native preprocess"
+            !source_proofs_for_native
+            native_preprocess.Vampire_cert_v1.core_native_source_bindings;
           Printf.printf
             "Vampire certificate v1 native preprocess source propositions recorded %d assumption%s.\n"
             (List.length
