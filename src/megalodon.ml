@@ -972,7 +972,7 @@ let vampire_core_source_proofs source_audit =
 let vampire_source_proof source_audit step =
   List.assoc_opt step source_audit.Vampire_source_context.source_proofs
 
-let vampire_check_current_goal_proof ?source_map claimtm cxtm cxpf proof =
+let vampire_check_current_goal_proof ?source_map ?extra_delta ?extra_symbols claimtm cxtm cxpf proof =
   let cx =
     List.filter_map
       (fun (_, (tp, definition)) ->
@@ -988,11 +988,27 @@ let vampire_check_current_goal_proof ?source_map claimtm cxtm cxpf proof =
     | Some source_map ->
         vampire_source_context_delta_with_source_map ~cxtm source_map
   in
+  begin match extra_delta with
+  | None -> ()
+  | Some extra_delta ->
+      Hashtbl.iter
+        (fun h v ->
+           if not (Hashtbl.mem proof_delta h) then Hashtbl.add proof_delta h v)
+        extra_delta
+  end;
   let symbol_table =
     match source_map with
     | None -> sigtmof
     | Some source_map -> vampire_source_context_symbol_table_with_source_map source_map
   in
+  begin match extra_symbols with
+  | None -> ()
+  | Some extra_symbols ->
+      Hashtbl.iter
+        (fun h v ->
+           if not (Hashtbl.mem symbol_table h) then Hashtbl.add symbol_table h v)
+        extra_symbols
+  end;
   let proof_expander =
     match source_map with
     | None -> vampire_local_definition_expander cxtm
@@ -1029,7 +1045,7 @@ let vampire_check_current_goal_proof ?source_map claimtm cxtm cxpf proof =
       None
   | _ -> None
 
-let vampire_check_proof_of_prop ?source_map cxtm cxpf expected proof =
+let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxpf expected proof =
   let cx =
     List.filter_map
       (fun (_, (tp, definition)) ->
@@ -1045,11 +1061,27 @@ let vampire_check_proof_of_prop ?source_map cxtm cxpf expected proof =
     | Some source_map ->
         vampire_source_context_delta_with_source_map ~cxtm source_map
   in
+  begin match extra_delta with
+  | None -> ()
+  | Some extra_delta ->
+      Hashtbl.iter
+        (fun h v ->
+           if not (Hashtbl.mem proof_delta h) then Hashtbl.add proof_delta h v)
+        extra_delta
+  end;
   let symbol_table =
     match source_map with
     | None -> sigtmof
     | Some source_map -> vampire_source_context_symbol_table_with_source_map source_map
   in
+  begin match extra_symbols with
+  | None -> ()
+  | Some extra_symbols ->
+      Hashtbl.iter
+        (fun h v ->
+           if not (Hashtbl.mem symbol_table h) then Hashtbl.add symbol_table h v)
+        extra_symbols
+  end;
   let proof_expander =
     match source_map with
     | None -> vampire_local_definition_expander cxtm
@@ -1062,14 +1094,19 @@ let vampire_check_proof_of_prop ?source_map cxtm cxpf expected proof =
     | None -> None
   with _ -> None
 
-let vampire_xm_double_negation_elim_to ?source_map target cxtm cxpf dnotnot =
+let vampire_xm_double_negation_elim_to ?source_map ?extra_delta ?extra_symbols target cxtm cxpf dnotnot =
   let check candidate =
-    vampire_check_proof_of_prop ?source_map cxtm cxpf target candidate
+    vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxpf target candidate
+  in
+  let try_dneg () =
+    match Hashtbl.find_opt sigknh "dneg" with
+    | Some dneg_hash -> check (PPfAp (PTmAp (Known dneg_hash, target), dnotnot))
+    | None -> None
   in
   match Hashtbl.find_opt sigknh "xm" with
   | None ->
-      begin match Hashtbl.find_opt sigknh "dneg" with
-      | Some dneg_hash -> check (PPfAp (PTmAp (Known dneg_hash, target), dnotnot))
+      begin match try_dneg () with
+      | Some _ as result -> result
       | None ->
           if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
             begin
@@ -1098,11 +1135,18 @@ let vampire_xm_double_negation_elim_to ?source_map target cxtm cxpf dnotnot =
             (tm_to_str target);
           flush stdout
         end;
-      result
+      begin match result with
+      | Some _ -> result
+      | None ->
+          begin match try_dneg () with
+          | Some _ as dneg_result -> dneg_result
+          | None -> None
+          end
+      end
 
-let vampire_xm_double_negation_elim ?source_map claimtm cxtm cxpf dnotnot =
-  match vampire_xm_double_negation_elim_to ?source_map claimtm cxtm cxpf dnotnot with
-  | Some proof -> vampire_check_current_goal_proof ?source_map claimtm cxtm cxpf proof
+let vampire_xm_double_negation_elim ?source_map ?extra_delta ?extra_symbols claimtm cxtm cxpf dnotnot =
+  match vampire_xm_double_negation_elim_to ?source_map ?extra_delta ?extra_symbols claimtm cxtm cxpf dnotnot with
+  | Some proof -> vampire_check_current_goal_proof ?source_map ?extra_delta ?extra_symbols claimtm cxtm cxpf proof
   | None -> None
 
 let vampire_false_like tm =
@@ -1155,8 +1199,8 @@ let vampire_positive_equality_symmetry_proof tp left right proof =
           (PTmAp (pfshift 0 1 (pftmshift 0 1 proof), motive),
            Hyp 0)))
 
-let vampire_reconstruct_goal_from_proved_prop ?source_map claimtm cxtm cxpf proof proposition =
-  match vampire_check_current_goal_proof ?source_map claimtm cxtm cxpf proof with
+let vampire_reconstruct_goal_from_proved_prop ?source_map ?extra_delta ?extra_symbols claimtm cxtm cxpf proof proposition =
+  match vampire_check_current_goal_proof ?source_map ?extra_delta ?extra_symbols claimtm cxtm cxpf proof with
   | Some _ as result -> result
   | None ->
       begin match vampire_equality_sides proposition, vampire_equality_sides claimtm with
@@ -1180,7 +1224,7 @@ let vampire_reconstruct_goal_from_proved_prop ?source_map claimtm cxtm cxpf proo
                 vampire_positive_equality_symmetry_proof
                   source_tp source_left source_right proof
               in
-              let result = vampire_check_current_goal_proof ?source_map claimtm cxtm cxpf candidate in
+              let result = vampire_check_current_goal_proof ?source_map ?extra_delta ?extra_symbols claimtm cxtm cxpf candidate in
               if result = None && Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
                 begin
                   Printf.printf
@@ -1204,13 +1248,13 @@ let vampire_context_terms_of_type cxtm target_tp =
   in
   scan 0 cxtm
 
-let vampire_reconstruct_current_goal_from_refutation ?source_map claimtm cxtm cxpf proof proposition =
+let vampire_reconstruct_current_goal_from_refutation ?source_map ?extra_delta ?extra_symbols claimtm cxtm cxpf proof proposition =
   let rec try_proof depth proof proposition =
-    match vampire_check_current_goal_proof ?source_map claimtm cxtm cxpf proof with
+    match vampire_check_current_goal_proof ?source_map ?extra_delta ?extra_symbols claimtm cxtm cxpf proof with
     | Some _ as result -> result
     | None ->
         begin
-          match vampire_xm_double_negation_elim ?source_map claimtm cxtm cxpf proof with
+          match vampire_xm_double_negation_elim ?source_map ?extra_delta ?extra_symbols claimtm cxtm cxpf proof with
           | Some _ as result -> result
           | None ->
               begin match vampire_double_negation_target proposition with
@@ -1222,11 +1266,13 @@ let vampire_reconstruct_current_goal_from_refutation ?source_map claimtm cxtm cx
                         (tm_to_str target);
                       flush stdout
                     end;
-                  begin match vampire_xm_double_negation_elim_to ?source_map target cxtm cxpf proof with
+                  begin match vampire_xm_double_negation_elim_to ?source_map ?extra_delta ?extra_symbols target cxtm cxpf proof with
                   | Some target_proof ->
                       begin match
                         vampire_reconstruct_goal_from_proved_prop
                           ?source_map
+                          ?extra_delta
+                          ?extra_symbols
                           claimtm cxtm cxpf target_proof target
                       with
                       | Some _ as result -> result
@@ -1329,6 +1375,37 @@ let vampire_instantiated_refutation_candidates cxtm proof proposition source_bin
       | _ -> current
   in
   collect 8 proof proposition source_bindings
+
+let vampire_negated_conjecture_target binding =
+  if binding.Vampire_cert_v1.core_native_certificate_source_kind = "negated_conjecture"
+     || binding.Vampire_cert_v1.core_native_source_map_kind = "negated_conjecture"
+     || binding.Vampire_cert_v1.core_native_source_map_kind = "conjecture" then
+    match binding.Vampire_cert_v1.core_native_source_proposition with
+    | Imp(target,false_tm) when vampire_false_like false_tm -> Some target
+    | _ -> None
+  else None
+
+let vampire_reconstruct_final_conjecture_from_native_core source_map source_proofs native_core =
+  match
+    vampire_remaining_source_bindings_for_proofs
+      source_proofs
+      native_core.Vampire_cert_v1.core_native_source_bindings
+  with
+  | [binding] ->
+      begin match vampire_negated_conjecture_target binding with
+      | Some target ->
+            vampire_reconstruct_current_goal_from_refutation
+              ~source_map
+              ~extra_delta:native_core.Vampire_cert_v1.core_native_delta_table
+              ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
+              target
+              []
+              []
+            native_core.Vampire_cert_v1.core_native_proof
+            native_core.Vampire_cert_v1.core_native_proposition
+      | None -> None
+      end
+  | _ -> None
 
 let vampire_source_application_proofs cxtm cxpf source_map expected source_proofs =
   let cx =
@@ -1490,6 +1567,8 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
                   match
                           vampire_reconstruct_current_goal_from_refutation
                             ~source_map
+                            ~extra_delta:native_core.Vampire_cert_v1.core_native_delta_table
+                            ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
                             claimtm
                             cxtm
                             cxpf
@@ -8301,7 +8380,18 @@ let check_vampire_cert_v1_file fn =
                      binding.Vampire_cert_v1.core_native_source_proposition
                      <> TmH "")
                   native_core.Vampire_cert_v1.core_native_source_bindings))
-            (if List.length native_core.Vampire_cert_v1.core_native_source_bindings = 1 then "" else "s")
+            (if List.length native_core.Vampire_cert_v1.core_native_source_bindings = 1 then "" else "s");
+          begin match
+            vampire_reconstruct_final_conjecture_from_native_core
+              !source_map_for_emit
+              !source_proofs_for_native
+              native_core
+          with
+          | Some _ ->
+              Printf.printf
+                "Vampire certificate v1 native core final conjecture proof term checked.\n"
+          | None -> ()
+          end
       | None ->
           raise (Vampire_cert_v1.Error "native core proof term does not prove its proposition")
     end;
