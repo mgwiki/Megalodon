@@ -193,3 +193,9 @@ Validation:
   minima
 - `run_kernel_v1_metadata_audit.sh` on the same artifact, covering 280
   `kernel_v1` records
+
+Vampire commit `2701d87e4` then moved the fixed
+`primitive_expansion` field construction into the same helper. This is still
+not a full primitive-step IR, but it reduces the amount of certificate contract
+logic embedded directly in `MegalodonChecker.cpp` and gives the next builder
+extraction a concrete place to grow.

@@ -261,3 +261,19 @@ Validation:
 This still is not the full Vampire primitive-step builder requested by the
 audit. It is the first shared contract extraction needed before that builder
 can be made explicit and tested independently.
+
+Additional follow-up: Vampire commit `2701d87e4` moves construction of the
+`primitive_expansion=prefix`, `primitive_expansion_prefix=...`, and
+`primitive_expansion_requires=...` fields into
+`MegalodonKernelSyntax`. `MegalodonChecker.cpp` still owns the dynamic choice
+between alternative primitives such as `cnf_literal` vs
+`cnf_formula_clause`, but the fixed contract field construction is no longer
+open-coded in the large exporter.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel` passed and produced
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11045`.
+- A 5-case live THF run with that binary produced `PASS 5`.
+- The focused native primitive audit passed on the artifact.
+- The kernel-v1 metadata audit passed over 280 `kernel_v1` records.
