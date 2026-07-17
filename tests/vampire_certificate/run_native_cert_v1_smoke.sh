@@ -522,6 +522,7 @@ cat >"$local_definition_live_dir/fake_vampire" <<'EOF_LOCAL_DEFINITION_STRICT_FA
 #!/usr/bin/env bash
 problem="${@: -1}"
 def=$(sed -n 's/^% megalodon_source_map (local_definition "\([^"]*\)" .*/\1/p' "$problem" | head -1)
+fact=$(sed -n 's/^% megalodon_source_map (local_fact "\([^"]*\)" .*/\1/p' "$problem" | head -1)
 conj=$(sed -n 's/^% megalodon_source_map (conjecture "\([^"]*\)" .*/\1/p' "$problem" | head -1)
 cat <<CERT
 % SZS status Theorem
@@ -532,9 +533,23 @@ megalodon_certificate_native_sexpr_start.
   (symbol_declaration "Variable p:prop.")
   (symbol_declaration "Variable r:prop.")
   (input "d0" (source definition "$def") (clause (pos (AP (AP (TMH "=") (TMH "r")) (TMH "p")))))
-  (input "u0" (source axiom "c_Hp") (clause (pos (TMH "p"))))
+  (input "u0" (source axiom "$fact") (clause (pos (TMH "p"))))
   (input "u1" (source negated_conjecture "$conj") (clause (neg (TMH "p"))))
-  (resolve "u2" (parents "u0" "u1") (pivot 0 0) (result (clause)))
+  (paramodulate "u2"
+    (equality "d0" 0)
+    (target "u0" 0)
+    (position)
+    (from (TMH "p"))
+    (to (TMH "r"))
+    (result (clause (pos (TMH "r")))))
+  (paramodulate "u3"
+    (equality "d0" 0)
+    (target "u2" 0)
+    (position)
+    (from (TMH "r"))
+    (to (TMH "p"))
+    (result (clause (pos (TMH "p")))))
+  (resolve "u4" (parents "u3" "u1") (pivot 0 0) (result (clause)))
 )
 megalodon_certificate_native_sexpr_end.
 % SZS output end Proof
@@ -558,7 +573,7 @@ if ! rg -q 'source_context known=0 local=1 local_definition=1 conjecture=1 unres
 fi
 if ! rg -q 'Everything looks good' \
     "$WORK_DIR/native_cert_v1_live_local_definition_strict.log"; then
-  echo "strict live vampireaby did not close when the matched local definition was unused by the refutation" >&2
+  echo "strict live vampireaby did not close when the matched local definition was used by paramodulation" >&2
   exit 1
 fi
 

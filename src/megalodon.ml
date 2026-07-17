@@ -640,6 +640,67 @@ let vampire_source_context_delta_with_locals cxtm =
     cxtm;
   delta
 
+let vampire_local_definition_expander cxtm =
+  let rec local_terms proof_index = function
+    | [] -> []
+    | (_, (_, Some _)) :: rest -> local_terms proof_index rest
+    | (name, (tp, None)) :: rest ->
+        (name, proof_index, tp) :: local_terms (proof_index + 1) rest
+  in
+  let local_terms = local_terms 0 cxtm in
+  let local_definition_bodies =
+    List.filter_map
+      (fun (name, (_, definition)) ->
+         match definition with
+         | Some tm -> Some (name, tm)
+         | None -> None)
+      cxtm
+  in
+  let rec expand_tm depth = function
+    | TmH name ->
+        begin match List.assoc_opt name local_definition_bodies with
+        | Some tm -> localize_definition depth tm
+        | None -> TmH name
+        end
+    | TpAp (body, tp) -> TpAp (expand_tm depth body, tp)
+    | Ap (left, right) -> Ap (expand_tm depth left, expand_tm depth right)
+    | Lam (tp, body) -> Lam (tp, expand_tm (depth + 1) body)
+    | Imp (left, right) -> Imp (expand_tm depth left, expand_tm depth right)
+    | All (tp, body) -> All (tp, expand_tm (depth + 1) body)
+    | DB _ | Prim _ as tm -> tm
+  and localize_definition depth tm =
+    let rec localize local_depth = function
+      | TmH name ->
+          begin match
+            List.find_opt
+              (fun (local_name, _, _) -> local_name = name)
+              local_terms
+          with
+          | Some (_, index, _) -> DB (index + depth + local_depth)
+          | None -> TmH name
+          end
+      | TpAp (body, tp) -> TpAp (localize local_depth body, tp)
+      | Ap (left, right) ->
+          Ap (localize local_depth left, localize local_depth right)
+      | Lam (tp, body) -> Lam (tp, localize (local_depth + 1) body)
+      | Imp (left, right) ->
+          Imp (localize local_depth left, localize local_depth right)
+      | All (tp, body) -> All (tp, localize (local_depth + 1) body)
+      | DB index when index >= local_depth -> DB (index + depth)
+      | DB _ | Prim _ as tm -> tm
+    in
+    localize 0 tm
+  in
+  let rec expand_pf depth = function
+    | PTpAp (proof, tp) -> PTpAp (expand_pf depth proof, tp)
+    | PTmAp (proof, tm) -> PTmAp (expand_pf depth proof, expand_tm depth tm)
+    | PPfAp (left, right) -> PPfAp (expand_pf depth left, expand_pf depth right)
+    | PLam (prop, proof) -> PLam (expand_tm depth prop, expand_pf depth proof)
+    | TLam (tp, proof) -> TLam (tp, expand_pf (depth + 1) proof)
+    | Hyp _ | Known _ as proof -> proof
+  in
+  expand_pf 0
+
 let vampire_source_context_local_definition_names cxtm =
   List.filter_map
     (fun (name, (_, definition)) ->
@@ -728,6 +789,7 @@ let vampire_core_source_proofs source_audit =
     (fun (step, _) ->
        match List.assoc_opt step source_audit.Vampire_source_context.resolved with
        | Some (Vampire_source_context.LocalHyp _) -> false
+       | Some (Vampire_source_context.Definitional _) -> false
        | _ -> true)
     source_audit.Vampire_source_context.source_proofs
 
@@ -749,7 +811,7 @@ let vampire_check_current_goal_proof claimtm cxtm cxpf proof =
   try
     let (actual,dl) = extr_propofpf proof_delta sigtmof cx hyps proof [] in
     match conv actual claimtm proof_delta dl with
-    | Some _ -> Some proof
+    | Some _ -> Some ((vampire_local_definition_expander cxtm) proof)
     | None ->
         if debug then
           begin
@@ -966,13 +1028,16 @@ let vampire_apply_available_source_bindings cxtm cxpf source_audit proof proposi
           with
           | Some source_proof, Imp(expected_prop,target_prop) ->
               let actual_prop = binding.Vampire_cert_v1.core_native_source_proposition in
-              let source_proofs =
-                source_proof ::
+              let transport_proofs =
                 vampire_definition_transport_proofs
                   source_audit
                   expected_prop
                   actual_prop
                   source_proof
+              in
+              let source_proofs =
+                if expected_prop = actual_prop then source_proof :: transport_proofs
+                else transport_proofs @ [source_proof]
               in
               List.concat
                 (List.map
@@ -1004,6 +1069,13 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
       source_proofs_for_core
       native_core.Vampire_cert_v1.core_native_source_bindings
   in
+  if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+    begin
+      Printf.printf
+        "Vampire native core proposition after source composition: %s\n"
+        (tm_to_str native_core.Vampire_cert_v1.core_native_proposition);
+      flush stdout
+    end;
   List.iter
     (vampire_debug_source_binding "Vampire native core source")
     native_core.Vampire_cert_v1.core_native_source_bindings;
