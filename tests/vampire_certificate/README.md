@@ -587,6 +587,18 @@ audits, it writes `first_excluded.tsv`, `first_excluded_rule_counts.txt`, and
 `/project/tmp/latest_native_cert_v1_skolem_closed_audit`, making the next
 unsupported layer explicit instead of hiding it in broad closed-corpus counts.
 
+To check a live Vampire binary's Skolemization metadata emission, use:
+
+```sh
+VAMPIRE_BIN=/path/to/vampire TMPDIR=/project/tmp \
+  tests/vampire_certificate/run_vampire_skolem_metadata_smoke.sh
+```
+
+This focused smoke runs one TH0 problem with a 10 second Vampire timeout and
+requires explicit witness, dependency, sort, and choice-principle metadata for
+both nullary and dependent Skolem symbols. Megalodon then strictly validates
+the generated certificate, including the checked dependency metadata.
+
 For the source/definition fact layer above Skolemization, use:
 
 ```sh

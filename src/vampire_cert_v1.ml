@@ -4087,6 +4087,17 @@ let validate_kernel_v1_metadata_contracts cert =
         (id ^ ": strict certificate v1 kernel_v1 metadata field "
          ^ key ^ " does not match the certificate formula")
   in
+  let require_field_tm id fields key expected =
+    let actual = parse_field id fields key parse_tm in
+    if actual <> expected
+       && normalize_bool_equality_orientation actual
+          <> normalize_bool_equality_orientation expected
+       && normalize_equality_orientation actual
+          <> normalize_equality_orientation expected then
+      error
+        (id ^ ": strict certificate v1 kernel_v1 metadata field "
+         ^ key ^ " does not match the certificate term")
+  in
   let require_field_substitution id fields key expected =
     let actual = parse_field id fields key parse_substitution in
     if actual <> expected then
@@ -4202,6 +4213,14 @@ let validate_kernel_v1_metadata_contracts cert =
         error
           (id ^ ": strict certificate v1 kernel_v1 metadata references missing parent "
            ^ parent_id)
+  in
+  let decompose_application_spine tm =
+    let rec collect head args =
+      match head with
+      | Ap (fn, arg) -> collect fn (arg :: args)
+      | _ -> head, args
+    in
+    collect tm []
   in
   List.iter
     (fun (id, kind, fields) ->
@@ -4676,7 +4695,7 @@ let validate_kernel_v1_metadata_contracts cert =
                 "result_formula";
                 "introduced_count"];
              begin match Hashtbl.find_opt step_by_id id with
-             | Some (SkolemFormula (_, parent_id, source, introductions, _, result)) ->
+             | Some (SkolemFormula (_, parent_id, source, introductions, subst, result)) ->
                  let proof_parent_count = field_int id fields "proof_parent_count" in
                  if proof_parent_count < 1 then
                    error
@@ -4759,6 +4778,68 @@ let validate_kernel_v1_metadata_contracts cert =
                                (id ^ ": strict certificate v1 kernel_v1 skolemize introduced symbol "
                                 ^ symbol ^ " is missing declaration " ^ expected)
                          | None, _ -> ()
+                         end;
+                         begin match expected_var with
+                         | None -> ()
+                         | Some expected ->
+                             begin match List.assoc_opt expected subst with
+                             | None ->
+                                 error
+                                   (id ^ ": strict certificate v1 kernel_v1 skolemize introduced symbol "
+                                    ^ symbol ^ " has no substitution for " ^ expected)
+                             | Some witness ->
+                                 begin match field_value (prefix ^ "_witness_term") fields with
+                                 | Some _ -> require_field_tm id fields (prefix ^ "_witness_term") witness
+                                 | None -> ()
+                                 end;
+                                 let head, dependencies = decompose_application_spine witness in
+                                 if head <> TmH symbol then
+                                   error
+                                     (id ^ ": strict certificate v1 kernel_v1 skolemize witness for "
+                                      ^ symbol ^ " does not have the introduced symbol as head");
+                                 begin match field_value (prefix ^ "_dependency_count") fields with
+                                 | Some _ ->
+                                     require_field_int id fields
+                                       (prefix ^ "_dependency_count")
+                                       (List.length dependencies)
+                                 | None -> ()
+                                 end;
+                                 List.iteri
+                                   (fun dependency_index dependency ->
+                                      let dependency_prefix =
+                                        prefix ^ "_dependency_"
+                                        ^ string_of_int dependency_index
+                                      in
+                                      begin match field_value (dependency_prefix ^ "_term") fields with
+                                      | Some _ -> require_field_tm id fields (dependency_prefix ^ "_term") dependency
+                                      | None -> ()
+                                      end;
+                                      begin match dependency, field_value (dependency_prefix ^ "_var") fields with
+                                      | TmH expected_var, Some actual_var when actual_var = expected_var -> ()
+                                      | TmH expected_var, Some actual_var ->
+                                          error
+                                            (id ^ ": strict certificate v1 kernel_v1 skolemize dependency "
+                                             ^ string_of_int dependency_index ^ " var expected "
+                                             ^ expected_var ^ " but got " ^ actual_var)
+                                      | TmH _, None -> ()
+                                      | _, Some actual_var ->
+                                          error
+                                            (id ^ ": strict certificate v1 kernel_v1 skolemize dependency "
+                                             ^ string_of_int dependency_index
+                                             ^ " is not a variable but metadata says "
+                                             ^ actual_var)
+                                      | _, None -> ()
+                                      end)
+                                   dependencies;
+                                 begin match field_value (prefix ^ "_choice_principle") fields with
+                                 | Some "classical_choice" -> ()
+                                 | Some actual ->
+                                     error
+                                       (id ^ ": strict certificate v1 kernel_v1 skolemize unsupported choice_principle "
+                                        ^ actual)
+                                 | None -> ()
+                                 end
+                             end
                          end
                      end
                    done

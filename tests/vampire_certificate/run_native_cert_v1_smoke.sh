@@ -2756,6 +2756,22 @@ fi
 
 if bin/megalodon \
   -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_kernel_skolemize_dependency_count_bad.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_kernel_skolemize_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_kernel_skolemize_dependency_count_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_kernel_skolemize_dependency_count_bad.err"; then
+  echo "strict native certificate v1 checker accepted bad Skolem dependency metadata" >&2
+  exit 1
+fi
+
+if ! rg -q 'u1: strict certificate v1 kernel_v1 metadata field introduced_0_dependency_count expected 0 but got 1' \
+    "$WORK_DIR/native_cert_v1_kernel_skolemize_dependency_count_bad.err"; then
+  echo "strict native certificate v1 checker did not explain bad Skolem dependency metadata" >&2
+  exit 1
+fi
+
+if bin/megalodon \
+  -vampirecertv1strict \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_kernel_skolemize_introduced_symbol_bad.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_kernel_skolemize_valid.th0.p \
   "$dummy" >"$WORK_DIR/native_cert_v1_kernel_skolemize_introduced_symbol_bad.out" \
