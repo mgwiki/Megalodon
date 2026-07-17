@@ -34,6 +34,18 @@ but it is not yet the full Skolemization solution: dependent Skolem functions,
 multiple simultaneous introductions, and broader Smolka-style preprocessing
 still remain frontier work.
 
+Second progress note, 2026-07-17: dependent Skolem delta unfolding is now
+handled by the proof checker at the conversion/head-normalization boundary
+rather than by eagerly rewriting generated Skolem terms out of certificate
+formulas. The representative real hammer case
+`hammer.1007.43.th0.p` gets past the earlier formula-level Skolem mismatch
+and stops at a later clausal proof-term opening problem in step `u210`
+(`paramodulate`): a retained-variable parent proof is instantiated into a
+result context and produces `_15` in a context of length 15. This is the next
+small-kernel elaboration issue. It should be solved by specifying and
+implementing the theorem-opening operation for stored `TLam` proofs, not by
+adding special cases for `famunion`, `sK1`, this library, or this theorem.
+
 Primary repositories:
 
 - Megalodon: `/project/Megalodon`

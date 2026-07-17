@@ -10340,13 +10340,10 @@ let native_certificate_source_bindings ?(source_map=[]) cert =
   ignore (check_certificate_strict cert);
   let variables = native_core_proof_variables cert in
   let symbol_table = native_core_symbol_table cert in
-  let _, definition_delta = native_core_certificate_sgdelta cert symbol_table in
   let typed_steps =
     List.map
       (native_core_type_raw_equalities_step cert variables symbol_table)
       cert.steps
-    |> List.map
-         (native_core_expand_generated_skolems_step cert definition_delta)
   in
   List.fold_left
     (fun bindings step ->
@@ -10396,17 +10393,6 @@ let elaborate_core_resolution_refutation_native
     List.map
       (native_core_type_raw_equalities_step cert variables symbol_table)
       cert.steps
-    |> List.map
-         (native_core_expand_generated_skolems_step cert raw_definition_delta)
-  in
-  let expand_generated_formula formula =
-    match
-      native_core_expand_generated_skolems_step
-        cert raw_definition_delta
-        (FormulaTermCopy ("__expand_skolem_formula", "__parent", formula))
-    with
-    | FormulaTermCopy (_, _, formula) -> formula
-    | _ -> formula
   in
   let used_steps = proof_dependency_closure typed_steps in
   let step_is_used id = Hashtbl.mem used_steps id in
@@ -10655,12 +10641,10 @@ let elaborate_core_resolution_refutation_native
           | Some source ->
               let parent_step_variables = native_core_step_variables cert parent_id in
               let result_step_variables = native_core_step_variables cert id in
-              let expanded_source = expand_generated_formula source in
-              let expanded_result = expand_generated_formula result in
-              store_formula id expanded_result
+              store_formula id result
                 (native_core_skolem_formula_proof
                    id variables parent_step_variables result_step_variables
-                   expanded_source expanded_result parent_proof)
+                   source result parent_proof)
           | None ->
               error
                 (id ^ ": native core proof-term skolemization needs an explicit source formula")
@@ -10848,8 +10832,6 @@ let elaborate_preprocess_refutation_native
     List.map
       (native_core_type_raw_equalities_step cert variables symbol_table)
       cert.steps
-    |> List.map
-         (native_core_expand_generated_skolems_step cert raw_definition_delta)
   in
   let source_inputs = ref [] in
   let source_bindings = ref [] in

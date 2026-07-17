@@ -7564,6 +7564,27 @@ let check_vampire_cert_v1_file fn =
         native.Vampire_cert_v1.core_native_symbol_table;
       merged
     in
+    let check_native_certificate_proof native =
+      let rec peel cxtm proof prop =
+        match proof, prop with
+        | TLam (proof_tp, proof_body), All (prop_tp, prop_body)
+            when proof_tp = prop_tp ->
+            peel (proof_tp :: cxtm) proof_body prop_body
+        | _ ->
+            check_propofpf
+              (native_certificate_sgdelta native)
+              (native_certificate_sgtmof native)
+              cxtm
+              []
+              proof
+              prop
+              []
+      in
+      peel
+        []
+        native.Vampire_cert_v1.core_native_proof
+        native.Vampire_cert_v1.core_native_proposition
+    in
     begin if !vampirecertv1corepfcheck then
       let native_core =
         Vampire_cert_v1.elaborate_core_resolution_refutation_native
@@ -7572,12 +7593,7 @@ let check_vampire_cert_v1_file fn =
           ~external_delta_table:sigdelta
           cert
       in
-      match
-        check_propofpf (native_certificate_sgdelta native_core) (native_certificate_sgtmof native_core) [] []
-          native_core.Vampire_cert_v1.core_native_proof
-          native_core.Vampire_cert_v1.core_native_proposition
-          []
-      with
+      match check_native_certificate_proof native_core with
       | Some _ ->
           Printf.printf
             "Vampire certificate v1 native core proof term checked %d step%s.\n"
@@ -7607,12 +7623,7 @@ let check_vampire_cert_v1_file fn =
           ~external_delta_table:sigdelta
           cert
       in
-      match
-        check_propofpf (native_certificate_sgdelta native_preprocess) (native_certificate_sgtmof native_preprocess) [] []
-          native_preprocess.Vampire_cert_v1.core_native_proof
-          native_preprocess.Vampire_cert_v1.core_native_proposition
-          []
-      with
+      match check_native_certificate_proof native_preprocess with
       | Some _ ->
           Printf.printf
             "Vampire certificate v1 native preprocess proof term checked %d step%s.\n"

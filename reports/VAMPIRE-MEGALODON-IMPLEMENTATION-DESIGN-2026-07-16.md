@@ -81,6 +81,20 @@ unsupported `nonidentity_substitute` steps. The closed-corpus audit now reports
 The first blockers are now `skolem_formula`, unannotated non-identity
 substitutions, and AVATAR/definition macro composition.
 
+Eighth post-audit note, 2026-07-17: the Skolem work has split into two
+concrete subproblems. First, direct metadata-backed existential
+Skolemization can be elaborated as a real `Syntax.pf` using generated delta
+definitions and choice, with no dynamic `Known` proposition. Second,
+dependent Skolem symbols must remain as certificate terms and unfold by
+definitional equality under the current proof-binder depth; eager formula
+rewriting is not the right architecture. The current representative blocker
+is `hammer.1007.43.th0.p` step `u210`, where a paramodulation parent proof
+with retained variables is opened into the result context and produces an
+out-of-bounds de Bruijn argument (`_15` in context length 15). The next
+implementation should define a small theorem-opening API for stored
+`TLam` proofs and use it in resolution/paramodulation/substitution, rather
+than adding theorem- or library-specific rewrites.
+
 The purpose is to stop ad-hoc growth. A new change is aligned with this plan
 only if it does one of the following:
 
@@ -160,7 +174,9 @@ Current limitations:
 - Some macro inferences are still surfaced as broad constructors rather than
   lowered to simple kernel steps.
 - Skolemization and source-to-clause transformations are only partially
-  proof-producing.
+  proof-producing. Direct choice-backed Skolemization has a checked native
+  proof-term path; dependent Skolem functions currently expose the theorem
+  opening/binder-accounting issue described above.
 - The simplest `formula_input` and `formula_term_input` source-entry cases are
   proof-producing when they feed identity formula-copy/CNF-entry steps, and a
   narrow FOOL Boolean-lifting subset is proof-producing. More complex formula

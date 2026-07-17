@@ -3810,7 +3810,16 @@ let tpofprim i =
 
 let rec extr_tpoftm sgtmof cxtm m =
   match m with
-  | DB i -> List.nth cxtm i
+  | DB i ->
+      begin match List.nth_opt cxtm i with
+      | Some tp -> tp
+      | None ->
+          raise
+            (Failure
+               (Printf.sprintf
+                  "Term de Bruijn index %d is out of bounds for context length %d"
+                  i (List.length cxtm)))
+      end
   | TpAp(Prim 0,a) -> Ar(Ar(a,Prop),a)
   | TpAp(TpAp(TpAp(TpAp(TpAp(TpAp(TmH h,a1),a2),a3),a4),a5),a6) ->
       begin
@@ -3982,7 +3991,7 @@ let delta_exp sdel h args =
     | TpAp(TpAp(TpAp(TpAp(TpAp(TpAp(TmH(c),a1),a2),a3),a4),a5),a6) ->
 	begin
 	  let (i,m) = Hashtbl.find sdel c in
-	  if i = 5 then
+	  if i = 6 then
 	    tm_app_beta_eta_norm (tmtpsubst m [a1;a2;a3;a4;a5;a6]) args
 	  else if i = 1 then
 	    raise (Failure(c ^ " should be applied to 1 type, but is applied to 6."))
@@ -3993,6 +4002,86 @@ let delta_exp sdel h args =
   with Not_found ->
     (*** By checking with defp above before delta_exp is called, I should know that this doesn't happen. **)
     raise (Failure("delta_exp called with an inappropriate head. Bug"))
+
+let delta_exp_at depth sdel h args =
+  if depth = 0 then delta_exp sdel h args
+  else
+    let instantiate m tps =
+      tm_app_beta_eta_norm (tmshift 0 depth (tmtpsubst m tps)) args
+    in
+    try
+      match h with
+      | TmH(c) ->
+	  begin
+	    let (i,m) = Hashtbl.find sdel c in
+	    if i = 0 then
+	      instantiate m []
+	    else if i = 1 then
+	      raise (Failure(c ^ " should be applied to 1 type, but is applied to none."))
+	    else
+	      raise (Failure(c ^ " should be applied to " ^ (string_of_int i) ^ " types, but is applied to none."))
+	  end
+      | TpAp(TmH(c),a1) ->
+	  begin
+	    let (i,m) = Hashtbl.find sdel c in
+	    if i = 1 then
+	      instantiate m [a1]
+	    else
+	      raise (Failure(c ^ " should be applied to " ^ (string_of_int i) ^ " types, but is applied to 1."))
+	  end
+      | TpAp(TpAp(TmH(c),a1),a2) ->
+	  begin
+	    let (i,m) = Hashtbl.find sdel c in
+	    if i = 2 then
+	      instantiate m [a1;a2]
+	    else if i = 1 then
+	      raise (Failure(c ^ " should be applied to 1 type, but is applied to 2."))
+	    else
+	      raise (Failure(c ^ " should be applied to " ^ (string_of_int i) ^ " types, but is applied to 2."))
+	  end
+      | TpAp(TpAp(TpAp(TmH(c),a1),a2),a3) ->
+	  begin
+	    let (i,m) = Hashtbl.find sdel c in
+	    if i = 3 then
+	      instantiate m [a1;a2;a3]
+	    else if i = 1 then
+	      raise (Failure(c ^ " should be applied to 1 type, but is applied to 3."))
+	    else
+	      raise (Failure(c ^ " should be applied to " ^ (string_of_int i) ^ " types, but is applied to 3."))
+	  end
+      | TpAp(TpAp(TpAp(TpAp(TmH(c),a1),a2),a3),a4) ->
+	  begin
+	    let (i,m) = Hashtbl.find sdel c in
+	    if i = 4 then
+	      instantiate m [a1;a2;a3;a4]
+	    else if i = 1 then
+	      raise (Failure(c ^ " should be applied to 1 type, but is applied to 4."))
+	    else
+	      raise (Failure(c ^ " should be applied to " ^ (string_of_int i) ^ " types, but is applied to 4."))
+	  end
+      | TpAp(TpAp(TpAp(TpAp(TpAp(TmH(c),a1),a2),a3),a4),a5) ->
+	  begin
+	    let (i,m) = Hashtbl.find sdel c in
+	    if i = 5 then
+	      instantiate m [a1;a2;a3;a4;a5]
+	    else if i = 1 then
+	      raise (Failure(c ^ " should be applied to 1 type, but is applied to 5."))
+	    else
+	      raise (Failure(c ^ " should be applied to " ^ (string_of_int i) ^ " types, but is applied to 5."))
+	  end
+      | TpAp(TpAp(TpAp(TpAp(TpAp(TpAp(TmH(c),a1),a2),a3),a4),a5),a6) ->
+	  begin
+	    let (i,m) = Hashtbl.find sdel c in
+	    if i = 6 then
+	      instantiate m [a1;a2;a3;a4;a5;a6]
+	    else if i = 1 then
+	      raise (Failure(c ^ " should be applied to 1 type, but is applied to 6."))
+	    else
+	      raise (Failure(c ^ " should be applied to " ^ (string_of_int i) ^ " types, but is applied to 6."))
+	  end
+      | _ -> raise Not_found
+    with Not_found ->
+      raise (Failure("delta_exp called with an inappropriate head. Bug"))
 
 let delta_cons h dl =
   match h with
@@ -4013,110 +4102,128 @@ let rec headnorm1 m sdel dl =
 
 let headnorm m sdel dl = headnorm1 (tm_beta_eta_norm m) sdel dl
 
+let rec headnorm1_at depth m sdel dl =
+  match m with
+  | Lam(_,_) -> (m,dl)
+  | Imp(_,_) -> (m,dl)
+  | All(_,_) -> (m,dl)
+  | _ ->
+      let (mh,margs) = tm_head_args m in
+      if defp sdel mh then
+	headnorm1_at depth (delta_exp_at depth sdel mh margs) sdel (delta_cons mh dl)
+      else
+	(m,dl)
+
+let headnorm_at depth m sdel dl = headnorm1_at depth (tm_beta_eta_norm m) sdel dl
+
 let gen_lam_body m =
   match m with
   | Lam(_,mb) -> mb
   | _ -> Ap(tmshift 0 1 m,DB(0))
 
 (*** conv2 assumes m and n are beta-eta normal ***)
-let rec conv2 m n sdel dl =
+let rec conv2_at depth m n sdel dl =
   match (m,n) with
   | (Lam(a1,m1),Lam(b1,n1)) ->
       if a1 = b1 then
-	conv2 m1 n1 sdel dl
+	conv2_at (depth + 1) m1 n1 sdel dl
       else
 	None
   | (All(a1,m1),All(b1,n1)) ->
       if a1 = b1 then
-	conv2 m1 n1 sdel dl
+	conv2_at (depth + 1) m1 n1 sdel dl
       else
 	None
   | (Imp(m1,m2),Imp(n1,n2)) ->
-      convl [m1;m2] [n1;n2] sdel dl
+      convl_at depth [m1;m2] [n1;n2] sdel dl
   | (Lam(_,_),All(_,_)) -> None
   | (Lam(_,_),Imp(_,_)) -> None
   | (All(_,_),Lam(_,_)) -> None
   | (All(_,_),Imp(_,_)) -> None
   | (Imp(_,_),All(_,_)) -> None
   | (Imp(_,_),Lam(_,_)) -> None
-  | (_,Lam(_,n1)) -> conv2 (gen_lam_body m) n1 sdel dl
-  | (Lam(_,m1),_) -> conv2 m1 (gen_lam_body n) sdel dl
+  | (_,Lam(_,n1)) -> conv2_at (depth + 1) (gen_lam_body m) n1 sdel dl
+  | (Lam(_,m1),_) -> conv2_at (depth + 1) m1 (gen_lam_body n) sdel dl
   | (_,All(_,_)) ->
       let (mh,margs) = tm_head_args m in
       if defp sdel mh then
-	conv2 (delta_exp sdel mh margs) n sdel (delta_cons mh dl)
+	conv2_at depth (delta_exp_at depth sdel mh margs) n sdel (delta_cons mh dl)
       else
 	None
   | (_,Imp(_,_)) ->
       let (mh,margs) = tm_head_args m in
       if defp sdel mh then
-	conv2 (delta_exp sdel mh margs) n sdel (delta_cons mh dl)
+	conv2_at depth (delta_exp_at depth sdel mh margs) n sdel (delta_cons mh dl)
       else
 	None
   | (All(_,_),_) ->
       let (nh,nargs) = tm_head_args n in
       if defp sdel nh then
-	conv2 m (delta_exp sdel nh nargs) sdel (delta_cons nh dl)
+	conv2_at depth m (delta_exp_at depth sdel nh nargs) sdel (delta_cons nh dl)
       else
 	None
   | (Imp(_,_),_) ->
       let (nh,nargs) = tm_head_args n in
       if defp sdel nh then
-	conv2 m (delta_exp sdel nh nargs) sdel (delta_cons nh dl)
+	conv2_at depth m (delta_exp_at depth sdel nh nargs) sdel (delta_cons nh dl)
       else
 	None
   | _ ->
       let (mh,margs) = tm_head_args m in
       if defp sdel mh then
         if deltap dl mh then
-	  conv2 (delta_exp sdel mh margs) n sdel dl
+	  conv2_at depth (delta_exp_at depth sdel mh margs) n sdel dl
 	else if !eagerdeltas then
-          conv2 (delta_exp sdel mh margs) n sdel (delta_cons mh dl)
+          conv2_at depth (delta_exp_at depth sdel mh margs) n sdel (delta_cons mh dl)
         else
 	  begin
-	    match convrigid1 mh margs n sdel dl with
+	    match convrigid1_at depth mh margs n sdel dl with
 	    | Some(dl) -> Some(dl)
 	    | None -> (*** try delta expanding mh ***)
-		conv2 (delta_exp sdel mh margs) n sdel (delta_cons mh dl)
+		conv2_at depth (delta_exp_at depth sdel mh margs) n sdel (delta_cons mh dl)
 	  end
       else
-	convrigid1 mh margs n sdel dl
-and convrigid1 mh margs n sdel dl =
+	convrigid1_at depth mh margs n sdel dl
+and convrigid1_at depth mh margs n sdel dl =
   let (nh,nargs) = tm_head_args n in
   if defp sdel nh then
     if deltap dl nh then
-      convrigid1 mh margs (delta_exp sdel nh nargs) sdel dl
+      convrigid1_at depth mh margs (delta_exp_at depth sdel nh nargs) sdel dl
     else if !eagerdeltas then
-      convrigid1 mh margs (delta_exp sdel nh nargs) sdel (delta_cons nh dl)
+      convrigid1_at depth mh margs (delta_exp_at depth sdel nh nargs) sdel (delta_cons nh dl)
     else
       begin
-	match convrigid2 mh margs nh nargs sdel dl with
+	match convrigid2_at depth mh margs nh nargs sdel dl with
 	| Some(dl) -> Some(dl)
 	| None -> (*** try delta expanding nh ***)
-	    convrigid1 mh margs (delta_exp sdel nh nargs) sdel (delta_cons nh dl)
+	    convrigid1_at depth mh margs (delta_exp_at depth sdel nh nargs) sdel (delta_cons nh dl)
       end
   else
-    convrigid2 mh margs nh nargs sdel dl
-and convrigid2 mh margs nh nargs sdel dl =
+    convrigid2_at depth mh margs nh nargs sdel dl
+and convrigid2_at depth mh margs nh nargs sdel dl =
   if mh = nh then
-    convl margs nargs sdel dl
+    convl_at depth margs nargs sdel dl
   else
     None
-and convl ml nl sdel dl =
+and convl_at depth ml nl sdel dl =
   match (ml,nl) with
   | ([],[]) -> Some(dl)
   | (m::mr,n::nr) ->
       begin
-	match conv2 m n sdel dl with
-	| Some(dl) -> convl mr nr sdel dl
+	match conv2_at depth m n sdel dl with
+	| Some(dl) -> convl_at depth mr nr sdel dl
 	| None -> None
       end
   | _ -> None
 
+let conv2 m n sdel dl = conv2_at 0 m n sdel dl
+let convl ml nl sdel dl = convl_at 0 ml nl sdel dl
+
 let conv m n sdel dl =
   conv2 (tm_beta_eta_norm m) (tm_beta_eta_norm n) sdel dl
 
-let rec extr_propofpf sgdelta sgtmof cxtm cxpf d dl =
+let rec extr_propofpf_at base_cxtm sgdelta sgtmof cxtm cxpf d dl =
+  let delta_depth () = List.length cxtm - base_cxtm in
   match d with
   | Hyp j ->
      begin
@@ -4124,7 +4231,15 @@ let rec extr_propofpf sgdelta sgtmof cxtm cxpf d dl =
        | Some(ch) -> Printf.fprintf ch "H %d\n" (List.length cxpf - j)
        | None -> ()
      end;
-     (List.nth cxpf j,dl)
+     begin match List.nth_opt cxpf j with
+     | Some p -> (p,dl)
+     | None ->
+         raise
+           (Failure
+              (Printf.sprintf
+                 "Proof hypothesis index %d is out of bounds for context length %d"
+                 j (List.length cxpf)))
+     end
   | PTpAp(PTpAp(PTpAp(PTpAp(PTpAp(PTpAp(Known(h),a1),a2),a3),a4),a5),a6) ->
       begin
         if !sexprinfo then Printf.printf "(USESKNOWN \"%s\")\n" h;
@@ -4228,10 +4343,20 @@ let rec extr_propofpf sgdelta sgtmof cxtm cxpf d dl =
       end
   | PTmAp(d1,m) ->
       begin
-	let (q,dl) = extr_propofpf sgdelta sgtmof cxtm cxpf d1 dl in
-	match headnorm q sgdelta dl with
+	let (q,dl) = extr_propofpf_at base_cxtm sgdelta sgtmof cxtm cxpf d1 dl in
+	match headnorm_at (delta_depth ()) q sgdelta dl with
 	| (All(a,p),dl) ->
-            let b = extr_tpoftm sgtmof cxtm m in
+            let b =
+              try extr_tpoftm sgtmof cxtm m
+              with Failure msg ->
+                raise
+                  (Failure
+                     (msg
+                      ^ "\nwhile checking proof-term application argument: "
+                      ^ tm_to_str m
+                      ^ "\nproof being applied has proposition: "
+                      ^ tm_to_str q))
+            in
 	    if b = a then
 	      (tmsubst p 0 m,dl)
 	    else
@@ -4241,27 +4366,31 @@ let rec extr_propofpf sgdelta sgtmof cxtm cxpf d dl =
       end
   | PPfAp(d1,d2) ->
       begin
-	let (q,dl) = extr_propofpf sgdelta sgtmof cxtm cxpf d1 dl in
-	match headnorm q sgdelta dl with
+	let (q,dl) = extr_propofpf_at base_cxtm sgdelta sgtmof cxtm cxpf d1 dl in
+	match headnorm_at (delta_depth ()) q sgdelta dl with
 	| (Imp(p1,p2),dl) ->
 	    begin
-	      let (q2,dl2) = extr_propofpf sgdelta sgtmof cxtm cxpf d2 dl in
-	      match conv q2 p1 sgdelta dl2 with
+	      let (q2,dl2) = extr_propofpf_at base_cxtm sgdelta sgtmof cxtm cxpf d2 dl in
+	      match conv2_at (delta_depth ()) (tm_beta_eta_norm q2) (tm_beta_eta_norm p1) sgdelta dl2 with
 	      | Some(dl) -> (p2,dl)
 	      | None ->
 		  raise (Failure(Printf.sprintf "Proof term for an implication applied to a proof term for the wrong proposition\nexpected: %s\nactual: %s" (tm_to_str p1) (tm_to_str q2)))
-	    end
+	      end
 	| (p,_) ->
 	    raise (Failure("Proof term does not prove an implication but is applied to a proof term"))
       end
   | TLam(a,d1) ->
-      let (q,dl) = extr_propofpf sgdelta sgtmof (a::cxtm) (List.map (fun q -> tmshift 0 1 q) cxpf) d1 dl in
+      let (q,dl) = extr_propofpf_at base_cxtm sgdelta sgtmof (a::cxtm) (List.map (fun q -> tmshift 0 1 q) cxpf) d1 dl in
       (All(a,q),dl)
   | PLam(p,d1) ->
-      let (q,dl) = extr_propofpf sgdelta sgtmof cxtm (p::cxpf) d1 dl in
+      let (q,dl) = extr_propofpf_at base_cxtm sgdelta sgtmof cxtm (p::cxpf) d1 dl in
       (Imp(p,q),dl)
   | _ -> raise (Failure("Ill-formed Proof Term"))
-and check_propofpf sgdelta sgtmof cxtm cxpf d p dl =
+
+let extr_propofpf sgdelta sgtmof cxtm cxpf d dl =
+  extr_propofpf_at (List.length cxtm) sgdelta sgtmof cxtm cxpf d dl
+
+let check_propofpf sgdelta sgtmof cxtm cxpf d p dl =
   let (q,dl) = extr_propofpf sgdelta sgtmof cxtm cxpf d dl in
   conv q p sgdelta dl
 

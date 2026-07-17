@@ -83,3 +83,33 @@ pivot is incomplete. The expert should focus on whether the next code work is
 really isolating the small kernel and moving proof detail into Vampire-side
 primitive expansion, especially for Skolemization and source/preprocessing
 transformations.
+
+## July 17 Skolem/Kernel Update
+
+After the audit response, the counted core path gained a narrow
+metadata-backed Skolem proof term for direct existential choice. The accepted
+case defines the generated Skolem symbol by a Megalodon delta definition,
+uses the fixed choice principle, and checks the resulting `Syntax.pf` without
+dynamic `Known` insertion.
+
+The next real hammer frontier is more precise than "Skolemization" in
+general. The representative case
+`tests/vampire_certificate/closed_cases/hammer.1007.43.th0.p` now reaches
+step `u210`, a Prover9-style `paramodulate` step over a clause that contains
+dependent Skolem terms. The remaining failure is a proof-term well-formedness
+issue:
+
+```text
+u210: Term de Bruijn index 15 is out of bounds for context length 15
+while checking proof-term application argument: _15
+```
+
+This is not an admission gap and not a missing source-map label. It is a
+specific retained-variable/term-binder accounting problem in the native
+proof-term elaboration for a parent proof reused under paramodulation. Broad
+fixes that skipped parent instantiation or changed global proof closing were
+tested and rejected because they break earlier checked steps. The next fix
+should therefore be local and principled: specify how stored theorem proofs
+with step-variable `TLam`s are opened into a result-variable context, then
+apply that rule uniformly to paramodulation and the other clausal kernel
+rules.
