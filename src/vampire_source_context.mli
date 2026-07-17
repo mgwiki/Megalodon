@@ -16,6 +16,14 @@ type source_context = {
   local_definitions : (string * Syntax.tp * Syntax.tm) list;
 }
 
+type source_issue = {
+  issue_step : string;
+  issue_kind : string;
+  issue_name : string;
+  issue_hash : string;
+  issue_reason : string;
+}
+
 type audit = {
   total : int;
   known_checked : int;
@@ -32,6 +40,7 @@ type audit = {
   unresolved : int;
   source_proofs : (string * Syntax.pf) list;
   resolved : (string * source_proof) list;
+  issues : source_issue list;
 }
 
 val resolve :

@@ -18,6 +18,14 @@ type source_context = {
   local_definitions : (string * tp * tm) list;
 }
 
+type source_issue = {
+  issue_step : string;
+  issue_kind : string;
+  issue_name : string;
+  issue_hash : string;
+  issue_reason : string;
+}
+
 type audit = {
   total : int;
   known_checked : int;
@@ -34,6 +42,7 @@ type audit = {
   unresolved : int;
   source_proofs : (string * pf) list;
   resolved : (string * source_proof) list;
+  issues : source_issue list;
 }
 
 let empty_audit = {
@@ -52,6 +61,7 @@ let empty_audit = {
   unresolved = 0;
   source_proofs = [];
   resolved = [];
+  issues = [];
 }
 
 let known_source_kind kind =
@@ -316,6 +326,20 @@ let add_source_proof step proof audit =
 let add_resolved step source_proof audit =
   { audit with resolved = (step, source_proof) :: audit.resolved }
 
+let add_issue binding reason audit =
+  let open Vampire_cert_v1 in
+  {
+    audit with
+    issues =
+      {
+        issue_step = binding.core_native_source_step;
+        issue_kind = binding.core_native_source_map_kind;
+        issue_name = binding.core_native_source_name;
+        issue_hash = binding.core_native_source_hash;
+        issue_reason = reason;
+      } :: audit.issues;
+  }
+
 let resolve_one context audit binding =
   let open Vampire_cert_v1 in
   let step = binding.core_native_source_step in
@@ -326,6 +350,7 @@ let resolve_one context audit binding =
   if hash <> "" && known_source_kind kind then
     if not (Hashtbl.mem context.proof_delta hash) then
       { audit with known_missing = audit.known_missing + 1 }
+      |> add_issue binding "known_missing"
     else if known_hash_proves context hash proposition then
       audit
       |> add_source_proof step (Known hash)
@@ -334,6 +359,7 @@ let resolve_one context audit binding =
     else begin
       debug_known_hash_mismatch hash proposition;
       { audit with known_mismatch = audit.known_mismatch + 1 }
+      |> add_issue binding "known_mismatch"
     end
   else if local_source_kind kind then
     begin match local_hyp_index context binding.core_native_source_name proposition with
@@ -345,8 +371,10 @@ let resolve_one context audit binding =
     | None ->
         if List.exists (fun (name, _) -> name = binding.core_native_source_name) context.local_hypotheses then
           { audit with local_mismatch = audit.local_mismatch + 1 }
+          |> add_issue binding "local_mismatch"
         else
           { audit with local_missing = audit.local_missing + 1 }
+          |> add_issue binding "local_missing"
     end
   else if definition_source_kind kind then
     if local_definition_source_kind kind then
@@ -356,7 +384,9 @@ let resolve_one context audit binding =
           |> add_source_proof step proof
           |> add_resolved step (Definitional (proposition, proof))
           |> fun audit -> { audit with local_definition_matched = audit.local_definition_matched + 1 }
-      | None -> { audit with definition_missing = audit.definition_missing + 1 }
+      | None ->
+          { audit with definition_missing = audit.definition_missing + 1 }
+          |> add_issue binding "definition_missing"
     else if hash <> "" && Hashtbl.mem context.proof_delta hash then
       match
         global_definition_proof
@@ -369,9 +399,12 @@ let resolve_one context audit binding =
           |> add_source_proof step proof
           |> add_resolved step (Definitional (proposition, proof))
           |> fun audit -> { audit with definition_resolved = audit.definition_resolved + 1 }
-      | None -> { audit with definition_missing = audit.definition_missing + 1 }
+      | None ->
+          { audit with definition_missing = audit.definition_missing + 1 }
+          |> add_issue binding "definition_missing"
     else
       { audit with definition_missing = audit.definition_missing + 1 }
+      |> add_issue binding "definition_missing"
   else if generated_source_kind kind then
     begin match generated_set_reflexivity_proof proposition with
     | Some proof ->
@@ -391,6 +424,7 @@ let resolve_one context audit binding =
     { audit with conjecture_checked = audit.conjecture_checked + 1 }
   else
     { audit with unresolved = audit.unresolved + 1 }
+    |> add_issue binding "unresolved"
 
 let resolve ?(strict=false) context bindings =
   let audit =
@@ -400,6 +434,7 @@ let resolve ?(strict=false) context bindings =
     audit with
     source_proofs = List.rev audit.source_proofs;
     resolved = List.rev audit.resolved;
+    issues = List.rev audit.issues;
   } in
   if strict
      && (audit.known_missing > 0

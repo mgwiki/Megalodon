@@ -7857,6 +7857,30 @@ let audit_vampire_cert_v1_source_context cert source_map =
     audit.Vampire_source_context.conjecture_checked
     audit.Vampire_source_context.unresolved
     local_or_unhashed;
+  let issue_count = List.length audit.Vampire_source_context.issues in
+  let rec take n = function
+    | _ when n <= 0 -> []
+    | [] -> []
+    | x :: xs -> x :: take (n - 1) xs
+  in
+  let issue_summary =
+    audit.Vampire_source_context.issues
+    |> take 5
+    |> List.map
+         (fun issue ->
+            Printf.sprintf
+              "%s:%s:%s:%s:%s"
+              issue.Vampire_source_context.issue_reason
+              issue.Vampire_source_context.issue_step
+              issue.Vampire_source_context.issue_kind
+              issue.Vampire_source_context.issue_name
+              issue.Vampire_source_context.issue_hash)
+    |> String.concat ","
+  in
+  Printf.printf
+    "Vampire certificate v1 source context issues count=%d sample=%s.\n"
+    issue_count
+    issue_summary;
   if !vampirecertv1sourcecontextstrict
      && (audit.Vampire_source_context.known_missing > 0
          || audit.Vampire_source_context.known_mismatch > 0
