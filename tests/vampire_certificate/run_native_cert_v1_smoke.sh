@@ -750,13 +750,16 @@ Parameter binintersect : set -> set -> set.
 Parameter ordsucc : set -> set.
 (* Parameter SNo "87d7604c7ea9a2ae0537066afb358a94e6ac0cd80ba277e6b064422035a620cf" "11faa7a742daf8e4f9aaf08e90b175467e22d0e6ad3ed089af1be90cfc17314b" *)
 Parameter SNo : set -> prop.
-(* Parameter add_SNo "29b9b279a7a5b776b777d842e678a4acaf3b85b17a0223605e4cc68025e9b2a7" "127d043261bd13d57aaeb99e7d2c02cae2bd0698c0d689b03e69f1ac89b3c2c6" *)
-Parameter add_SNo : set -> set -> set.
+Definition add_SNo : set -> set -> set := fun x y:set => y.
 (* Parameter SNoElts_ "1e55e667ef0bb79beeaf1a09548d003a4ce4f951cd8eb679eb1fed9bde85b91c" "c0ec73850ee5ffe522788630e90a685ec9dc80b04347c892d62880c5e108ba10" *)
 Parameter SNoElts_ : set -> set.
 (* Parameter exp_SNo_nat "6ec032f955c377b8953cff1c37d3572125487a6587167afb5fdec25c2350b3c3" "cc51438984361070fa0036749984849f690f86f00488651aabd635e92983c745" *)
 Parameter exp_SNo_nat : set -> set -> set.
-Axiom add_SNo_cancel_L : forall x y z:set, SNo x -> SNo y -> SNo z -> add_SNo x y = add_SNo x z -> y = z.
+Theorem add_SNo_cancel_L : forall x y z:set, SNo x -> SNo y -> SNo z -> add_SNo x y = add_SNo x z -> y = z.
+let x y z.
+assume Hx Hy Hz H.
+exact H.
+Qed.
 Theorem source_direct_11703_live : forall n:set, forall f:set->set, forall g:set->set, forall u v:set,
   SNo (exp_SNo_nat (ordsucc (ordsucc Empty)) n) ->
   SNo (f (binintersect u (SNoElts_ n))) ->
@@ -773,7 +776,6 @@ aby add_SNo_cancel_L L2n3 Lfu3 Lfv3 Hguv.
 Qed.
 EOF_SOURCE_DIRECT_11703_LIVE_MG
 bin/megalodon \
-  -allowincompleteqed \
   -v 9 \
   -vampireaby "$source_direct_11703_dir/fake_vampire" \
   -vampireabyproof megalodon \
@@ -791,6 +793,11 @@ fi
 if ! rg -q 'Vampire native certificate reconstructed aby proof term' \
     "$WORK_DIR/native_cert_v1_live_source_direct_11703.log"; then
   echo "live vampireaby 11703 source-direct fixture did not reconstruct the current goal from checked source proofs" >&2
+  exit 1
+fi
+if ! rg -q 'Everything looks good' \
+    "$WORK_DIR/native_cert_v1_live_source_direct_11703.log"; then
+  echo "live vampireaby 11703 source-direct fixture did not close with the proved global source theorem" >&2
   exit 1
 fi
 
