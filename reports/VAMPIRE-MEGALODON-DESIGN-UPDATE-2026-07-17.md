@@ -945,6 +945,37 @@ Validation:
   `avatar_definition`, 8 `avatar_component`, 2 `avatar_refutation`, 10
   `avatar_split`, and 47 `split_dependency` records.
 
+Additional follow-up: Megalodon now validates structured
+`split_dependency` `kernel_v1` metadata as typed certificate data. The live
+format attaches the metadata to the owner unit, while the first-class
+certificate step is suffixed, such as `u122_split_dependency`; the importer
+now resolves that mapping explicitly. It checks the owner unit, result clause,
+dependency count, every dependency split level/variable/polarity, component
+clause sexpr, and component variable/de-Bruijn sort count fields against the
+parsed `SplitDependency` step.
+
+This covers the highest-frequency AVATAR-side metadata family in the focused
+20-case sample: 47 split-dependency records. It is still certificate-object
+validation; proof-term lowering of split dependencies remains open.
+
+Validation:
+
+- `TMPDIR=/project/tmp ./makeopt` passed in `/project/Megalodon`.
+- New focused fixtures
+  `native_cert_v1_split_dependency_kernel_valid.sexp` and
+  `native_cert_v1_split_dependency_kernel_split_bad.sexp` cover the valid
+  metadata path and a bad dependency split descriptor.
+- `TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh`
+  passed.
+- A fresh 20-case strict source-linked live THF run with `JOBS=10` and
+  `VAMPIRE_SECONDS=10` produced `PASS 20` using
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11067`.
+- The kernel-v1 metadata audit passed on that artifact, covering 738
+  `kernel_v1` records and 47 `split_dependency` records.
+- The native primitive audit passed on the same artifact, including 47
+  `split_dependency`, 8 `avatar_definition`, 8 `avatar_component`, 2
+  `avatar_refutation`, and 10 `avatar_split` records.
+
 Additional follow-up: Megalodon now validates the structured
 `avatar_refutation` `kernel_v1` metadata as typed SAT certificate data before
 the ordinary strict step checker runs. The importer parses and checks the

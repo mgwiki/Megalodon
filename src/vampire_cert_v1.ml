@@ -4515,6 +4515,109 @@ let validate_kernel_v1_metadata_contracts cert =
           (id ^ ": strict certificate v1 kernel_v1 avatar_definition metadata has no matching certificate step")
     end
   in
+  let validate_split_dependency_metadata id fields owner_index =
+    require_rule_fields id fields "split_dependency"
+      ["dependency_count";
+       "result_clause"];
+    let step_id =
+      match Hashtbl.find_opt step_by_id id with
+      | Some (SplitDependency _) -> id
+      | _ -> id ^ "_split_dependency"
+    in
+    begin match Hashtbl.find_opt step_by_id step_id with
+    | Some (SplitDependency (_, owner_id, dependencies, result)) ->
+        if owner_id <> id then
+          error
+            (id ^ ": strict certificate v1 kernel_v1 split_dependency owner does not match metadata unit");
+        begin match Hashtbl.find_opt step_by_id owner_id with
+        | Some _ -> ()
+        | None ->
+            error
+              (id ^ ": strict certificate v1 kernel_v1 split_dependency owner step is missing")
+        end;
+        require_field_clause id fields "result_clause" result;
+        begin match field_value "conclusion_clause" fields with
+        | Some _ -> require_field_clause id fields "conclusion_clause" result
+        | None -> ()
+        end;
+        begin match field_value "result_literal_count" fields with
+        | Some _ -> require_field_int id fields "result_literal_count" (List.length result)
+        | None -> ()
+        end;
+        List.iteri
+          (fun index literal ->
+             let key = "result_literal_" ^ string_of_int index in
+             match field_value key fields with
+             | Some _ -> require_field_literal id fields key literal
+             | None -> ())
+          result;
+        let dependency_count =
+          require_nonnegative_field_int id fields "dependency_count"
+        in
+        if dependency_count <> List.length dependencies then
+          error
+            (Printf.sprintf
+               "%s: strict certificate v1 kernel_v1 split_dependency dependency_count expected %d but got %d"
+               id (List.length dependencies) dependency_count);
+        List.iteri
+          (fun index dependency ->
+             let prefix = "dependency_" ^ string_of_int index in
+             let split_level = field_int id fields (prefix ^ "_split_level") in
+             if split_level < 0 then
+               error
+                 (id ^ ": strict certificate v1 kernel_v1 split_dependency "
+                  ^ prefix ^ "_split_level is negative");
+             require_field_int id fields
+               (prefix ^ "_split_var")
+               dependency.dependency_split_var;
+             let metadata_split_positive =
+               match field_int id fields (prefix ^ "_split_positive") with
+               | 0 -> false
+               | 1 -> true
+               | _ ->
+                   error
+                     (id ^ ": strict certificate v1 kernel_v1 split_dependency "
+                      ^ prefix ^ "_split_positive must be 0 or 1")
+             in
+             if metadata_split_positive <> dependency.dependency_split_positive then
+               error
+                 (id ^ ": strict certificate v1 kernel_v1 split_dependency split polarity does not match the certificate dependency");
+             require_field_clause id fields
+               (prefix ^ "_component_clause_sexpr")
+               dependency.dependency_component;
+             check_avatar_component_split_variable
+               id dependency.dependency_split_var dependency.dependency_component;
+             let variable_sort_count =
+               require_nonnegative_field_int id fields
+                 (prefix ^ "_component_clause_variable_sort_count")
+             in
+             for sort_index = 0 to variable_sort_count - 1 do
+               ignore
+                 (field_required id fields
+                    (prefix ^ "_component_clause_variable_sort_"
+                     ^ string_of_int sort_index)
+                  : string)
+             done;
+             let db_sort_count =
+               require_nonnegative_field_int id fields
+                 (prefix ^ "_component_clause_db_sort_count")
+             in
+             for sort_index = 0 to db_sort_count - 1 do
+               ignore
+                 (field_required id fields
+                    (prefix ^ "_component_clause_db_sort_"
+                     ^ string_of_int sort_index)
+                  : string)
+             done)
+          dependencies
+    | Some _ ->
+        error
+          (id ^ ": strict certificate v1 kernel_v1 split_dependency metadata must annotate a split_dependency step")
+    | None ->
+        error
+          (id ^ ": strict certificate v1 kernel_v1 split_dependency metadata has no matching certificate step")
+    end
+  in
   let validate_avatar_refutation_metadata id fields owner_index =
     require_rule_fields id fields "avatar_refutation"
       ["result_clause";
@@ -6263,6 +6366,8 @@ let validate_kernel_v1_metadata_contracts cert =
              validate_avatar_component_metadata id fields
          | "avatar_definition" ->
              validate_avatar_definition_metadata id fields
+         | "split_dependency" ->
+             validate_split_dependency_metadata id fields owner_index
          | "avatar_refutation" ->
              validate_avatar_refutation_metadata id fields owner_index
          | _ -> ()

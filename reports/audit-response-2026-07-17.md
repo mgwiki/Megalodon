@@ -820,3 +820,26 @@ Validation:
 - native primitive audit: includes 8 `avatar_definition`, 8
   `avatar_component`, 2 `avatar_refutation`, 10 `avatar_split`, and 47
   `split_dependency`
+
+`split_dependency` now has importer-side typed validation too. The metadata is
+attached to the owner unit, while the certificate step uses the suffixed
+`<owner>_split_dependency` id; Megalodon resolves that mapping and validates
+owner, result clause, dependency count, each dependency split descriptor,
+component clause sexpr, and component variable/de-Bruijn sort counts against
+the parsed certificate step. The negative fixture
+`native_cert_v1_split_dependency_kernel_split_bad.sexp` rejects a bad
+dependency split variable.
+
+This removes the largest AVATAR metadata family in the focused sample from
+opaque shell-only checking. It still does not prove split dependencies as
+Megalodon proof terms.
+
+Validation:
+
+- `TMPDIR=/project/tmp ./makeopt`
+- `TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh`
+- 20-case strict live THF run, `JOBS=10`, `VAMPIRE_SECONDS=10`: `PASS 20`
+- kernel-v1 metadata audit: 738 records, including 47 `split_dependency`
+- native primitive audit: includes 47 `split_dependency`, 8
+  `avatar_definition`, 8 `avatar_component`, 2 `avatar_refutation`, and 10
+  `avatar_split`

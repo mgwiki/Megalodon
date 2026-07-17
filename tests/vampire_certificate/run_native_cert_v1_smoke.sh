@@ -2534,6 +2534,33 @@ if ! rg -q 'avatar_definition split polarity does not match the certificate step
 fi
 
 bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_split_dependency_kernel_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_avatar_component_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_split_dependency_kernel_valid.log"
+
+if ! rg -q 'Vampire certificate v1 strict checked 7 steps' "$WORK_DIR/native_cert_v1_split_dependency_kernel_valid.log"; then
+  echo "strict native certificate v1 checker did not accept split-dependency kernel metadata" >&2
+  exit 1
+fi
+
+if bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_split_dependency_kernel_split_bad.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_avatar_component_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_split_dependency_kernel_split_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_split_dependency_kernel_split_bad.err"; then
+  echo "strict native certificate v1 checker accepted split-dependency metadata with a bad split descriptor" >&2
+  exit 1
+fi
+
+if ! rg -q 'split_dependency metadata field dependency_0_split_var expected 1 but got 2\\|metadata field dependency_0_split_var expected 1 but got 2' \
+    "$WORK_DIR/native_cert_v1_split_dependency_kernel_split_bad.err"; then
+  echo "strict native certificate v1 split-dependency metadata failure did not explain the bad split descriptor" >&2
+  exit 1
+fi
+
+bin/megalodon \
   -vampirecertv1closed \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_avatar_component_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_avatar_component_valid.th0.p \

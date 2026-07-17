@@ -379,7 +379,10 @@ certificate data. For `avatar_component`, the result/conclusion clauses,
 component literals, and single split descriptor must match the parsed
 certificate step. For `avatar_definition`, the component split descriptor,
 component clause sexpr, variable sort count, de-Bruijn sort count, and result
-clause must match the parsed certificate step. For `avatar_refutation`, the
+clause must match the parsed certificate step. For `split_dependency`, the
+owner-to-suffixed-step mapping, result clause, dependency count, each
+dependency split descriptor, component clause sexpr, and component sort-count
+fields must match the parsed certificate step. For `avatar_refutation`, the
 SAT input map and SAT proof trace are checked: input origins must name earlier
 certificate units, SAT proof ids must be positive and unique, RUP parents must
 be earlier SAT proof steps, recorded parent clauses must match, RUP side
