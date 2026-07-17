@@ -525,3 +525,25 @@ Validation:
 - native primitive audit on the same artifact, including 77
   `rectify_formula`, 43 `ennf_formula`, 18 `skolem_formula`, 122
   `paramodulate`, and 102 `substitute` records
+
+Vampire commit `60866e6c8` extracts CNF source-to-clause metadata into
+`RenderedKernelCnfClause`. The builder now owns the CNF source unit, source
+kind, optional source formula/clause, result clause, parent clause count, and
+clause index/count fields for `cnf_clause` kernel records.
+
+This removes another Smolka-style preprocessing cluster from
+`migrationFields`, but it is still a certificate-object extraction. The
+Megalodon importer still needs typed CNF records and native proof terms for
+the actual formula-to-clause projection.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel` for
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11060`
+- fresh 20-case live THF run with `JOBS=10` and `VAMPIRE_SECONDS=10`:
+  `PASS 20`
+- kernel-v1 metadata audit on that artifact: 738 `kernel_v1` records, 101
+  `cnf_clause` records, and 106 rewrite-position records
+- native primitive audit on the same artifact, including 71
+  `cnf_formula_clause`, 30 `cnf_literal`, 77 `rectify_formula`, 43
+  `ennf_formula`, 122 `paramodulate`, and 102 `substitute` records

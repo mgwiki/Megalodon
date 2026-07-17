@@ -606,6 +606,32 @@ Validation:
   `rectify_formula`, 43 `ennf_formula`, 18 `skolem_formula`, 122
   `paramodulate`, and 102 `substitute` records.
 
+Additional follow-up: Vampire commit `60866e6c8` extracts CNF
+source-to-clause metadata into `RenderedKernelCnfClause`. The `cnf_clause`
+kernel record now serializes source unit, parent unit, proof-parent count,
+source kind, source formula or source clause, result clause, parent clause
+count, and clause index/count fields through `MegalodonKernelSyntax`.
+
+This is the CNF analogue of the source/result formula and rectification
+record extractions. It keeps the certificate format stable while moving the
+formula-to-clause boundary out of ad hoc string assembly. The remaining
+proof-reconstruction work is to make these CNF records typed and consume them
+in Megalodon's preprocessing/source proof layer, so CNF projection is checked
+as a proof step rather than only structurally validated.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel` passed and produced
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11060`.
+- A fresh 20-case live THF run with 10-way parallelism and a 10-second Vampire
+  cap produced `PASS 20`.
+- The kernel-v1 metadata audit passed on that artifact, covering 738
+  `kernel_v1` records, 101 `cnf_clause` records, and 106 rewrite-position
+  records.
+- The native primitive audit passed on the same artifact, including 71
+  `cnf_formula_clause`, 30 `cnf_literal`, 77 `rectify_formula`, 43
+  `ennf_formula`, 122 `paramodulate`, and 102 `substitute` records.
+
 Additional follow-up: Vampire commit `05fe04c5d` extracts
 subsumption-resolution pivot metadata into
 `RenderedKernelSubsumptionResolutionPivot`. The main/side parent indexes,
