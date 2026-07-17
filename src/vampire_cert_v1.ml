@@ -6076,7 +6076,7 @@ let native_core_generated_skolem_symbols cert =
   |> List.flatten
   |> List.sort_uniq compare
 
-let native_core_declared_variables cert =
+let native_core_declared_variables ?(exclude_names=[]) cert =
   let generated_skolem_symbols = native_core_generated_skolem_symbols cert in
   let parse_decl decl =
     let line = String.trim decl in
@@ -6103,6 +6103,7 @@ let native_core_declared_variables cert =
   in
   cert.metadata.symbol_declarations
   |> List.filter_map parse_decl
+  |> List.filter (fun (name, _) -> not (List.mem name exclude_names))
   |> List.filter (fun (name, _) -> not (List.mem name generated_skolem_symbols))
   |> List.sort_uniq compare
 
@@ -6116,8 +6117,9 @@ let native_core_has_function_definitions cert =
          | _ -> false)
        cert.steps
 
-let native_core_proof_variables cert =
-  if native_core_has_function_definitions cert then [] else native_core_declared_variables cert
+let native_core_proof_variables ?(exclude_names=[]) cert =
+  if native_core_has_function_definitions cert then []
+  else native_core_declared_variables ~exclude_names cert
 
 let native_core_step_variables cert id =
   let variable_sort_pair sort =
@@ -10347,9 +10349,12 @@ let native_core_merge_external_delta proof_delta external_delta_table =
     external_delta_table;
   merged
 
-let native_certificate_source_bindings ?(source_map=[]) cert =
+let native_certificate_source_bindings
+    ?(source_map=[])
+    ?(external_definition_names=[])
+    cert =
   ignore (check_certificate_strict cert);
-  let variables = native_core_proof_variables cert in
+  let variables = native_core_proof_variables ~exclude_names:external_definition_names cert in
   let symbol_table = native_core_symbol_table cert in
   let typed_steps =
     List.map
@@ -10394,10 +10399,11 @@ let elaborate_core_resolution_refutation_native
     ?(source_proofs=[])
     ?(external_hypotheses=[])
     ?(external_delta_table=Hashtbl.create 0)
+    ?(external_definition_names=[])
     cert =
   let core_steps = validate_certificate_core_fragment cert in
   ignore (check_certificate_strict cert);
-  let variables = native_core_proof_variables cert in
+  let variables = native_core_proof_variables ~exclude_names:external_definition_names cert in
   let symbol_table = native_core_symbol_table cert in
   let proof_delta, raw_definition_delta = native_core_certificate_sgdelta cert symbol_table in
   let typed_steps =
@@ -10834,9 +10840,10 @@ let elaborate_preprocess_refutation_native
     ?(source_proofs=[])
     ?(external_hypotheses=[])
     ?(external_delta_table=Hashtbl.create 0)
+    ?(external_definition_names=[])
     cert =
   ignore (check_certificate_strict cert);
-  let variables = native_core_proof_variables cert in
+  let variables = native_core_proof_variables ~exclude_names:external_definition_names cert in
   let symbol_table = native_core_symbol_table cert in
   let proof_delta, raw_definition_delta = native_core_certificate_sgdelta cert symbol_table in
   let typed_steps =

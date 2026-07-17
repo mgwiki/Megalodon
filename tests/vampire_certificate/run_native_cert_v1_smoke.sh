@@ -451,6 +451,7 @@ cat >"$local_definition_live_dir/fake_vampire" <<'EOF_LOCAL_DEFINITION_FAKE_VAMP
 #!/usr/bin/env bash
 problem="${@: -1}"
 def=$(sed -n 's/^% megalodon_source_map (local_definition "\([^"]*\)" .*/\1/p' "$problem" | head -1)
+fact=$(sed -n 's/^% megalodon_source_map (local_fact "\([^"]*\)" .*/\1/p' "$problem" | head -1)
 conj=$(sed -n 's/^% megalodon_source_map (conjecture "\([^"]*\)" .*/\1/p' "$problem" | head -1)
 cat <<CERT
 % SZS status Theorem
@@ -461,9 +462,23 @@ megalodon_certificate_native_sexpr_start.
   (symbol_declaration "Variable p:prop.")
   (symbol_declaration "Variable r:prop.")
   (input "d0" (source definition "$def") (clause (pos (AP (AP (TMH "=") (TMH "r")) (TMH "p")))))
-  (input "u0" (source axiom "c_Hp") (clause (pos (TMH "p"))))
+  (input "u0" (source axiom "$fact") (clause (pos (TMH "p"))))
   (input "u1" (source negated_conjecture "$conj") (clause (neg (TMH "p"))))
-  (resolve "u2" (parents "u0" "u1") (pivot 0 0) (result (clause)))
+  (paramodulate "u2"
+    (equality "d0" 0)
+    (target "u0" 0)
+    (position)
+    (from (TMH "p"))
+    (to (TMH "r"))
+    (result (clause (pos (TMH "r")))))
+  (paramodulate "u3"
+    (equality "d0" 0)
+    (target "u2" 0)
+    (position)
+    (from (TMH "r"))
+    (to (TMH "p"))
+    (result (clause (pos (TMH "p")))))
+  (resolve "u4" (parents "u3" "u1") (pivot 0 0) (result (clause)))
 )
 megalodon_certificate_native_sexpr_end.
 % SZS output end Proof
@@ -503,6 +518,29 @@ if ! rg -q 'Everything looks good' \
   echo "live vampireaby local-definition fixture did not close via non-strict fallback" >&2
   exit 1
 fi
+cat >"$local_definition_live_dir/fake_vampire" <<'EOF_LOCAL_DEFINITION_STRICT_FAKE_VAMPIRE'
+#!/usr/bin/env bash
+problem="${@: -1}"
+def=$(sed -n 's/^% megalodon_source_map (local_definition "\([^"]*\)" .*/\1/p' "$problem" | head -1)
+conj=$(sed -n 's/^% megalodon_source_map (conjecture "\([^"]*\)" .*/\1/p' "$problem" | head -1)
+cat <<CERT
+% SZS status Theorem
+% SZS output start Proof
+megalodon_certificate_native_sexpr_start.
+(certificate vampire-megalodon 1
+  (problem "local-definition-source-live-strict")
+  (symbol_declaration "Variable p:prop.")
+  (symbol_declaration "Variable r:prop.")
+  (input "d0" (source definition "$def") (clause (pos (AP (AP (TMH "=") (TMH "r")) (TMH "p")))))
+  (input "u0" (source axiom "c_Hp") (clause (pos (TMH "p"))))
+  (input "u1" (source negated_conjecture "$conj") (clause (neg (TMH "p"))))
+  (resolve "u2" (parents "u0" "u1") (pivot 0 0) (result (clause)))
+)
+megalodon_certificate_native_sexpr_end.
+% SZS output end Proof
+CERT
+EOF_LOCAL_DEFINITION_STRICT_FAKE_VAMPIRE
+chmod +x "$local_definition_live_dir/fake_vampire"
 bin/megalodon \
   -v 9 \
   -vampireaby "$local_definition_live_dir/fake_vampire" \

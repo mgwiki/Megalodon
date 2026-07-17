@@ -609,6 +609,44 @@ let vampire_source_context_delta () =
     sigdelta_opaque;
   delta
 
+let vampire_source_context_delta_with_locals cxtm =
+  let rec local_terms proof_index = function
+    | [] -> []
+    | (_, (_, Some _)) :: rest -> local_terms proof_index rest
+    | (name, (tp, None)) :: rest ->
+        (name, proof_index, tp) :: local_terms (proof_index + 1) rest
+  in
+  let local_terms = local_terms 0 cxtm in
+  let rec localize depth = function
+    | TmH name ->
+        begin match List.find_opt (fun (local_name, _, _) -> local_name = name) local_terms with
+        | Some (_, index, _) -> DB (index + depth)
+        | None -> TmH name
+        end
+    | TpAp (body, tp) -> TpAp (localize depth body, tp)
+    | Ap (left, right) -> Ap (localize depth left, localize depth right)
+    | Lam (tp, body) -> Lam (tp, localize (depth + 1) body)
+    | Imp (left, right) -> Imp (localize depth left, localize depth right)
+    | All (tp, body) -> All (tp, localize (depth + 1) body)
+    | DB _ | Prim _ as tm -> tm
+  in
+  let delta = vampire_source_context_delta () in
+  List.iter
+    (fun (name, (_, definition)) ->
+       match definition with
+       | Some tm -> Hashtbl.replace delta name (0, localize 0 tm)
+       | None -> ())
+    cxtm;
+  delta
+
+let vampire_source_context_local_definition_names cxtm =
+  List.filter_map
+    (fun (name, (_, definition)) ->
+       match definition with
+       | Some _ -> Some name
+       | None -> None)
+    cxtm
+
 let vampire_aby_source_context cxtm cxpf =
   let rec local_term_projection proof_index = function
     | [] -> []
@@ -616,6 +654,12 @@ let vampire_aby_source_context cxtm cxpf =
         None :: local_term_projection proof_index rest
     | (_, (_, None)) :: rest ->
         Some proof_index :: local_term_projection (proof_index + 1) rest
+  in
+  let rec local_terms proof_index = function
+    | [] -> []
+    | (_, (_, Some _)) :: rest -> local_terms proof_index rest
+    | (name, (tp, None)) :: rest ->
+        (name, proof_index, tp) :: local_terms (proof_index + 1) rest
   in
   {
     Vampire_source_context.proof_delta = vampire_source_context_delta ();
@@ -628,6 +672,7 @@ let vampire_aby_source_context cxtm cxpf =
            | Some _ -> None)
         cxtm;
     local_term_projection = local_term_projection 0 cxtm;
+    local_terms = local_terms 0 cxtm;
     local_hypotheses = cxpf;
     local_definitions =
       List.filter_map
@@ -691,10 +736,11 @@ let vampire_source_proof source_audit step =
 let vampire_check_current_goal_proof claimtm cxtm cxpf proof =
   let cx = List.map (fun (_, (tp, _)) -> tp) cxtm in
   let hyps = List.map snd cxpf in
+  let proof_delta = vampire_source_context_delta_with_locals cxtm in
   let debug = Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" in
   try
-    let (actual,dl) = extr_propofpf sigdelta sigtmof cx hyps proof [] in
-    match conv actual claimtm sigdelta dl with
+    let (actual,dl) = extr_propofpf proof_delta sigtmof cx hyps proof [] in
+    match conv actual claimtm proof_delta dl with
     | Some _ -> Some proof
     | None ->
         if debug then
@@ -809,21 +855,26 @@ let vampire_instantiated_refutation_candidates cxtm proof proposition source_bin
   in
   collect 8 proof proposition source_bindings
 
-let vampire_apply_local_source_bindings source_audit proof proposition bindings =
+let vampire_apply_available_source_bindings source_audit proof proposition bindings =
   let rec apply proof proposition remaining =
     match remaining with
-    | [] -> Some(proof,proposition,[])
-    | binding :: rest
-        when binding.Vampire_cert_v1.core_native_source_map_kind = "local_fact" ->
-        begin
+    | [] -> [(proof,proposition,[])]
+    | binding :: rest ->
+        let skipped =
+          List.map
+            (fun (proof, proposition, remaining) ->
+               (proof, proposition, binding :: remaining))
+            (apply proof proposition rest)
+        in
+        let applied =
           match vampire_source_proof source_audit binding.Vampire_cert_v1.core_native_source_step,
                 proposition
           with
           | Some source_proof, Imp(_,target_prop) ->
               apply (PPfAp(proof,source_proof)) target_prop rest
-          | _ -> None
-        end
-    | _ -> Some(proof,proposition,remaining)
+          | _ -> []
+        in
+        applied @ skipped
   in
   apply proof proposition bindings
 
@@ -833,14 +884,11 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
     Vampire_cert_v1.elaborate_core_resolution_refutation_native
       ~source_map
       ~source_proofs:source_proofs_for_core
-      ~external_delta_table:(vampire_source_context_delta ())
+      ~external_delta_table:(vampire_source_context_delta_with_locals cxtm)
+      ~external_definition_names:(vampire_source_context_local_definition_names cxtm)
       cert
   in
-  let remaining_bindings =
-    vampire_remaining_source_bindings_for_proofs
-      source_proofs_for_core
-      native_core.Vampire_cert_v1.core_native_source_bindings
-  in
+  let remaining_bindings = native_core.Vampire_cert_v1.core_native_source_bindings in
   List.iter
     (vampire_debug_source_binding "Vampire native core source")
     native_core.Vampire_cert_v1.core_native_source_bindings;
@@ -851,46 +899,48 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
     | [] -> None
     | (proof,proposition,candidate_remaining_bindings) :: rest ->
         begin
-          match
-            vampire_apply_local_source_bindings
-              source_audit
-              proof
-              proposition
-              candidate_remaining_bindings
-          with
-          | Some(proof,proposition,[binding])
-              when binding.Vampire_cert_v1.core_native_certificate_source_kind = "negated_conjecture" ->
-              let negated_goal_native = Imp(claimtm,vampire_native_core_false_tm) in
-              let negated_goal_context = Imp(claimtm,TmH(!fal)) in
-              begin
-                match
-                  conv
-                    binding.Vampire_cert_v1.core_native_source_proposition
-                    negated_goal_native
-                    sigdelta
-                    [],
-                  conv
-                    binding.Vampire_cert_v1.core_native_source_proposition
-                    negated_goal_context
-                    sigdelta
-                    []
-                with
-                | Some _, _ | _, Some _ ->
-                    begin
-                      match
-                        vampire_reconstruct_current_goal_from_refutation
-                          claimtm
-                          cxtm
-                          cxpf
-                          proof
-                          proposition
-                      with
-                      | Some _ as result -> result
-                      | None -> try_candidates rest
-                    end
-                | None, None -> try_candidates rest
-              end
-          | _ -> try_candidates rest
+          let negated_goal_native = Imp(claimtm,vampire_native_core_false_tm) in
+          let negated_goal_context = Imp(claimtm,TmH(!fal)) in
+          let rec try_applied = function
+            | [] -> try_candidates rest
+            | (proof, proposition, [binding]) :: applied_rest
+                when binding.Vampire_cert_v1.core_native_certificate_source_kind = "negated_conjecture" ->
+                begin
+                  match
+                    conv
+                      binding.Vampire_cert_v1.core_native_source_proposition
+                      negated_goal_native
+                      sigdelta
+                      [],
+                    conv
+                      binding.Vampire_cert_v1.core_native_source_proposition
+                      negated_goal_context
+                      sigdelta
+                      []
+                  with
+                  | Some _, _ | _, Some _ ->
+                      begin
+                        match
+                          vampire_reconstruct_current_goal_from_refutation
+                            claimtm
+                            cxtm
+                            cxpf
+                            proof
+                            proposition
+                        with
+                        | Some _ as result -> result
+                        | None -> try_applied applied_rest
+                      end
+                  | None, None -> try_applied applied_rest
+                end
+            | _ :: applied_rest -> try_applied applied_rest
+          in
+          try_applied
+            (vampire_apply_available_source_bindings
+               source_audit
+               proof
+               proposition
+               candidate_remaining_bindings)
         end
   in
   try_candidates
@@ -921,7 +971,10 @@ let check_vampire_aby_native_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) content 
               cert
           in
           let source_bindings =
-            Vampire_cert_v1.native_certificate_source_bindings ~source_map cert
+            Vampire_cert_v1.native_certificate_source_bindings
+              ~source_map
+              ~external_definition_names:(vampire_source_context_local_definition_names cxtm)
+              cert
           in
           let source_audit =
             Vampire_source_context.resolve
@@ -7429,6 +7482,7 @@ let audit_vampire_cert_v1_source_context cert source_map =
       symbol_table = sigtmof;
       term_context = [];
       local_term_projection = [];
+      local_terms = [];
       local_hypotheses = [];
       local_definitions = [];
     }

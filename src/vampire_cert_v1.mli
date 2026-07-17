@@ -195,7 +195,11 @@ val parse_source_map : string -> source_map_entry list
 val parse_source_origin : string -> source_origin option
 val audit_certificate_sources : ?require_formula_match:bool -> source_map_entry list -> certificate -> source_obligation_audit
 val validate_certificate_sources : ?require_formula_match:bool -> source_map_entry list -> certificate -> int
-val native_certificate_source_bindings : ?source_map:source_map_entry list -> certificate -> core_native_source_binding list
+val native_certificate_source_bindings :
+  ?source_map:source_map_entry list ->
+  ?external_definition_names:string list ->
+  certificate ->
+  core_native_source_binding list
 val native_core_reflexive_eq_proof : Syntax.tm -> Syntax.pf option
 val check_certificate : certificate -> (string * checked_item) list
 val check_certificate_strict : certificate -> (string * checked_item) list
@@ -206,6 +210,7 @@ val elaborate_core_resolution_refutation_native :
   ?source_proofs:(string * Syntax.pf) list ->
   ?external_hypotheses:Syntax.tm list ->
   ?external_delta_table:(string, int * Syntax.tm) Hashtbl.t ->
+  ?external_definition_names:string list ->
   certificate ->
   core_native_proof
 val elaborate_preprocess_refutation_native :
@@ -213,6 +218,7 @@ val elaborate_preprocess_refutation_native :
   ?source_proofs:(string * Syntax.pf) list ->
   ?external_hypotheses:Syntax.tm list ->
   ?external_delta_table:(string, int * Syntax.tm) Hashtbl.t ->
+  ?external_definition_names:string list ->
   certificate ->
   core_native_proof
 val emit_simple_megalodon :

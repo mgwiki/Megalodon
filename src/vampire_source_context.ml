@@ -13,6 +13,7 @@ type source_context = {
   symbol_table : (string, int * tp) Hashtbl.t;
   term_context : tp list;
   local_term_projection : int option list;
+  local_terms : (string * int * tp) list;
   local_hypotheses : (string * tm) list;
   local_definitions : (string * tp * tm) list;
 }
@@ -82,6 +83,88 @@ let rec generated_set_reflexivity_proof = function
   | proposition ->
       Vampire_cert_v1.native_core_reflexive_eq_proof proposition
 
+let megalodon_eq_poly_hash =
+  "5a6af35fb6d6bea477dd0f822b8e01ca0d57cc50dfd41744307bc94597fdaa4a"
+
+let equality_sides ?default_tp = function
+  | Ap (Ap (TpAp (TmH h, tp), left), right) when h = megalodon_eq_poly_hash ->
+      Some (tp, left, right)
+  | Ap (Ap (TmH h, left), right) when h = "=" || h = "eq" ->
+      begin match default_tp with
+      | Some tp -> Some (tp, left, right)
+      | None -> None
+      end
+  | _ -> None
+
+let rec tm_mentions_head name = function
+  | TmH h -> h = name
+  | TpAp (body, _) -> tm_mentions_head name body
+  | Ap (left, right)
+  | Imp (left, right) ->
+      tm_mentions_head name left || tm_mentions_head name right
+  | Lam (_, body)
+  | All (_, body) ->
+      tm_mentions_head name body
+  | DB _ | Prim _ -> false
+
+let local_definition_delta context =
+  let rec localize depth = function
+    | TmH name ->
+        begin match List.find_opt (fun (local_name, _, _) -> local_name = name) context.local_terms with
+        | Some (_, index, _) -> DB (index + depth)
+        | None -> TmH name
+        end
+    | TpAp (body, tp) -> TpAp (localize depth body, tp)
+    | Ap (left, right) -> Ap (localize depth left, localize depth right)
+    | Lam (tp, body) -> Lam (tp, localize (depth + 1) body)
+    | Imp (left, right) -> Imp (localize depth left, localize depth right)
+    | All (tp, body) -> All (tp, localize (depth + 1) body)
+    | DB _ | Prim _ as tm -> tm
+  in
+  let delta = Hashtbl.copy context.proof_delta in
+  List.iter
+    (fun (name, _, definition) ->
+       Hashtbl.replace delta name (0, localize 0 definition))
+    context.local_definitions;
+  delta
+
+let equality_candidate_proof tp left right =
+  TLam
+    (Ar (tp, Ar (tp, Prop)),
+     PLam
+       (Ap (Ap (DB 0, tmshift 0 1 left), tmshift 0 1 right),
+        Hyp 0))
+
+let rec local_definition_candidate_proof default_tp = function
+  | All (tp, body) ->
+      begin match local_definition_candidate_proof default_tp body with
+      | Some proof -> Some (TLam (tp, proof))
+      | None -> None
+      end
+  | Imp (left, right) ->
+      Some (PLam (left, Hyp 0))
+  | proposition ->
+      begin match equality_sides ~default_tp proposition with
+      | Some (eq_tp, left, right) ->
+          Some (equality_candidate_proof eq_tp left right)
+      | None -> None
+      end
+
+let local_definition_candidate_checks context proof proposition =
+  try
+    match check_propofpf
+            (local_definition_delta context)
+            context.symbol_table
+            context.term_context
+            []
+            proof
+            proposition
+            []
+    with
+    | Some _ -> true
+    | None -> false
+  with _ -> false
+
 let known_hash_proves context hash proposition =
   try
     match check_propofpf context.proof_delta context.symbol_table [] [] (Known hash) proposition [] with
@@ -122,7 +205,15 @@ let project_local_term_context context tm =
 let hyp_proves context index proposition =
   try
     let local_props = List.map snd context.local_hypotheses in
-    match check_propofpf context.proof_delta context.symbol_table context.term_context local_props (Hyp index) proposition [] with
+    match check_propofpf
+            (local_definition_delta context)
+            context.symbol_table
+            context.term_context
+            local_props
+            (Hyp index)
+            proposition
+            []
+    with
     | Some _ -> true
     | None -> false
   with _ -> false
@@ -137,7 +228,7 @@ let local_hyp_index context name proposition =
     | [] -> None
     | (local_name, local_prop) :: rest ->
         if local_name = name then
-          match conv local_prop projected_proposition context.proof_delta [] with
+          match conv local_prop projected_proposition (local_definition_delta context) [] with
           | Some _ -> Some i
           | None ->
               if hyp_proves context i projected_proposition then Some i
@@ -160,7 +251,27 @@ let local_hyp_index context name proposition =
   scan 0 context.local_hypotheses
 
 let local_definition_matches context name =
-  List.exists (fun (local_name, _, _) -> local_name = name) context.local_definitions
+  List.find_opt (fun (local_name, _, _) -> local_name = name) context.local_definitions
+
+let local_definition_proof context name proposition =
+  match local_definition_matches context name with
+  | None -> None
+  | Some (_, tp, _) ->
+      if not (tm_mentions_head name proposition) then
+        None
+      else
+        begin match local_definition_candidate_proof tp proposition with
+        | Some proof when local_definition_candidate_checks context proof proposition ->
+            Some proof
+        | Some _ | None ->
+            if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+              prerr_endline
+                ("source-context local definition mismatch for "
+                 ^ name
+                 ^ ": proposition="
+                 ^ tm_to_str proposition);
+            None
+        end
 
 let add_source_proof step proof audit =
   { audit with source_proofs = (step, proof) :: audit.source_proofs }
@@ -200,10 +311,13 @@ let resolve_one context audit binding =
     end
   else if definition_source_kind kind then
     if local_definition_source_kind kind then
-      if local_definition_matches context binding.core_native_source_name then
-        { audit with local_definition_matched = audit.local_definition_matched + 1 }
-      else
-        { audit with definition_missing = audit.definition_missing + 1 }
+      match local_definition_proof context binding.core_native_source_name proposition with
+      | Some proof ->
+          audit
+          |> add_source_proof step proof
+          |> add_resolved step (Definitional (proposition, proof))
+          |> fun audit -> { audit with local_definition_matched = audit.local_definition_matched + 1 }
+      | None -> { audit with definition_missing = audit.definition_missing + 1 }
     else if hash <> "" && Hashtbl.mem context.proof_delta hash then
       { audit with definition_resolved = audit.definition_resolved + 1 }
     else
