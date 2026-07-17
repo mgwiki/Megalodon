@@ -800,6 +800,89 @@ if [[ "$targeted_vampire_calls" != "1" ]]; then
   exit 1
 fi
 
+targeted_stop_dir="$WORK_DIR/targeted_vampireaby_stop"
+mkdir -p "$targeted_stop_dir"
+cat >"$targeted_stop_dir/targeted_vampireaby_stop.mg" <<'EOF_TARGETED_VAMPIREABY_STOP_MG'
+Definition False : prop := forall p:prop, p.
+Definition not : prop -> prop := fun A:prop => A -> False.
+Prefix ~ 700 := not.
+Definition or : prop -> prop -> prop := fun A B:prop => forall p:prop, (A -> p) -> (B -> p) -> p.
+Infix \/ 785 left := or.
+Axiom xm : forall P:prop, P \/ ~P.
+Variable p:prop.
+Theorem skipped_targeted_vampireaby_stop:p -> p.
+assume Hp:p.
+aby Hp.
+Qed.
+Theorem selected_targeted_vampireaby_stop:p -> p.
+assume Hp:p.
+aby Hp.
+Qed.
+This command is intentionally invalid after the selected target.
+EOF_TARGETED_VAMPIREABY_STOP_MG
+targeted_stop_line=$(
+  rg -n '^aby Hp\.$' "$targeted_stop_dir/targeted_vampireaby_stop.mg" |
+    tail -1 |
+    cut -d: -f1
+)
+cat >"$targeted_stop_dir/fake_vampire" <<EOF_TARGETED_VAMPIREABY_STOP_FAKE
+#!/usr/bin/env bash
+problem="\${@: -1}"
+line=\$(sed -n 's/^% megalodon_origin ((file .* (line "\([^"]*\)") .*/\1/p' "\$problem" | head -1)
+if [[ "\$line" != "$targeted_stop_line" ]]; then
+  echo "fake vampire called at non-target line \$line" >&2
+  exit 42
+fi
+conj=\$(sed -n 's/^% megalodon_source_map (conjecture "\([^"]*\)" .*/\1/p' "\$problem" | head -1)
+cat <<CERT
+% SZS status Theorem
+% SZS output start Proof
+megalodon_certificate_native_sexpr_start.
+(certificate vampire-megalodon 1
+  (problem "targeted-vampireaby-stop")
+  (symbol_declaration "Variable p:prop.")
+  (input "u0" (source axiom "c_Hp") (clause (pos (TMH "p"))))
+  (input "u1" (source negated_conjecture "\$conj") (clause (neg (TMH "p"))))
+  (resolve "u2" (parents "u0" "u1") (pivot 0 0) (result (clause)))
+)
+megalodon_certificate_native_sexpr_end.
+% SZS output end Proof
+CERT
+EOF_TARGETED_VAMPIREABY_STOP_FAKE
+chmod +x "$targeted_stop_dir/fake_vampire"
+bin/megalodon \
+  -v 9 \
+  -allowincompleteqed \
+  -vampireaby "$targeted_stop_dir/fake_vampire" \
+  -vampireabyproof megalodon \
+  -vampireabynative \
+  -vampireabynativestrict \
+  -vampireabytarget "$targeted_stop_line" 0 \
+  -vampireabytargetstop \
+  -vampireabyoutdir "$targeted_stop_dir/out" \
+  "$targeted_stop_dir/targeted_vampireaby_stop.mg" \
+  >"$WORK_DIR/native_cert_v1_targeted_vampireaby_stop.log" \
+  2>"$WORK_DIR/native_cert_v1_targeted_vampireaby_stop.err"
+if ! rg -q 'Vampire native certificate reconstructed aby proof term' \
+    "$WORK_DIR/native_cert_v1_targeted_vampireaby_stop.log"; then
+  echo "targeted live vampireaby stop did not reconstruct the selected proof term" >&2
+  exit 1
+fi
+if ! rg -q 'Vampire target stop after reconstructed aby proof term' \
+    "$WORK_DIR/native_cert_v1_targeted_vampireaby_stop.log"; then
+  echo "targeted live vampireaby stop did not stop after the selected target" >&2
+  exit 1
+fi
+if rg -q 'Everything looks good' "$WORK_DIR/native_cert_v1_targeted_vampireaby_stop.log"; then
+  echo "targeted live vampireaby stop unexpectedly checked the trailing invalid source" >&2
+  exit 1
+fi
+targeted_stop_calls=$(find "$targeted_stop_dir/out" -name '*.megalodon.out' | wc -l | tr -d ' ')
+if [[ "$targeted_stop_calls" != "1" ]]; then
+  echo "targeted live vampireaby stop called Vampire $targeted_stop_calls times instead of once" >&2
+  exit 1
+fi
+
 source_direct_11703_dir="$WORK_DIR/source_direct_11703_live"
 mkdir -p "$source_direct_11703_dir"
 cat >"$source_direct_11703_dir/fake_vampire" <<'EOF_SOURCE_DIRECT_11703_FAKE_VAMPIRE'

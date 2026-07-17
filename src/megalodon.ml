@@ -29,6 +29,7 @@ let vampireabyproof : string ref = ref "tptp";;
 let vampireabynative : bool ref = ref false;;
 let vampireabynativestrict : bool ref = ref false;;
 let vampireabytarget : (int * int) option ref = ref None;;
+let vampireabytargetstop : bool ref = ref false;;
 let vampirecertv1 : string option ref = ref None;;
 let vampirecertv1source : string option ref = ref None;;
 let vampirecertv1sourceaudit : bool ref = ref false;;
@@ -7247,7 +7248,16 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                     let currprooffun = !prooffun in
                     let endpos = Some(!lineno,!charno) in
                     prooffun := (fun dl -> currprooffun ((endpos,d)::dl));
-                    pfstate := pfstr
+                    pfstate := pfstr;
+                    if !vampireabytargetstop then
+                      begin
+                        Printf.printf
+                          "Vampire target stop after reconstructed aby proof term at line %d char %d.\n"
+                          !lineno
+                          !charno;
+                        flush stdout;
+                        exit 0
+                      end
                  | None ->
                     if !vampireabynativestrict then
                       raise (Failure(Printf.sprintf "Native reconstruction failed for certified aby at line %d char %d" !lineno !charno))
@@ -9067,6 +9077,10 @@ let _ =
 	    else
 	      raise (Failure("Expected -vampireabytarget <lineno> <charno>"))
           end
+        else if Sys.argv.(!j) = "-vampireabytargetstop" then
+          begin
+            vampireabytargetstop := true
+          end
         else if Sys.argv.(!j) = "-vampirecertv1" then
           begin
 	    if !j < i-2 then
@@ -9482,6 +9496,8 @@ let _ =
 	  raise (Failure("Cannot understand command line argument " ^ (Sys.argv.(!j))))
       done;
       includingsigfile := false;
+      if !vampireabytargetstop && !vampireabytarget = None then
+        raise (Failure("-vampireabytargetstop requires -vampireabytarget <lineno> <charno>"));
       let checkfile () =
         let c = open_in (Sys.argv.(i-1)) in
         current_input_file := Some (Sys.argv.(i-1));

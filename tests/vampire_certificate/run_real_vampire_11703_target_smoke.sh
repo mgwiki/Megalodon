@@ -57,6 +57,7 @@ fi
   -vampireabynative \
   -vampireabynativestrict \
   -vampireabytarget 11703 242 \
+  -vampireabytargetstop \
   -vampireabyoutdir "$WORK_DIR/out" \
   "$SOURCE_FILE" \
   >"$WORK_DIR/run.out" \
@@ -74,8 +75,12 @@ if ! rg -q 'Vampire certified aby at line 11703 char 242' "$WORK_DIR/run.out"; t
   echo "real Vampire 11703 target did not report the selected certification" >&2
   exit 1
 fi
-if ! rg -q 'Everything looks good\.' "$WORK_DIR/run.out"; then
-  echo "real Vampire 11703 target did not finish the source file under the selected-target run" >&2
+if ! rg -q 'Vampire target stop after reconstructed aby proof term at line 11703 char 242\.' "$WORK_DIR/run.out"; then
+  echo "real Vampire 11703 target did not stop after reconstructing the selected proof term" >&2
+  exit 1
+fi
+if rg -q 'Everything looks good\.' "$WORK_DIR/run.out"; then
+  echo "real Vampire 11703 target unexpectedly checked the rest of the source file" >&2
   exit 1
 fi
 
