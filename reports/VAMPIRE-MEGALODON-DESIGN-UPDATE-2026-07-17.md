@@ -329,3 +329,27 @@ Validation:
 - The focused native primitive audit passed on the final artifact.
 - The kernel-v1 metadata audit passed over 280 `kernel_v1` records, including
   37 rewrite-position records.
+
+Additional follow-up: Vampire commit `cef60e641` moves the general
+`kernel_v1` conclusion and parent metadata into structured builder records.
+`MegalodonKernelStep` now owns `RenderedKernelConclusion` and
+`RenderedKernelParent` values in addition to the primitive-expansion list and
+migration payload fields. `MegalodonChecker.cpp` still renders Vampire terms,
+clauses, literals, and substitutions, but it now passes the rendered pieces as
+records and lets `MegalodonKernelSyntax::kernelStepFields` serialize the
+standard `conclusion_*`, `result_*`, `parent_*`, and substituted-parent
+fields.
+
+This keeps the existing `step_extra "kernel_v1"` output shape but moves
+another part of the certificate structure out of the monolithic exporter. The
+next extraction should type selected literals, rewrite positions,
+substitutions, and URR trace steps instead of leaving them as ad hoc strings.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel` passed and produced
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11048`.
+- A 5-case live THF run with that binary produced `PASS 5`.
+- The focused native primitive audit passed on the artifact.
+- The kernel-v1 metadata audit passed over 280 `kernel_v1` records, including
+  37 rewrite-position records.

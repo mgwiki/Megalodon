@@ -243,3 +243,26 @@ Validation:
 - native primitive audit on the final artifact
 - kernel-v1 metadata audit on the final artifact, covering 280 `kernel_v1`
   records and 37 rewrite-position records
+
+Vampire commit `cef60e641` continues the same builder extraction by adding
+`RenderedKernelConclusion` and `RenderedKernelParent` records to
+`MegalodonKernelStep`. The general `kernel_v1` emission path now builds these
+records and delegates the standard conclusion/result/parent field serialization
+to `MegalodonKernelSyntax::kernelStepFields`.
+
+This is still a migration-stage certificate object, because the records carry
+rendered clause/literal/substitution text rather than typed Vampire kernel
+objects. It is nevertheless aligned with the audit: parent and conclusion
+structure now has a single Vampire-side owner, and future macro lowerings can
+replace rendered strings with typed subrecords without touching every
+`MegalodonChecker.cpp` call site.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel`
+- 5-case live THF run with
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11048`:
+  `PASS 5`
+- native primitive audit on the artifact
+- kernel-v1 metadata audit on the artifact, covering 280 `kernel_v1` records
+  and 37 rewrite-position records
