@@ -296,6 +296,12 @@ Completed in this response:
 - proof-local `set` definitions are now represented in source-context audits
   as matched local definitions, but strict mode rejects them until a checked
   definitional proof/composition path is implemented.
+- the native core proof-term gate now includes a narrow proof-producing
+  source-entry layer for `formula_input`, `formula_term_input`, identity
+  formula copies, `cnf_literal`, and `cnf_formula_clause`.
+- the closed-corpus source-entry/core audit now reports `CORE_PF_PASS 26`,
+  with `REAL_CORE_ELIGIBLE 3`, `SYNTHETIC_CORE_ELIGIBLE 23`, and
+  `EXCLUDED 146`.
 
 Not completed:
 

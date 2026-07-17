@@ -168,14 +168,14 @@ tests/vampire_certificate/run_native_cert_v1_core_closed_audit.sh
 
 Result:
 
-- `CORE_ELIGIBLE 23`
-- `CLOSED_PASS 23`
-- `CORE_CLOSED_PASS 23`
-- `CORE_PF_PASS 23`
+- `CORE_ELIGIBLE 26`
+- `CLOSED_PASS 26`
+- `CORE_CLOSED_PASS 26`
+- `CORE_PF_PASS 26`
 
 Artifacts:
 
-- `/project/tmp/native_cert_v1_core_closed_audit.aoXKNK`
+- `/project/tmp/native_cert_v1_core_closed_audit.1rFNYX`
 - `/project/tmp/latest_native_cert_v1_core_closed_audit`
 
 Real closed hammer frontier:
@@ -187,20 +187,26 @@ tests/vampire_certificate/run_native_cert_v1_real_core_frontier.sh
 
 Result:
 
-- `REAL_CORE_ELIGIBLE 0`
+- `REAL_CORE_ELIGIBLE 3`
 - `SYNTHETIC_CORE_ELIGIBLE 23`
-- `EXCLUDED 149`
+- `EXCLUDED 146`
 
-The first excluded-rule distribution is:
+The source-entry update moved the first simple `formula_input` and
+`formula_term_input` cases into the native proof-producing gate. These steps
+are accepted only when the native elaborator constructs checked `Syntax.pf`
+terms for the source entry and the identity/CNF entry step; they do not use
+dynamic `Known` propositions.
 
-- `formula_term_input`: 126
-- `formula_input`: 23
+The first excluded-rule distribution is now dominated by:
 
-This is now the controlling blocker for real examples. A real hammer proof
+- `rectify_formula`: 141
+- `definition_input`: 5
+
+This is now the controlling blocker for most real examples. A real hammer proof
 cannot count merely because its later clausal steps contain `resolve`,
-`paramodulate`, `factor`, or `equality_resolution`; its clausal inputs must
-first be proved from the original Megalodon context without dynamic `Known`
-insertion.
+`paramodulate`, `factor`, or `equality_resolution`; its formula and generated
+clausal inputs must first be proved from the original Megalodon context without
+dynamic `Known` insertion.
 
 The first blockers beyond this frontier are not clausal primitive failures.
 They are mostly source/preprocessing and macro territory:

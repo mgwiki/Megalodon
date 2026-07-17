@@ -5647,6 +5647,12 @@ let validate_certificate_core_fragment cert =
   in
   let allowed = function
     | Input _
+    | FormulaInput _
+    | FormulaTermInput _
+    | FormulaTermCopy _
+    | FormulaCopy _
+    | CnfLiteral _
+    | CnfFormulaClause _
     | Substitute (_, _, [], _) -> true
     | Substitute (id, _, _, _) when has_kernel_instantiation_metadata id -> true
     | Resolve _
@@ -5654,6 +5660,7 @@ let validate_certificate_core_fragment cert =
     | Factor _
     | EqualityResolution _
     | EqualityFactoring _
+    | TruthConflict _
     | EqualitySymmetry _
     | Paramodulate _
     | Contradiction _ -> true
@@ -5682,7 +5689,7 @@ let validate_certificate_core_fragment cert =
         if remaining > 0 then Printf.sprintf " and %d more" remaining else ""
       in
       error
-        ("core closed certificate v1 permits only the clausal MVP fragment; rejected "
+        ("core closed certificate v1 permits only the proof-producing source-entry/core fragment; rejected "
          ^ String.concat ", " shown
          ^ suffix)
   end
@@ -9483,6 +9490,15 @@ let native_certificate_source_bindings ?(source_map=[]) cert =
     []
     typed_steps
 
+let native_preprocess_step_formula_prop cert variables id formula =
+  let step_variables = native_core_step_variables cert id in
+  let prop =
+    native_core_close_tm
+      (variables @ step_variables)
+      (native_core_formula_prop formula)
+  in
+  List.fold_right (fun (_, tp) prop -> All (tp, prop)) step_variables prop
+
 let elaborate_core_resolution_refutation_native
     ?(source_map=[])
     ?(source_proofs=[])
@@ -9502,18 +9518,26 @@ let elaborate_core_resolution_refutation_native
   let step_is_used id = Hashtbl.mem used_steps id in
   let source_inputs = ref [] in
   let source_bindings = ref [] in
+  let add_source_input id source proposition =
+    let binding = native_core_source_binding source_map id source proposition in
+    if step_is_used id then
+      source_bindings := !source_bindings @ [binding];
+    if step_is_used id
+       && not (native_core_source_is_set_reflexivity source_map source)
+       && native_core_source_proof source_proofs id = None then
+      source_inputs := !source_inputs @ [(id, proposition, binding)]
+  in
   List.iter
     (function
       | Input (id, source, clause) ->
           let proposition = native_core_step_clause_prop cert variables id clause in
-          let binding = native_core_source_binding source_map id source proposition in
-          if step_is_used id then
-            source_bindings := !source_bindings @ [binding];
-          if step_is_used id
-             && not (native_core_source_is_set_reflexivity source_map source)
-             && native_core_source_proof source_proofs id = None then
-            source_inputs :=
-              !source_inputs @ [(id, proposition, binding)]
+          add_source_input id source proposition
+      | FormulaInput (id, source, literal) ->
+          let proposition = native_core_step_clause_prop cert variables id [literal] in
+          add_source_input id source proposition
+      | FormulaTermInput (id, source, formula) ->
+          let proposition = native_preprocess_step_formula_prop cert variables id formula in
+          add_source_input id source proposition
       | _ -> ())
     typed_steps;
   let source_count = List.length !source_inputs in
@@ -9574,16 +9598,55 @@ let elaborate_core_resolution_refutation_native
           (id ^ ": native core proof-term checker built an ill-formed proof term: " ^ msg)
   in
   let table = Hashtbl.create 101 in
+  let formula_table = Hashtbl.create 101 in
   let final_proof = ref None in
   let store id clause proof =
     check_step_proof id clause proof;
     Hashtbl.replace table id (clause, proof);
     if clause = [] then final_proof := Some proof
   in
+  let check_formula_step_proof id formula proof =
+    let step_variables = native_core_step_variables cert id in
+    let prop = native_preprocess_step_formula_prop cert variables id formula in
+    let proof = native_core_close_pf (variables @ step_variables) proof in
+    let debug_failure msg =
+      if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
+        prerr_endline ("native core proof-term debug formula step " ^ id ^ ": " ^ msg);
+        prerr_endline ("native core formula proposition: " ^ tm_to_str prop);
+        prerr_endline ("native core formula proof: " ^ pf_to_str proof)
+      end
+    in
+    try
+      match check_propofpf proof_delta symbol_table variable_types closed_source_context proof prop [] with
+      | Some _ -> ()
+      | None ->
+          debug_failure "wrong proposition";
+          error
+            (id ^ ": native core proof-term checker built a formula proof of the wrong proposition")
+    with Failure msg ->
+      debug_failure msg;
+      error
+        (id ^ ": native core proof-term checker built an ill-formed formula proof term: " ^ msg)
+    | Error _ as exn -> raise exn
+    | exn ->
+        let msg = Printexc.to_string exn in
+        debug_failure msg;
+        error
+          (id ^ ": native core proof-term checker built an ill-formed formula proof term: " ^ msg)
+  in
+  let store_formula id formula proof =
+    check_formula_step_proof id formula proof;
+    Hashtbl.replace formula_table id (formula, proof)
+  in
   let lookup id =
     try Hashtbl.find table id
     with Not_found ->
       error (id ^ ": native core proof-term checker references unknown parent")
+  in
+  let lookup_formula id =
+    try Hashtbl.find formula_table id
+    with Not_found ->
+      error (id ^ ": native core proof-term checker references unknown formula parent")
   in
   List.iter
     (function
@@ -9606,6 +9669,80 @@ let elaborate_core_resolution_refutation_native
             in
             store id clause proof
           end
+      | FormulaInput (id, source, literal)
+          when native_core_source_is_set_reflexivity source_map source ->
+          if step_is_used id then begin
+            let proof =
+              match native_core_source_proof shifted_source_proofs id with
+              | Some proof -> proof
+              | None -> native_core_set_reflexivity_literal_proof id literal
+            in
+            store id [literal] proof;
+            store_formula id (native_core_literal_prop literal) proof
+          end
+      | FormulaInput (id, _, literal) ->
+          if step_is_used id then begin
+            let proof =
+              match native_core_source_proof shifted_source_proofs id with
+              | Some proof -> proof
+              | None -> Hyp (source_hyp_index id)
+            in
+            store id [literal] proof;
+            store_formula id (native_core_literal_prop literal) proof
+          end
+      | FormulaTermInput (id, source, formula)
+          when native_core_source_is_set_reflexivity source_map source ->
+          if step_is_used id then begin
+            let proof =
+              match native_core_source_proof shifted_source_proofs id with
+              | Some proof -> proof
+              | None -> native_core_set_reflexivity_atom_proof id formula
+            in
+            store_formula id formula proof
+          end
+      | FormulaTermInput (id, _, formula) ->
+          if step_is_used id then begin
+            let proof =
+              match native_core_source_proof shifted_source_proofs id with
+              | Some proof -> proof
+              | None -> Hyp (source_hyp_index id)
+            in
+            store_formula id formula proof
+          end
+      | FormulaTermCopy (id, parent_id, result) ->
+          let parent_formula, parent_proof = lookup_formula parent_id in
+          if parent_formula <> result then
+            error (id ^ ": native core proof-term formula_term_copy is not an identity copy");
+          store_formula id result parent_proof
+      | FormulaCopy (id, parent_id, result) ->
+          let parent_formula, parent_proof = lookup_formula parent_id in
+          if native_core_normalize_bool_constants (native_core_literal_prop result)
+             <> native_core_normalize_bool_constants (native_core_formula_prop parent_formula) then
+            error (id ^ ": native core proof-term formula_copy result is not the parent formula");
+          store_formula id (formula_tm_of_literal result) parent_proof;
+          store id [result] parent_proof
+      | CnfLiteral (id, parent_id, result) ->
+          let parent_formula, parent_proof = lookup_formula parent_id in
+          let parent_prop =
+            native_core_normalize_bool_constants
+              (native_core_formula_prop parent_formula)
+          in
+          let result_prop =
+            native_core_normalize_bool_constants
+              (native_core_clause_prop id result)
+          in
+          if parent_prop <> result_prop then
+            error
+              (id ^ ": native core proof-term cnf_literal result is not propositionally identical to the parent formula");
+          store id result parent_proof
+      | CnfFormulaClause (id, parent_id, _index, _count, result) ->
+          let parent_formula, parent_proof = lookup_formula parent_id in
+          let parent_step_variables = native_core_step_variables cert parent_id in
+          let result_step_variables = native_core_step_variables cert id in
+          store id result
+            (native_core_cnf_formula_clause_proof
+               id variables parent_step_variables result_step_variables
+               parent_formula result parent_proof)
       | Substitute (id, parent_id, [], result) ->
           let parent_clause, parent_proof = lookup parent_id in
           let proof =
@@ -9725,15 +9862,6 @@ let elaborate_core_resolution_refutation_native
     core_native_steps = core_steps;
     core_native_source_bindings = !source_bindings;
   }
-
-let native_preprocess_step_formula_prop cert variables id formula =
-  let step_variables = native_core_step_variables cert id in
-  let prop =
-    native_core_close_tm
-      (variables @ step_variables)
-      (native_core_formula_prop formula)
-  in
-  List.fold_right (fun (_, tp) prop -> All (tp, prop)) step_variables prop
 
 let elaborate_preprocess_refutation_native
     ?(source_map=[])

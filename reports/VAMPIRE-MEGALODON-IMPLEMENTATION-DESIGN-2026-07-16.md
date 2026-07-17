@@ -22,13 +22,15 @@ integration and metadata evidence. Counted proof reconstruction now starts
 from the genuine `-vampirecertv1corepfcheck` seed and from future
 preprocessing transformations that do not use dynamic known-theorem insertion.
 
-Second post-audit note, 2026-07-16: the real-core frontier audit on
+Second post-audit note, 2026-07-16, historical before the source-entry core
+update: the real-core frontier audit on
 `vampire/megalodon5` found `REAL_CORE_ELIGIBLE 0`,
 `SYNTHETIC_CORE_ELIGIBLE 23`, and `EXCLUDED 149`. The first blockers for real
 closed hammer certificates are `formula_term_input` and `formula_input`, not
 missing clausal proof-term templates. This document therefore treats
 source/preprocessing proof production as the next qualifying gate, with
-Vampire-side clausal primitive lowering proceeding in parallel.
+Vampire-side clausal primitive lowering proceeding in parallel. The fourth
+note below supersedes these counts at the current branch head.
 
 Third post-audit note, 2026-07-16: live original-context replay now has a
 stricter source-obligation invariant. Source-map entries are audited, but only
@@ -38,6 +40,16 @@ local definitions from Megalodon `set` commands as premises of the proof. The
 remaining source obligations are instantiated together with each candidate
 native refutation proof before local hypotheses and the negated conjecture are
 composed back into the current Megalodon goal.
+
+Fourth post-audit note, 2026-07-16: the proof-producing core gate now includes
+a narrow source-entry layer for `formula_input`, `formula_term_input`, identity
+`formula_term_copy`, `formula_copy`, `cnf_literal`, and `cnf_formula_clause`.
+These are admitted only because the native elaborator builds and checks
+`Syntax.pf` terms for them; no certificate-derived `Known` proposition is
+installed. The closed-corpus core audit now has 26 `CORE_PF_PASS` cases:
+23 synthetic `core.cnf.*` fixtures and 3 non-synthetic/source-entry cases,
+including two `hammer.*` certificates. The remaining first blocker is dominated
+by `rectify_formula`, so general Smolka-style preprocessing is still open.
 
 The purpose is to stop ad-hoc growth. A new change is aligned with this plan
 only if it does one of the following:
@@ -96,11 +108,14 @@ Current positive evidence, as reclassified by the July 16 audit:
 - The native preprocess frontier was 94/100 as structural/transitional
   native-AST plumbing. It is not qualifying proof-term evidence while it relies
   on certificate-derived `Known` propositions.
-- The native core proof-term audit passes on the current 23 eligible
-  core-closed cases, all of which are synthetic `core.cnf.*` fixtures.
-- The real closed hammer frontier is measured and reproducible: zero real
-  hammer cases currently pass the core proof-term gate, because all real cases
-  first require source/preprocessing proof obligations.
+- The native core proof-term audit passes on the current 26 eligible
+  core/source-entry closed cases. This includes 23 synthetic `core.cnf.*`
+  fixtures and 3 non-synthetic/source-entry cases.
+- The real closed hammer frontier is measured and reproducible:
+  `REAL_CORE_ELIGIBLE 3`, `SYNTHETIC_CORE_ELIGIBLE 23`, `EXCLUDED 146`.
+  This is the first proof-producing real-hammer movement through the source
+  entry gate, but most real cases still require Smolka-style preprocessing
+  obligations before their clausal refutations can count.
 - Source formulas are checked for the supported THF fragment.
 - Closed modes reject bridge and derived assumptions.
 
@@ -116,9 +131,9 @@ Current limitations:
   lowered to simple kernel steps.
 - Skolemization and source-to-clause transformations are only partially
   proof-producing.
-- `formula_input` and `formula_term_input` are the immediate real-case
-  blockers and must be linked to original Megalodon facts or generated
-  preprocessing proofs before downstream clausal reconstruction can count.
+- The simplest `formula_input` and `formula_term_input` source-entry cases are
+  proof-producing when they feed identity formula-copy/CNF-entry steps. More
+  complex formula preprocessing remains open, especially `rectify_formula`.
 - Generated set-command equalities that are exported as
   `set_reflexivity`/`local_set_reflexivity` now have native reflexivity proofs.
   Matched theorem-local definitions from `set` commands are audited and ignored

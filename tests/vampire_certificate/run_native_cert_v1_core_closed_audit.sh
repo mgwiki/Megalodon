@@ -23,12 +23,20 @@ ln -sfn "$WORK_DIR" "$TMPDIR/latest_native_cert_v1_core_closed_audit"
 allowed_rules=$(
   cat <<'RULES'
 input
+formula_input
+formula_term_input
+formula_term_copy
+formula_copy
+cnf_literal
+cnf_formula_clause
 substitute
 resolve
 subsumption_resolution
 factor
 equality_resolution
+equality_factoring
 equality_symmetry
+truth_conflict
 paramodulate
 contradiction
 RULES

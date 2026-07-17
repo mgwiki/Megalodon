@@ -972,6 +972,23 @@ if ! rg -q 'Vampire certificate v1 native core proof term checked 10 steps' \
   exit 1
 fi
 
+bin/megalodon \
+  -vampirecertv1corepfcheck \
+  -vampirecertv1 tests/vampire_certificate/closed_cases/hammer.11560.31.native.sexp \
+  -vampirecertv1source tests/vampire_certificate/closed_cases/hammer.11560.31.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_core_pf_source_entry_hammer.log"
+
+if ! rg -q 'Vampire certificate v1 native core proof term checked 5 steps' \
+    "$WORK_DIR/native_cert_v1_core_pf_source_entry_hammer.log"; then
+  echo "native core proof-term checker did not validate the source-entry hammer fixture" >&2
+  exit 1
+fi
+if ! rg -q 'Vampire certificate v1 native core source bindings checked 1 assumption' \
+    "$WORK_DIR/native_cert_v1_core_pf_source_entry_hammer.log"; then
+  echo "native core proof-term checker did not retain source-entry assumptions" >&2
+  exit 1
+fi
+
 mkdir -p "$WORK_DIR/core_pf_missing_source_cases"
 cp tests/vampire_certificate/closed_cases/core.cnf.2.native.sexp \
   "$WORK_DIR/core_pf_missing_source_cases/missing_source.native.sexp"
@@ -1029,9 +1046,9 @@ if bin/megalodon \
   exit 1
 fi
 
-if ! rg -q 'core closed certificate v1 permits only the clausal MVP fragment' \
+if ! rg -q 'core closed certificate v1 permits only the proof-producing source-entry/core fragment' \
     "$WORK_DIR/native_cert_v1_formula_cnf_core_closed_bad.err"; then
-  echo "core closed native certificate v1 preprocessing rejection did not explain the MVP fragment boundary" >&2
+  echo "core closed native certificate v1 preprocessing rejection did not explain the source-entry/core fragment boundary" >&2
   exit 1
 fi
 
