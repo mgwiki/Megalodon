@@ -75,6 +75,7 @@ Primary repositories:
 Related documents:
 
 - `reports/VAMPIRE-MEGALODON-IMPLEMENTATION-DESIGN-2026-07-16.md`
+- `reports/VAMPIRE-MEGALODON-KERNEL-IR-PLAN-2026-07-17.md`
 - `reports/vampire-megalodon-certificate-spec.md`
 - `reports/PROVER9-IVY-ANALYSIS-2026-07-13.md`
 - `reports/REPORT-2026-07-16.md`
@@ -104,16 +105,19 @@ and debugging tool. Counted success should increasingly move to the native
 The immediate sequencing is now:
 
 1. Keep certificate-derived `Known` insertion out of every counted native path.
-2. Make `formula_input` and `formula_term_input` proof-producing from the
+2. Keep Vampire's emitted `kernel_v1` rule vocabulary fail-closed: a new rule
+   name must be added to the shared small-kernel contract before it can be
+   printed.
+3. Make `formula_input` and `formula_term_input` proof-producing from the
    original Megalodon source context, including set-generated equalities by
    reflexivity and conjecture negation.
-3. Add the first Smolka-style transformation proofs needed to justify real
+4. Add the first Smolka-style transformation proofs needed to justify real
    clausal inputs: rectification, FOOL/boolean normalization, ENNF, CNF
    projection, and then Skolemization.
-4. Move frequent Vampire clausal macros onto a shared Vampire-side primitive
+5. Move frequent Vampire clausal macros onto a shared Vampire-side primitive
    builder so the post-preprocessing refutation is a small kernel proof.
-5. Expand native Megalodon proof-term checking for the same primitive kernel.
-6. Only then run the final fresh 100-theorem gate as a qualifying result.
+6. Expand native Megalodon proof-term checking for the same primitive kernel.
+7. Only then run the final fresh 100-theorem gate as a qualifying result.
 
 ## Purpose
 
