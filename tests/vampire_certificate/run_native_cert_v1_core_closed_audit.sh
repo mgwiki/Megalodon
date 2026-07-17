@@ -26,6 +26,7 @@ input
 formula_input
 formula_term_input
 formula_term_copy
+rectify_formula
 formula_copy
 cnf_literal
 cnf_formula_clause

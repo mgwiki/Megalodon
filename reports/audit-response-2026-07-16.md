@@ -298,10 +298,11 @@ Completed in this response:
   definitional proof/composition path is implemented.
 - the native core proof-term gate now includes a narrow proof-producing
   source-entry layer for `formula_input`, `formula_term_input`, identity
-  formula copies, `cnf_literal`, and `cnf_formula_clause`.
-- the closed-corpus source-entry/core audit now reports `CORE_PF_PASS 26`,
-  with `REAL_CORE_ELIGIBLE 3`, `SYNTHETIC_CORE_ELIGIBLE 23`, and
-  `EXCLUDED 146`.
+  formula copies, checked `rectify_formula`, `cnf_literal`, and
+  `cnf_formula_clause`.
+- the closed-corpus source-entry/core audit now reports `CORE_PF_PASS 27`,
+  with `REAL_CORE_ELIGIBLE 4`, `SYNTHETIC_CORE_ELIGIBLE 23`, and
+  `EXCLUDED 145`.
 
 Not completed:
 

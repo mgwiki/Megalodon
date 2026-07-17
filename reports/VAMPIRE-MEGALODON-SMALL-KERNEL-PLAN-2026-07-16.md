@@ -168,14 +168,14 @@ tests/vampire_certificate/run_native_cert_v1_core_closed_audit.sh
 
 Result:
 
-- `CORE_ELIGIBLE 26`
-- `CLOSED_PASS 26`
-- `CORE_CLOSED_PASS 26`
-- `CORE_PF_PASS 26`
+- `CORE_ELIGIBLE 27`
+- `CLOSED_PASS 27`
+- `CORE_CLOSED_PASS 27`
+- `CORE_PF_PASS 27`
 
 Artifacts:
 
-- `/project/tmp/native_cert_v1_core_closed_audit.1rFNYX`
+- `/project/tmp/native_cert_v1_core_closed_audit.zeGv8H`
 - `/project/tmp/latest_native_cert_v1_core_closed_audit`
 
 Real closed hammer frontier:
@@ -187,19 +187,22 @@ tests/vampire_certificate/run_native_cert_v1_real_core_frontier.sh
 
 Result:
 
-- `REAL_CORE_ELIGIBLE 3`
+- `REAL_CORE_ELIGIBLE 4`
 - `SYNTHETIC_CORE_ELIGIBLE 23`
-- `EXCLUDED 146`
+- `EXCLUDED 145`
 
-The source-entry update moved the first simple `formula_input` and
-`formula_term_input` cases into the native proof-producing gate. These steps
-are accepted only when the native elaborator constructs checked `Syntax.pf`
-terms for the source entry and the identity/CNF entry step; they do not use
-dynamic `Known` propositions.
+The source-entry and checked-rectification updates moved the first simple
+`formula_input`, `formula_term_input`, and `rectify_formula` cases into the
+native proof-producing gate. These steps are accepted only when the native
+elaborator constructs checked `Syntax.pf` terms for the source entry,
+rectification, and identity/CNF entry step; they do not use dynamic `Known`
+propositions.
 
-The first excluded-rule distribution is now dominated by:
+The first excluded-rule distribution is now dominated by FOOL transformations:
 
-- `rectify_formula`: 141
+- `fool_atom_lift`: 115
+- `fool_formula`: 13
+- `fool_bool`: 12
 - `definition_input`: 5
 
 This is now the controlling blocker for most real examples. A real hammer proof

@@ -5650,6 +5650,7 @@ let validate_certificate_core_fragment cert =
     | FormulaInput _
     | FormulaTermInput _
     | FormulaTermCopy _
+    | RectifyFormula _
     | FormulaCopy _
     | CnfLiteral _
     | CnfFormulaClause _
@@ -9714,6 +9715,14 @@ let elaborate_core_resolution_refutation_native
           if parent_formula <> result then
             error (id ^ ": native core proof-term formula_term_copy is not an identity copy");
           store_formula id result parent_proof
+      | RectifyFormula (id, parent_id, renamings, result) ->
+          let parent_formula, parent_proof = lookup_formula parent_id in
+          check_rectify_formula [(parent_id, CheckedFormula parent_formula)] id parent_id renamings result;
+          let parent_step_variables = native_core_step_variables cert parent_id in
+          let result_step_variables = native_core_step_variables cert id in
+          store_formula id result
+            (native_core_rectify_formula_proof
+               id parent_step_variables result_step_variables parent_proof)
       | FormulaCopy (id, parent_id, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
           if native_core_normalize_bool_constants (native_core_literal_prop result)

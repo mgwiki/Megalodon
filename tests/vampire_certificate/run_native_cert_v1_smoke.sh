@@ -989,6 +989,18 @@ if ! rg -q 'Vampire certificate v1 native core source bindings checked 1 assumpt
   exit 1
 fi
 
+bin/megalodon \
+  -vampirecertv1corepfcheck \
+  -vampirecertv1 tests/vampire_certificate/closed_cases/preprocess.formula.2.native.sexp \
+  -vampirecertv1source tests/vampire_certificate/closed_cases/preprocess.formula.2.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_core_pf_rectify_formula.log"
+
+if ! rg -q 'Vampire certificate v1 native core proof term checked 7 steps' \
+    "$WORK_DIR/native_cert_v1_core_pf_rectify_formula.log"; then
+  echo "native core proof-term checker did not validate the rectify_formula source-entry fixture" >&2
+  exit 1
+fi
+
 mkdir -p "$WORK_DIR/core_pf_missing_source_cases"
 cp tests/vampire_certificate/closed_cases/core.cnf.2.native.sexp \
   "$WORK_DIR/core_pf_missing_source_cases/missing_source.native.sexp"
