@@ -499,3 +499,50 @@ Validation:
 - The native primitive audit passed with small-sample minima relaxed; the
   artifact covered 37 `paramodulate`, 46 `substitute`, 36
   `equality_resolution`, and 7 `resolve` records.
+
+Additional follow-up: Vampire commit `c2393b33c` removes another clausal
+field cluster from `migrationFields`: primitive parent substitutions are now
+stored as `RenderedKernelPrimitiveParentSubstitution` records on
+`MegalodonKernelStep`. Superposition, equality factoring, resolution, and
+factoring still emit the same `primitive_parent_N_substitution=...` metadata,
+but that metadata is now owned by the step builder rather than assembled as
+free-form strings at the call sites.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel` passed and produced
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11055`.
+- A fresh 10-case live THF run with 10-way parallelism and a 10-second Vampire
+  cap produced `PASS 10`.
+- The kernel-v1 metadata audit passed on that artifact, covering 361
+  `kernel_v1` records, 47 rewrite-position records, and 10
+  `subsumption_resolution` records.
+- The native primitive audit passed on the same artifact, including 55
+  `paramodulate`, 53 `substitute`, 43 `equality_resolution`, 11 `resolve`,
+  and 2 `equality_symmetry` records.
+
+Additional follow-up: Vampire commit `05fe04c5d` extracts
+subsumption-resolution pivot metadata into
+`RenderedKernelSubsumptionResolutionPivot`. The main/side parent indexes,
+side substitution, side pivot literal, pivot location, substituted side pivot,
+and symmetry flag are now one structured record serialized by
+`MegalodonKernelSyntax`.
+
+This continues shrinking the migration bridge in the audit-requested
+direction. The field values are still rendered s-expressions, but the
+remaining legacy payload is narrower: source/preprocessing annotations,
+Skolem introduced-symbol details, SAT/AVATAR traces, and miscellaneous
+rule-specific formula fields remain the main migration-field clusters.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel` passed and produced
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11056`.
+- A fresh 10-case live THF run with 10-way parallelism and a 10-second Vampire
+  cap produced `PASS 10`.
+- The kernel-v1 metadata audit passed on that artifact, covering 361
+  `kernel_v1` records, 47 rewrite-position records, and 10
+  `subsumption_resolution` records.
+- The native primitive audit passed on the same artifact, including 55
+  `paramodulate`, 53 `substitute`, 43 `equality_resolution`, 11 `resolve`,
+  and 2 `equality_symmetry` records.

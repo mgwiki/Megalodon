@@ -410,3 +410,42 @@ Validation:
 - native primitive audit with small-sample minima relaxed, covering 37
   `paramodulate`, 46 `substitute`, 36 `equality_resolution`, and 7 `resolve`
   records
+
+Vampire commit `c2393b33c` removes primitive parent substitutions from the
+legacy migration-field path for the common clausal macro records. The builder
+now carries `RenderedKernelPrimitiveParentSubstitution` entries and serializes
+the existing `primitive_parent_N_substitution=...` fields from the syntax
+module. This covers the substitution metadata emitted for superposition,
+equality factoring, resolution, and factoring.
+
+Vampire commit `05fe04c5d` applies the same treatment to
+subsumption-resolution side-pivot metadata. `main_parent_index`,
+`side_parent_index`, `side_substitution`, `side_pivot`,
+`side_pivot_parent_*`, `side_pivot_substituted`, and the symmetry flag now
+come from `RenderedKernelSubsumptionResolutionPivot`.
+
+These commits still do not complete the Prover9/Ivy-style certificate. They
+do, however, move two more clausal-kernel data clusters out of free-form
+migration strings and into the Vampire-side kernel-step object. The next
+typed replacements should focus on the remaining high-value clusters:
+Skolem introduced symbols/dependencies, source/result formula pairs for
+Smolka-style transformations, and SAT/AVATAR proof traces.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel` for
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11055`
+- fresh 10-case live THF run with `JOBS=10` and `VAMPIRE_SECONDS=10`:
+  `PASS 10`
+- kernel-v1 metadata audit on that artifact: 361 `kernel_v1` records, 47
+  rewrite-position records, and 10 `subsumption_resolution` records
+- native primitive audit on that artifact, including 55 `paramodulate`, 53
+  `substitute`, 43 `equality_resolution`, 11 `resolve`, and 2
+  `equality_symmetry` records
+- `TMPDIR=/project/tmp make -j10 vampire_rel` for
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11056`
+- fresh 10-case live THF run with `JOBS=10` and `VAMPIRE_SECONDS=10`:
+  `PASS 10`
+- kernel-v1 metadata audit on that artifact: 361 `kernel_v1` records, 47
+  rewrite-position records, and 10 `subsumption_resolution` records
+- native primitive audit on that artifact with the same primitive counts
