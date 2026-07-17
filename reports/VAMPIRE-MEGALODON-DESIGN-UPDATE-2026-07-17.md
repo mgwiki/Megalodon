@@ -37,17 +37,13 @@ also handles dependent generated Skolem delta unfolding at conversion time
 rather than by eagerly rewriting certificate formulas.
 
 That moved the representative real hammer case
-`hammer.1007.43.th0.p` past the earlier Skolem formula mismatch. It now
-reaches a later clausal proof-term failure:
-
-```text
-u210: paramodulate
-Term de Bruijn index 15 is out of bounds for context length 15
-while checking proof-term application argument: _15
-```
-
-This is a small-kernel elaboration issue: reusing stored theorem proofs with
-retained step-variable `TLam`s inside paramodulation.
+`hammer.1007.43.th0.p` past the earlier Skolem formula mismatch. A later
+clausal proof-term failure at `u210` exposed a theorem-opening issue:
+proof bodies were being wrapped in result-step `TLam`s while still containing
+unclosed result-variable references. Commit `7bc7068` fixed this by closing
+native proof bodies in the intended result-variable context before adding the
+result binders. The focused regenerated `hammer.1007.43` certificate now
+checks 68 native core proof-term steps.
 
 ## Rejected Quick Fixes
 
@@ -137,4 +133,32 @@ from Smolka-style transformations.
 - E4: structural certificate/source/metadata validation and transitional
   diagnostics.
 
-The `u210` focused run is currently a failing E3/E2 frontier, not E1 progress.
+Current evidence after commits `7bc7068` and `ab4765a`:
+
+- Focused regenerated `hammer.1007.43` native core proof-term check passes,
+  including the previous `u210` paramodulation case.
+- The staged closed audit covers all 172 tracked `closed_cases` certificates
+  as a disjoint highest-layer assignment:
+  - core-only: 24
+  - preprocess: 84
+  - Skolem: 35
+  - definition: 12
+  - AVATAR: 15
+  - inequality: 1
+  - definition-rewrite: 1
+- The same aggregate run reports `LAYERED_CLOSED_TOTAL 172`,
+  `LAYERED_CLOSED_COVERED 172`, `LAYERED_CLOSED_MISSING 0`,
+  `LAYERED_CLOSED_EXTRA 0`, and `LAYERED_CLOSED_DUPLICATE 0`.
+- A fresh strict live run over `source_linked_strict_100.list`, with THF input,
+  20-way parallelism, and a 10-second Vampire cap, reports `PASS 100`.
+  The generated certificate corpus includes 1300 `fool_atom_lift`, 490
+  `paramodulate`, 400 `substitute`, 338 `superposition` kernel records, 77
+  `skolem_formula`, 39 `avatar_definition`, and 215 `split_dependency`
+  records.
+- The native primitive audit and kernel-v1 metadata audit pass on that fresh
+  live corpus.
+
+This is stronger E2/E4 evidence and some E3 evidence for the native core
+proof-term path. It is still not a claim of project completion: E1
+original-context proof composition for larger Megalodon developments remains
+the main unfinished requirement.
