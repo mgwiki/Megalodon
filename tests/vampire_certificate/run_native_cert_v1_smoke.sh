@@ -1675,6 +1675,18 @@ if ! rg -q 'Vampire certificate v1 native core proof term checked 8 steps' \
   exit 1
 fi
 
+bin/megalodon \
+  -vampirecertv1corepfcheck \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_resolve_left_last_pivot_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_resolve_left_last_pivot_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_core_pf_resolve_left_last_pivot.log"
+
+if ! rg -q 'Vampire certificate v1 native core proof term checked 8 steps' \
+    "$WORK_DIR/native_cert_v1_core_pf_resolve_left_last_pivot.log"; then
+  echo "native core proof-term checker did not validate clause/clause resolution with a left-last pivot" >&2
+  exit 1
+fi
+
 if bin/megalodon \
   -vampirecertv1corepfcheck \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_open_dropped_parent_bad.sexp \

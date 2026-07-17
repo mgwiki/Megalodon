@@ -8542,7 +8542,7 @@ let native_core_resolve_clause_clause id left_clause left_proof left_index right
     | [], _ ->
         error (id ^ ": native core proof-term clause/clause left pivot index is out of bounds")
     | [literal], Some 0 when literal = left_pivot ->
-        consume_right (Hyp 0) (Some right_index) right_clause (pfshift 0 1 right_proof)
+        consume_right (Hyp 0) (Some right_index) right_clause right_proof
     | [literal], Some _ ->
         error (id ^ ": native core proof-term clause/clause left pivot index is out of bounds")
     | [literal], None ->
