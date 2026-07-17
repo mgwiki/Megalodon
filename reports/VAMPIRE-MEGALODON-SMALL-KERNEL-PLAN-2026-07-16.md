@@ -1577,3 +1577,10 @@ allowing only the fixed logical-basis families
 not solve theorem opening or preprocessing reconstruction by itself; it
 prevents future proof-producing code from accidentally reintroducing hidden
 bridge assumptions under a different call path.
+
+Small theorem-opening follow-up: the native `factor` proof constructor now has
+a result-context wrapper. It instantiates retained parent step variables in the
+current result context before applying the factor proof template, matching the
+existing discipline for `resolve`, `substitute`, equality rules, and
+`paramodulate`. This fixes a counted-core gap for quantified factor results and
+is covered by `native_cert_v1_open_derived_resolve_valid`.

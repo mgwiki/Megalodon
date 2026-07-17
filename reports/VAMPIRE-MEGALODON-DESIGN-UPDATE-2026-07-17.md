@@ -192,6 +192,14 @@ harder to bypass: even if future code directly constructs a forbidden
 `Known "vampire_*"` proof instead of going through `install_transitional_known`,
 counted proof-term checking fails closed.
 
+Follow-up proof-term fix: `factor` now opens its parent theorem through the
+same result-context helper used by `resolve`, `substitute`,
+`equality_resolution`, `equality_factoring`, and `paramodulate`. The regression
+fixture `native_cert_v1_open_derived_resolve_valid` covers the counted-core
+case where a quantified clause is first derived by factor and then resolved
+with a closed unit. This is a small piece of the planned `open_step_theorem`
+work, not the full extraction of that operation into a separate kernel module.
+
 ## Later July 17 Certificate-Checker Update
 
 The current `vampire/megalodon5` work also improves strict certificate

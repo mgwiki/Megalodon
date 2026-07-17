@@ -10561,6 +10561,25 @@ let native_core_substitute_in_result_context
   in
   native_core_bind_result_step_variables variables result_step_variables body_proof
 
+let native_core_factor_in_result_context
+    cert id variables parent_id parent_clause parent_proof left_index right_index result =
+  let result_step_variables = native_core_step_variables cert id in
+  let close_tm tm = native_core_close_tm (variables @ result_step_variables) tm in
+  let close_literal = function
+    | Pos atom -> Pos (close_tm atom)
+    | Neg atom -> Neg (close_tm atom)
+  in
+  let parent_clause = List.map close_literal parent_clause in
+  let result = List.map close_literal result in
+  let parent_proof =
+    native_core_instantiate_step_proof_body_in_result_context
+      cert id variables parent_id [] parent_proof
+  in
+  let body_proof =
+    native_core_factor id parent_clause parent_proof left_index right_index result
+  in
+  native_core_bind_result_step_variables variables result_step_variables body_proof
+
 let native_core_resolve_in_result_context
     cert id variables left_id left_clause left_proof right_id right_clause right_proof
     left_index right_index result =
@@ -11827,7 +11846,9 @@ let elaborate_core_resolution_refutation_native
       | Factor (id, parent_id, left_index, right_index, result) ->
           let parent_clause, parent_proof = lookup parent_id in
           let proof =
-            native_core_factor id parent_clause parent_proof left_index right_index result
+            native_core_factor_in_result_context
+              cert id variables parent_id parent_clause parent_proof
+              left_index right_index result
           in
           store id result proof
       | EqualityResolution (id, parent_id, literal_index, result) ->
@@ -12453,7 +12474,9 @@ let elaborate_preprocess_refutation_native
             store_clause id result (PPfAp (Known primitive, parent_proof))
           end else
             store_clause id result
-              (native_core_factor id parent_clause parent_proof left_index right_index result)
+              (native_core_factor_in_result_context
+                 cert id variables parent_id parent_clause parent_proof
+                 left_index right_index result)
       | EqualityResolution (id, parent_id, literal_index, result) ->
           let parent_clause, parent_proof = lookup_clause parent_id in
           if Hashtbl.mem transitional_primitive_clause_steps parent_id then begin

@@ -478,9 +478,12 @@ source-entry layer for `formula_input`, `formula_term_input`, identity
 and exhaustiveness (`fool_atom_lift`, `fool_formula`, `fool_bool`,
 `fool_exhaustiveness`), checked `ennf_formula`, checked `definition_input`,
 checked inequality intro/split, `formula_copy`, `cnf_literal`,
-`cnf_formula_clause`, and annotated instantiation `substitute` steps, because
+`cnf_formula_clause`, annotated instantiation `substitute` steps, and
+result-context opening for `factor` steps with retained variables, because
 those steps are checked by native proof templates and do not use
-certificate-derived `Known` propositions.
+certificate-derived `Known` propositions. The focused
+`native_cert_v1_open_derived_resolve_valid` fixture covers a quantified parent
+derived by `factor`, then opened by `resolve` against a closed unit.
 
 Use `-vampirecertv1preprocesspfcheck` only as a fail-closed native
 preprocessing checker. Unlike the older transitional frontier runs, this mode
