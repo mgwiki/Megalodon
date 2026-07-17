@@ -7513,9 +7513,20 @@ let native_core_has_function_definitions cert =
          | _ -> false)
        cert.steps
 
+let native_core_predicate_definition_names cert =
+  cert.steps
+  |> List.filter_map
+       (function
+         | PredicateDefinition (_, symbol, _) -> Some (native_core_ident symbol)
+         | _ -> None)
+  |> List.sort_uniq compare
+
 let native_core_proof_variables ?(exclude_names=[]) cert =
   let exclude_names =
-    List.sort_uniq compare (exclude_names @ native_core_avatar_definition_names cert)
+    List.sort_uniq compare
+      (exclude_names
+       @ native_core_avatar_definition_names cert
+       @ native_core_predicate_definition_names cert)
   in
   if native_core_has_function_definitions cert then []
   else native_core_declared_variables ~exclude_names cert
@@ -8093,6 +8104,15 @@ let native_core_true =
 let native_core_false =
   All (Prop, DB 0)
 
+let rec native_core_default_witness = function
+  | Set -> Some (TmH "Empty")
+  | Prop -> Some native_core_true
+  | Ar (arg_tp, result_tp) ->
+      Option.map
+        (fun body -> Lam (arg_tp, tmshift 0 1 body))
+        (native_core_default_witness result_tp)
+  | TpVar _ -> None
+
 let native_core_is_vampire_true_name = function
   | "f__true" | "vampire_true" -> true
   | _ -> false
@@ -8200,6 +8220,13 @@ let native_core_exists tp body =
        (All (tp, Imp (tmshift 1 1 body, DB 1)),
         DB 0))
 
+let native_core_universal_binder_types tm =
+  let rec collect acc = function
+    | All (tp, body) -> collect (acc @ [tp]) body
+    | body -> (acc, body)
+  in
+  collect [] tm
+
 let native_core_expand_eq_atom tm =
   match native_core_equality_sides tm with
   | Some (tp, left, right) ->
@@ -8221,6 +8248,41 @@ let rec native_core_formula_prop = function
   | Ap (TmH "vampire_exists_prop", Lam (tp, body)) ->
       native_core_exists tp (native_core_formula_prop body)
   | tm -> native_core_expand_eq_atom tm
+
+let native_core_predicate_definition_body symbol_table id symbol formula =
+  let binder_tps, _ = native_core_universal_binder_types formula in
+  let defined, atom, body = predicate_definition_parts id formula in
+  if native_core_ident symbol <> native_core_ident defined then
+    error
+      (id ^ ": native core predicate_definition symbol "
+       ^ symbol ^ " does not match definiendum " ^ defined);
+  let definiendum = predicate_definition_definiendum_term atom in
+  let head, args = native_core_flatten_value_application definiendum in
+  begin match head with
+  | TmH head when native_core_ident head = native_core_ident symbol -> ()
+  | _ ->
+      error
+        (id ^ ": native core predicate_definition definiendum is not headed by " ^ symbol)
+  end;
+  let expected_args =
+    let n = List.length binder_tps in
+    List.init n (fun index -> DB (n - index - 1))
+  in
+  if args <> expected_args then
+    error
+      (id ^ ": native core predicate_definition arguments are not the leading universal binders");
+  let symbol_tp = native_core_symbol_type symbol_table (native_core_ident symbol) in
+  let arg_tps, result_tp = native_core_arrow_parts symbol_tp in
+  if result_tp <> Prop then
+    error (id ^ ": native core predicate_definition definiendum does not return prop");
+  if List.length arg_tps <> List.length binder_tps then
+    error (id ^ ": native core predicate_definition arity does not match leading binders");
+  if arg_tps <> binder_tps then
+    error (id ^ ": native core predicate_definition binder types do not match symbol type");
+  body
+  |> native_core_formula_prop
+  |> List.fold_right (fun tp tm -> Lam (tp, tm)) binder_tps
+  |> tm_beta_eta_norm
 
 let native_core_literal_prop = function
   | Pos tm -> native_core_expand_eq_atom tm
@@ -9135,6 +9197,16 @@ let native_core_certificate_sgdelta cert symbol_table =
           end
       | _ -> ())
     cert.steps;
+  List.iter
+    (function
+      | PredicateDefinition (id, symbol, formula) ->
+          let defined, _, _ = predicate_definition_parts id formula in
+          let body =
+            native_core_predicate_definition_body symbol_table id symbol formula
+          in
+          Hashtbl.replace definitions (native_core_ident defined) (0, body)
+      | _ -> ())
+    cert.steps;
   Hashtbl.iter
     (fun h v -> Hashtbl.replace sgdelta h v)
     definitions;
@@ -9714,6 +9786,76 @@ let native_core_proof_from_false_eq source target proof =
             PPfAp (PTmAp (pfshift 0 1 proof, motive), Hyp 0)))
   | _ -> None
 
+let native_core_predicate_definition_proof id formula =
+  let rec prove = function
+    | All (tp, body) -> TLam (tp, prove body)
+    | Ap (Ap (TmH "vampire_or", left), right) as disjunction ->
+        let _, atom, body = predicate_definition_parts id disjunction in
+        let is_negated_definiendum = function
+          | Imp (candidate_atom, false_tm)
+              when candidate_atom = atom && is_vampire_false false_tm -> true
+          | _ -> false
+        in
+        let body_side, neg_side, body_is_left =
+          if is_negated_definiendum left && right = body then
+            (right, left, false)
+          else if is_negated_definiendum right && left = body then
+            (left, right, true)
+          else
+            error
+              (id ^ ": native core predicate_definition proof expected a definitional disjunction")
+        in
+        let left_prop = native_core_formula_prop left in
+        let right_prop = native_core_formula_prop right in
+        let body_prop = native_core_formula_prop body_side in
+        let neg_prop = native_core_formula_prop neg_side in
+        let target_prop = native_core_formula_prop disjunction in
+        let positive_branch =
+          PLam
+            (body_prop,
+             if body_is_left then
+               native_core_or_intro_left left_prop right_prop (Hyp 0)
+             else
+               native_core_or_intro_right left_prop right_prop (Hyp 0))
+        in
+        let atom_prop = native_core_formula_prop atom in
+        let definiendum_prop =
+          predicate_definition_definiendum_term atom
+          |> native_core_formula_prop
+        in
+        let atom_to_body atom_proof =
+          match native_core_proof_from_true_eq definiendum_prop atom atom_proof with
+          | Some proof -> proof
+          | None -> atom_proof
+        in
+        let neg_side_proof =
+          PLam
+            (atom_prop,
+             PPfAp (Hyp 1, atom_to_body (Hyp 0)))
+        in
+        let negative_branch =
+          PLam
+            (Imp (body_prop, native_core_false),
+             if body_is_left then
+               native_core_or_intro_right left_prop right_prop neg_side_proof
+             else
+               native_core_or_intro_left left_prop right_prop neg_side_proof)
+        in
+        if native_core_normalize_bool_constants neg_prop
+           <> Imp (atom_prop, native_core_false) then
+          error
+            (id ^ ": native core predicate_definition negative side is not atom -> false");
+        PPfAp
+          (PPfAp
+             (PTmAp (native_core_xm_proof body_prop, target_prop),
+              positive_branch),
+           negative_branch)
+    | _ ->
+        error
+          (id ^ ": native core predicate_definition proof supports only universal definitional disjunctions")
+  in
+  prove formula
+
 let native_core_bind_result_step_variables variables result_step_variables body_proof =
   let body_proof =
     native_core_close_pf (variables @ result_step_variables) body_proof
@@ -10169,7 +10311,11 @@ let native_core_cnf_formula_clause_proof
   let fallback_variable tp =
     match fallback_result_variable tp with
     | Some tm -> Some tm
-    | None -> fallback_declared_variable tp
+    | None ->
+        begin match fallback_declared_variable tp with
+        | Some tm -> Some tm
+        | None -> native_core_default_witness tp
+        end
   in
   let parent_proof =
     List.fold_left
@@ -10572,7 +10718,13 @@ let native_core_eq_symmetry_proof id literal proof =
 
 let native_core_formula_orientation_proof
     ?(normalize_formula_for_match=(fun tm -> tm))
+    ?(definition_symbols=[])
     id variables parent_step_variables result_step_variables source target proof =
+  let is_definition_term tm =
+    match head_symbol tm with
+    | Some symbol -> List.mem (native_core_ident symbol) definition_symbols
+    | None -> false
+  in
   let result_variable_count = List.length result_step_variables in
   let db_for_result_variable name tp =
     let rec find index = function
@@ -10601,7 +10753,11 @@ let native_core_formula_orientation_proof
   let fallback_variable tp =
     match fallback_result_variable tp with
     | Some tm -> Some tm
-    | None -> fallback_declared_variable tp
+    | None ->
+        begin match fallback_declared_variable tp with
+        | Some tm -> Some tm
+        | None -> native_core_default_witness tp
+        end
   in
   let parent_proof =
     List.fold_left
@@ -10635,7 +10791,37 @@ let native_core_formula_orientation_proof
       |> native_core_normalize_bool_constants
     in
     if source_prop = target_prop then proof
-    else
+    else begin
+      let target_for_match =
+        normalize_formula_for_match target
+        |> native_core_normalize_bool_constants
+      in
+      match direction, native_core_equality_sides target_for_match with
+      | `Forward, Some (Prop, left, right)
+          when left = native_core_true && is_definition_term right ->
+          begin match native_core_true_eq_from_proof right target_for_match proof with
+          | Some proof -> proof
+          | None -> assert false
+          end
+      | `Forward, Some (Prop, left, right)
+          when right = native_core_true && is_definition_term left ->
+          begin match native_core_true_eq_from_proof left target_for_match proof with
+          | Some proof -> proof
+          | None -> assert false
+          end
+      | `Backward, Some (Prop, left, right)
+          when left = native_core_true && is_definition_term right ->
+          begin match native_core_proof_from_true_eq right target_for_match proof with
+          | Some proof -> proof
+          | None -> assert false
+          end
+      | `Backward, Some (Prop, left, right)
+          when right = native_core_true && is_definition_term left ->
+          begin match native_core_proof_from_true_eq left target_for_match proof with
+          | Some proof -> proof
+          | None -> assert false
+          end
+      | _ ->
       match source, target with
       | All (source_tp, source_body), All (target_tp, target_body)
           when source_tp = target_tp ->
@@ -10846,14 +11032,29 @@ let native_core_formula_orientation_proof
               | Some (Pos swapped) when swapped = target_for_match ->
                   native_core_eq_symmetry_proof id (Pos source) proof
               | _ ->
-                  if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
-                    prerr_endline ("native core formula orientation debug source: " ^ tm_to_str source);
-                    prerr_endline ("native core formula orientation debug target: " ^ tm_to_str target);
-                    prerr_endline ("native core formula orientation debug normalized source: " ^ tm_to_str source_for_match);
-                    prerr_endline ("native core formula orientation debug normalized target: " ^ tm_to_str target_for_match)
-                  end;
-                  error
-                    (id ^ ": native preprocess proof-term formula orientation supports only equality symmetry and matching logical structure")
+                  begin match native_core_equality_sides target_for_match with
+                  | Some (Prop, left, right)
+                      when left = native_core_true && is_definition_term right ->
+                      begin match native_core_true_eq_from_proof right target_for_match proof with
+                      | Some proof -> proof
+                      | None -> assert false
+                      end
+                  | Some (Prop, left, right)
+                      when right = native_core_true && is_definition_term left ->
+                      begin match native_core_true_eq_from_proof left target_for_match proof with
+                      | Some proof -> proof
+                      | None -> assert false
+                      end
+                  | _ ->
+                      if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
+                        prerr_endline ("native core formula orientation debug source: " ^ tm_to_str source);
+                        prerr_endline ("native core formula orientation debug target: " ^ tm_to_str target);
+                        prerr_endline ("native core formula orientation debug normalized source: " ^ tm_to_str source_for_match);
+                        prerr_endline ("native core formula orientation debug normalized target: " ^ tm_to_str target_for_match)
+                      end;
+                      error
+                        (id ^ ": native preprocess proof-term formula orientation supports only equality symmetry, true equality introduction, and matching logical structure")
+                  end
               end
           | `Backward ->
               let source_for_match =
@@ -10868,16 +11069,32 @@ let native_core_formula_orientation_proof
               | Some (Pos swapped) when swapped = source_for_match ->
                   native_core_eq_symmetry_proof id (Pos target) proof
               | _ ->
-                  if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
-                    prerr_endline ("native core formula orientation debug source: " ^ tm_to_str source);
-                    prerr_endline ("native core formula orientation debug target: " ^ tm_to_str target);
-                    prerr_endline ("native core formula orientation debug normalized source: " ^ tm_to_str source_for_match);
-                    prerr_endline ("native core formula orientation debug normalized target: " ^ tm_to_str target_for_match)
-                  end;
-                  error
-                    (id ^ ": native preprocess proof-term formula orientation supports only equality symmetry and matching logical structure")
+                  begin match native_core_equality_sides target_for_match with
+                  | Some (Prop, left, right)
+                      when left = native_core_true && is_definition_term right ->
+                      begin match native_core_proof_from_true_eq right target_for_match proof with
+                      | Some proof -> proof
+                      | None -> assert false
+                      end
+                  | Some (Prop, left, right)
+                      when right = native_core_true && is_definition_term left ->
+                      begin match native_core_proof_from_true_eq left target_for_match proof with
+                      | Some proof -> proof
+                      | None -> assert false
+                      end
+                  | _ ->
+                      if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
+                        prerr_endline ("native core formula orientation debug source: " ^ tm_to_str source);
+                        prerr_endline ("native core formula orientation debug target: " ^ tm_to_str target);
+                        prerr_endline ("native core formula orientation debug normalized source: " ^ tm_to_str source_for_match);
+                        prerr_endline ("native core formula orientation debug normalized target: " ^ tm_to_str target_for_match)
+                      end;
+                      error
+                        (id ^ ": native preprocess proof-term formula orientation supports only equality symmetry, true equality elimination, and matching logical structure")
+                  end
               end
           end
+    end
   in
   let body_proof = convert `Forward source target parent_proof in
   native_core_bind_result_step_variables variables result_step_variables body_proof
@@ -13244,26 +13461,23 @@ let elaborate_preprocess_refutation_native
           store_formula id formula proof
       | PredicateDefinition (id, symbol, result) ->
           check_predicate_definition id symbol result;
-          let prop = native_formula_step_prop id result in
-          let primitive = "vampire_predicate_definition_" ^ id in
-          install_transitional_known id primitive prop;
-          Hashtbl.replace transitional_primitive_formula_steps id true;
-          store_formula id result (Known primitive)
+          let result_step_variables = native_core_step_variables cert id in
+          store_formula id result
+            (native_core_bind_result_step_variables
+               variables result_step_variables
+               (native_core_predicate_definition_proof id result))
       | PredicateDefinitionFold (id, source_id, definition_id, result) ->
           let source_formula, source_proof = lookup_formula source_id in
-          let definition_formula, definition_proof = lookup_formula definition_id in
+          let definition_formula, _ = lookup_formula definition_id in
           check_predicate_definition_fold (checked_formulas ()) id source_id definition_id result;
-          let source_prop = native_formula_step_prop source_id source_formula in
-          let definition_prop = native_formula_step_prop definition_id definition_formula in
-          let result_prop = native_formula_step_prop id result in
-          let primitive = "vampire_predicate_definition_fold_" ^ id in
-          let primitive_prop =
-            primitive_implication [source_prop; definition_prop] result_prop
-          in
-          install_transitional_known id primitive primitive_prop;
-          Hashtbl.replace transitional_primitive_formula_steps id true;
+          let defined, _, _ = predicate_definition_parts definition_id definition_formula in
+          let parent_step_variables = native_core_step_variables cert source_id in
+          let result_step_variables = native_core_step_variables cert id in
           store_formula id result
-            (apply_primitive primitive [source_proof; definition_proof])
+            (native_core_formula_orientation_proof
+               ~definition_symbols:[native_core_ident defined]
+               id variables parent_step_variables result_step_variables
+               source_formula result source_proof)
       | PredicateDefinitionFoldChain (id, source_id, definition_ids, result) ->
           let source_formula, source_proof = lookup_formula source_id in
           let definition_formulas_and_proofs =
