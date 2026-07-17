@@ -109,6 +109,46 @@ if ! rg -q 'Vampire certificate v1 native core source assumptions remaining by k
   exit 1
 fi
 
+live_dir="$WORK_DIR/live_target_reconstruct"
+mkdir -p "$live_dir"
+cat >"$live_dir/fake_vampire" <<EOF_FAKE_VAMPIRE
+#!/usr/bin/env bash
+problem="\${@: -1}"
+case_file="$CASE_NATIVE"
+conj=\$(sed -n 's/^% megalodon_source_map (conjecture "\([^"]*\)" .*/\1/p' "\$problem" | head -1)
+old=\$(sed -n 's/.*(source negated_conjecture "\([^"]*\)").*/\1/p' "\$case_file" | head -1)
+printf '%% SZS status Theorem\n%% SZS output start Proof\nmegalodon_certificate_native_sexpr_start.\n'
+sed "s/\$old/\$conj/g" "\$case_file"
+printf 'megalodon_certificate_native_sexpr_end.\n%% SZS output end Proof\n'
+EOF_FAKE_VAMPIRE
+chmod +x "$live_dir/fake_vampire"
+
+"$MEGALODON" \
+  -v 9 \
+  -allowincompleteqed \
+  -th0single "$live_dir/hammer_11703_242_live" 11703 242 \
+  -vampireaby "$live_dir/fake_vampire" \
+  -vampireabyproof megalodon \
+  -vampireabynative \
+  -vampireabynativestrict \
+  -vampireabyoutdir "$live_dir/out" \
+  "$SOURCE_FILE" \
+  >"$live_dir/live.out" \
+  2>"$live_dir/live.err"
+
+if ! rg -q 'Vampire native certificate checked 44 steps and 7 sources at line 11703 char 242; source_context known=1 local=4 local_definition=0 conjecture=2 unresolved=0\.' "$live_dir/live.out"; then
+  echo "th0single live target reconstruction did not resolve the real 11703 source context" >&2
+  exit 1
+fi
+if ! rg -q 'Vampire native certificate reconstructed aby proof term at line 11703 char 242\.' "$live_dir/live.out"; then
+  echo "th0single live target reconstruction did not reconstruct the 11703 target proof term" >&2
+  exit 1
+fi
+if ! rg -q 'Vampire th0single native certificate reconstructed target proof term at line 11703 char 242\.' "$live_dir/live.out"; then
+  echo "th0single live target reconstruction did not report the target-only native success marker" >&2
+  exit 1
+fi
+
 echo "th0single source-map smoke passed"
 echo "th0single source-map artifacts: $WORK_DIR"
 echo "th0single source-map latest link: $TMPDIR/latest_th0single_source_map"

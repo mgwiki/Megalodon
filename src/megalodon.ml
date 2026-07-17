@@ -5941,7 +5941,37 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                   begin match pitem with
                   | Aby xl ->
                      let conjn = stable_aby_obligation_name () in
-                     Printf.fprintf ch "%s" (th0_aby_problem_content atm cxtm cxpf xl conjn)
+                     let content = th0_aby_problem_content atm cxtm cxpf xl conjn in
+                     Printf.fprintf ch "%s" content;
+                     close_out ch;
+                     begin
+                       match !vampireaby with
+                       | None -> ()
+                       | Some(_) ->
+                          let reconstructed =
+                            run_vampire_aby_certificate ~claimtm:atm ~cxtm ~cxpf content
+                          in
+                          if !vampireabynative then
+                            match reconstructed with
+                            | Some(_) ->
+                               if !verbosity > 2 then
+                                 begin
+                                   Printf.printf
+                                     "Vampire th0single native certificate reconstructed target proof term at line %d char %d.\n"
+                                     !lineno
+                                     !charno;
+                                   flush stdout
+                                 end
+                            | None when !vampireabynativestrict ->
+                               raise
+                                 (Failure
+                                    (Printf.sprintf
+                                       "Vampire th0single native certificate did not reconstruct target proof term at line %d char %d"
+                                       !lineno
+                                       !charno))
+                            | None -> ()
+                     end;
+                     exit 0
                   | _ ->
                      List.iter
                        (fun (_,_,_,a) -> Printf.fprintf ch "%s\n" a)
@@ -7143,17 +7173,25 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                end;
              end;
            begin
+             let th0single_targeting =
+               match !th0singlesubgoal with
+               | None -> false
+               | Some(_) -> true
+             in
              let require_vampire_native_certificate =
-               !vampireabynativestrict && !vampireaby <> None
+               !vampireabynativestrict && !vampireaby <> None && not th0single_targeting
              in
              let native_aby_result =
-               if !vampireabynative && not require_vampire_native_certificate then
+               if !vampireabynative
+                  && not require_vampire_native_certificate
+                  && not th0single_targeting
+               then
                  native_aby_reconstruct claimtm cxtm cxpf xl
                else
                  None
              in
              let vampire_native_result = ref None in
-             begin
+             if not th0single_targeting then begin
                match !vampireaby with
                | None -> ()
                | Some(_) ->
@@ -7181,7 +7219,7 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                      end
              end;
              begin
-               if !vampireabynative then
+               if !vampireabynative && not th0single_targeting then
                  let native_aby_result =
                    match !vampire_native_result with
                    | Some _ as result -> result
