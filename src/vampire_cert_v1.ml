@@ -8970,9 +8970,13 @@ let native_core_certificate_sgdelta cert symbol_table =
     avatar_definitions;
   sgdelta, definitions
 
-let native_core_expand_generated_skolems_step cert definitions step =
+let native_core_expand_generated_skolems_tm cert definitions input =
   let generated = native_core_generated_skolem_symbols cert in
   let is_generated h = List.mem h generated in
+  let rec leading_lam_count count = function
+    | Lam (_, body) -> leading_lam_count (count + 1) body
+    | _ -> count
+  in
   let rec apply_definition body = function
     | [] -> tm_beta_eta_norm body
     | arg :: rest ->
@@ -8995,11 +8999,18 @@ let native_core_expand_generated_skolems_step cert definitions step =
     match head with
     | TmH h when is_generated h ->
         begin match Hashtbl.find_opt definitions h with
-        | Some (0, body) -> tm (apply_definition body args)
-        | _ -> mapped
+        | Some (0, body) ->
+            if List.length args < leading_lam_count 0 body then mapped
+            else tm (apply_definition body args)
+        | _ ->
+            mapped
         end
     | _ -> mapped
   in
+  tm input
+
+let native_core_expand_generated_skolems_step cert definitions step =
+  let tm = native_core_expand_generated_skolems_tm cert definitions in
   let literal = function
     | Pos atom -> Pos (tm atom)
     | Neg atom -> Neg (tm atom)
@@ -10346,6 +10357,7 @@ let native_core_eq_symmetry_proof id literal proof =
       end
 
 let native_core_formula_orientation_proof
+    ?(normalize_formula_for_match=(fun tm -> tm))
     id variables parent_step_variables result_step_variables source target proof =
   let result_variable_count = List.length result_step_variables in
   let db_for_result_variable name tp =
@@ -10399,10 +10411,14 @@ let native_core_formula_orientation_proof
   let target = native_core_close_tm (variables @ result_step_variables) target in
   let rec convert direction source target proof =
     let source_prop =
-      native_core_formula_prop source |> native_core_normalize_bool_constants
+      normalize_formula_for_match source
+      |> native_core_formula_prop
+      |> native_core_normalize_bool_constants
     in
     let target_prop =
-      native_core_formula_prop target |> native_core_normalize_bool_constants
+      normalize_formula_for_match target
+      |> native_core_formula_prop
+      |> native_core_normalize_bool_constants
     in
     if source_prop = target_prop then proof
     else
@@ -10581,25 +10597,45 @@ let native_core_formula_orientation_proof
       | _ ->
           begin match direction with
           | `Forward ->
-              begin match native_core_swapped_eq_literal (Pos source) with
-              | Some (Pos swapped) when swapped = target ->
+              let source_for_match =
+                normalize_formula_for_match source
+                |> native_core_normalize_bool_constants
+              in
+              let target_for_match =
+                normalize_formula_for_match target
+                |> native_core_normalize_bool_constants
+              in
+              begin match native_core_swapped_eq_literal (Pos source_for_match) with
+              | Some (Pos swapped) when swapped = target_for_match ->
                   native_core_eq_symmetry_proof id (Pos source) proof
               | _ ->
                   if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
                     prerr_endline ("native core formula orientation debug source: " ^ tm_to_str source);
-                    prerr_endline ("native core formula orientation debug target: " ^ tm_to_str target)
+                    prerr_endline ("native core formula orientation debug target: " ^ tm_to_str target);
+                    prerr_endline ("native core formula orientation debug normalized source: " ^ tm_to_str source_for_match);
+                    prerr_endline ("native core formula orientation debug normalized target: " ^ tm_to_str target_for_match)
                   end;
                   error
                     (id ^ ": native preprocess proof-term formula orientation supports only equality symmetry and matching logical structure")
               end
           | `Backward ->
-              begin match native_core_swapped_eq_literal (Pos target) with
-              | Some (Pos swapped) when swapped = source ->
+              let source_for_match =
+                normalize_formula_for_match source
+                |> native_core_normalize_bool_constants
+              in
+              let target_for_match =
+                normalize_formula_for_match target
+                |> native_core_normalize_bool_constants
+              in
+              begin match native_core_swapped_eq_literal (Pos target_for_match) with
+              | Some (Pos swapped) when swapped = source_for_match ->
                   native_core_eq_symmetry_proof id (Pos target) proof
               | _ ->
                   if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
                     prerr_endline ("native core formula orientation debug source: " ^ tm_to_str source);
-                    prerr_endline ("native core formula orientation debug target: " ^ tm_to_str target)
+                    prerr_endline ("native core formula orientation debug target: " ^ tm_to_str target);
+                    prerr_endline ("native core formula orientation debug normalized source: " ^ tm_to_str source_for_match);
+                    prerr_endline ("native core formula orientation debug normalized target: " ^ tm_to_str target_for_match)
                   end;
                   error
                     (id ^ ": native preprocess proof-term formula orientation supports only equality symmetry and matching logical structure")
@@ -10687,7 +10723,9 @@ let native_core_skolem_target_witness id source target =
       error
         (id ^ ": native core proof-term skolemization result does not match source body")
 
-let native_core_direct_skolem_formula_proof id substitution source target proof =
+let native_core_direct_skolem_formula_proof
+    ?(normalize_formula_for_match=(fun tm -> tm))
+    id substitution source target proof =
   let rec rewrite_witnesses replacements depth tm =
     match
       List.find_opt
@@ -10744,9 +10782,11 @@ let native_core_direct_skolem_formula_proof id substitution source target proof 
     rewrite_witnesses replacements 0 target
   in
   native_core_formula_orientation_proof
+    ~normalize_formula_for_match
     id [] [] [] orientation_source orientation_target choice_proof
 
 let native_core_skolem_formula_proof
+    ?(normalize_formula_for_match=(fun tm -> tm))
     id variables parent_step_variables result_step_variables substitution source target proof =
   let source = native_core_close_tm (variables @ result_step_variables) source in
   let target = native_core_close_tm (variables @ result_step_variables) target in
@@ -10861,6 +10901,7 @@ let native_core_skolem_formula_proof
               substitution
           in
           native_core_direct_skolem_formula_proof
+            ~normalize_formula_for_match
             id closed_substitution source target proof
       | _ ->
           error
@@ -12256,6 +12297,9 @@ let elaborate_core_resolution_refutation_native
   let variables = native_core_proof_variables ~exclude_names:external_definition_names cert in
   let symbol_table = native_core_symbol_table cert in
   let proof_delta, raw_definition_delta = native_core_certificate_sgdelta cert symbol_table in
+  let normalize_generated_skolems =
+    native_core_expand_generated_skolems_tm cert raw_definition_delta
+  in
   let typed_steps =
     List.map
       (native_core_type_raw_equalities_step cert variables symbol_table)
@@ -12511,6 +12555,7 @@ let elaborate_core_resolution_refutation_native
               let result_step_variables = native_core_step_variables cert id in
               store_formula id result
                 (native_core_skolem_formula_proof
+                   ~normalize_formula_for_match:normalize_generated_skolems
                    id variables parent_step_variables result_step_variables
                    subst source result parent_proof)
           | None ->
@@ -12704,6 +12749,9 @@ let elaborate_preprocess_refutation_native
   let variables = native_core_proof_variables ~exclude_names:external_definition_names cert in
   let symbol_table = native_core_symbol_table cert in
   let proof_delta, raw_definition_delta = native_core_certificate_sgdelta cert symbol_table in
+  let normalize_generated_skolems =
+    native_core_expand_generated_skolems_tm cert raw_definition_delta
+  in
   let typed_steps =
     List.map
       (native_core_type_raw_equalities_step cert variables symbol_table)
@@ -13071,6 +13119,7 @@ let elaborate_preprocess_refutation_native
               let result_step_variables = native_core_step_variables cert id in
               store_formula id result
                 (native_core_skolem_formula_proof
+                   ~normalize_formula_for_match:normalize_generated_skolems
                    id variables parent_step_variables result_step_variables
                    subst source result parent_proof)
           | None ->

@@ -684,6 +684,20 @@ certificate to contain `skolem_formula` and named `VLAMV` binders, and checks
 `-vampirecertv1preprocesspfcheck` without allowing transitional
 certificate-derived `Known` primitives.
 
+To regenerate the cached Skolem-selected frontier with the current Vampire
+binary and check the resulting proof terms, use:
+
+```sh
+tests/vampire_certificate/run_native_live_skolem_pf_frontier.sh
+```
+
+This selects the same Skolem-heavy cases as
+`run_native_cert_v1_skolem_closed_audit.sh`, runs Vampire once per THF problem
+in parallel with a 10-second prover timeout, extracts each native certificate,
+and checks `-vampirecertv1preprocesspfcheck -vampirecertv1strict` without
+`MEGALODON_CERT_ALLOW_TRANSITIONAL_PREPROCESS_KNOWN=1`. It is the preferred
+Skolem frontier signal when the cached certificates are stale.
+
 To check a live Vampire binary's Skolemization metadata emission, use:
 
 ```sh
