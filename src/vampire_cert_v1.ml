@@ -4375,6 +4375,75 @@ let validate_kernel_v1_metadata_contracts cert =
            ^ field_name ^ " references non-earlier unit " ^ step_id)
     | Some _, _ -> ()
   in
+  let validate_avatar_component_metadata id fields =
+    require_rule_fields id fields "avatar_component"
+      ["result_clause";
+       "literal_count";
+       "split_count";
+       "split_0_level";
+       "split_0_var";
+       "split_0_positive"];
+    begin match Hashtbl.find_opt step_by_id id with
+    | Some (AvatarComponent (_, result)) ->
+        require_field_clause id fields "result_clause" result;
+        begin match field_value "conclusion_clause" fields with
+        | Some _ -> require_field_clause id fields "conclusion_clause" result
+        | None -> ()
+        end;
+        begin match field_value "result_literal_count" fields with
+        | Some _ -> require_field_int id fields "result_literal_count" (List.length result)
+        | None -> ()
+        end;
+        List.iteri
+          (fun index literal ->
+             let key = "result_literal_" ^ string_of_int index in
+             match field_value key fields with
+             | Some _ -> require_field_literal id fields key literal
+             | None -> ())
+          result;
+        check_avatar_component_strict id result;
+        require_field_int id fields "split_count" 1;
+        let split_level = field_int id fields "split_0_level" in
+        if split_level < 0 then
+          error
+            (id ^ ": strict certificate v1 kernel_v1 avatar_component split_0_level is negative");
+        let split_var = field_int id fields "split_0_var" in
+        if split_var <= 0 then
+          error
+            (id ^ ": strict certificate v1 kernel_v1 avatar_component split_0_var must be positive");
+        let split_positive =
+          match field_int id fields "split_0_positive" with
+          | 0 -> false
+          | 1 -> true
+          | _ ->
+              error
+                (id ^ ": strict certificate v1 kernel_v1 avatar_component split_0_positive must be 0 or 1")
+        in
+        let split_literals, component_literals =
+          List.partition is_split_literal result
+        in
+        begin match split_literals with
+        | [split_literal] ->
+            if not (avatar_split_literal_matches split_var split_positive split_literal) then
+              error
+                (id ^ ": strict certificate v1 kernel_v1 avatar_component split metadata does not match the certificate split literal")
+        | _ -> assert false
+        end;
+        require_field_int id fields "literal_count" (List.length component_literals);
+        List.iteri
+          (fun index literal ->
+             require_field_literal id fields
+               ("literal_" ^ string_of_int index)
+               literal)
+          component_literals
+    | Some _ ->
+        error
+          (id ^ ": strict certificate v1 kernel_v1 avatar_component metadata must annotate an avatar_component step")
+    | None ->
+        error
+          (id ^ ": strict certificate v1 kernel_v1 avatar_component metadata has no matching certificate step")
+    end
+  in
   let validate_avatar_refutation_metadata id fields owner_index =
     require_rule_fields id fields "avatar_refutation"
       ["result_clause";
@@ -6119,6 +6188,8 @@ let validate_kernel_v1_metadata_contracts cert =
                  error
                    (id ^ ": strict certificate v1 kernel_v1 equality_factoring metadata has no matching certificate step")
              end
+         | "avatar_component" ->
+             validate_avatar_component_metadata id fields
          | "avatar_refutation" ->
              validate_avatar_refutation_metadata id fields owner_index
          | _ -> ()

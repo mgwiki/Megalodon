@@ -2482,6 +2482,33 @@ if ! rg -q 'Vampire certificate v1 strict checked 6 steps' "$WORK_DIR/native_cer
 fi
 
 bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_avatar_component_kernel_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_avatar_component_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_avatar_component_kernel_valid.log"
+
+if ! rg -q 'Vampire certificate v1 strict checked 6 steps' "$WORK_DIR/native_cert_v1_avatar_component_kernel_valid.log"; then
+  echo "strict native certificate v1 checker did not accept AVATAR component kernel metadata" >&2
+  exit 1
+fi
+
+if bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_avatar_component_kernel_split_bad.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_avatar_component_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_avatar_component_kernel_split_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_avatar_component_kernel_split_bad.err"; then
+  echo "strict native certificate v1 checker accepted AVATAR component metadata with a bad split descriptor" >&2
+  exit 1
+fi
+
+if ! rg -q 'avatar_component split metadata does not match the certificate split literal' \
+    "$WORK_DIR/native_cert_v1_avatar_component_kernel_split_bad.err"; then
+  echo "strict native certificate v1 AVATAR component metadata failure did not explain the bad split descriptor" >&2
+  exit 1
+fi
+
+bin/megalodon \
   -vampirecertv1closed \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_avatar_component_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_avatar_component_valid.th0.p \

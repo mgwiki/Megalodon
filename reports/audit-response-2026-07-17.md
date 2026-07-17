@@ -777,3 +777,25 @@ Validation:
 - kernel-v1 metadata audit: 738 records, including 2 `avatar_refutation`
 - native primitive audit: includes 2 `avatar_refutation`, 10 `avatar_split`,
   47 `split_dependency`, 8 `avatar_definition`, and 8 `avatar_component`
+
+The same typed-consumption direction now covers `avatar_component` kernel
+metadata. Megalodon checks the `result_clause`/`conclusion_clause`,
+`literal_count`, each component `literal_i`, and the single
+`split_0_level`/`split_0_var`/`split_0_positive` descriptor against the
+parsed `avatar_component` step. A bad split descriptor is rejected by
+`native_cert_v1_avatar_component_kernel_split_bad.sexp`.
+
+This is still certificate-object validation rather than proof-term lowering.
+The proof reconstruction gap remains: the checked component/refutation
+objects must still be turned into Megalodon proof terms or consumed by a small
+AVATAR/SAT kernel that constructs those terms.
+
+Validation:
+
+- `TMPDIR=/project/tmp ./makeopt`
+- `TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh`
+- 20-case strict live THF run, `JOBS=10`, `VAMPIRE_SECONDS=10`: `PASS 20`
+- kernel-v1 metadata audit: 738 records, including 8 `avatar_component`
+- native primitive audit: includes 8 `avatar_component`, 8
+  `avatar_definition`, 2 `avatar_refutation`, 10 `avatar_split`, and 47
+  `split_dependency`

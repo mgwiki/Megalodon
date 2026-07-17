@@ -880,6 +880,39 @@ Validation:
   `avatar_refutation`, 10 `avatar_split`, 47 `split_dependency`, 8
   `avatar_definition`, and 8 `avatar_component` records.
 
+Additional follow-up: Megalodon now also validates structured
+`avatar_component` `kernel_v1` metadata as typed certificate data. The
+importer checks that the metadata result/conclusion clauses match the parsed
+`avatar_component` step, that `literal_count` and each `literal_i` field match
+the non-split component literals, and that the single split descriptor
+`split_0_level`/`split_0_var`/`split_0_positive` is well formed and matches
+the actual `split_N` literal in the certificate clause. This uses Vampire's
+existing convention that a positive component split descriptor is represented
+by a negative `split_N` literal in the component clause.
+
+This keeps the AVATAR work on the certificate-object path: Vampire emits the
+component metadata, and Megalodon checks it directly. It is still not a claim
+that AVATAR component reasoning has been fully lowered to final Megalodon
+proof terms in the native small-kernel path.
+
+Validation:
+
+- `TMPDIR=/project/tmp ./makeopt` passed in `/project/Megalodon`.
+- New focused fixtures
+  `native_cert_v1_avatar_component_kernel_valid.sexp` and
+  `native_cert_v1_avatar_component_kernel_split_bad.sexp` cover the valid
+  metadata path and a bad split descriptor.
+- `TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh`
+  passed.
+- A fresh 20-case strict source-linked live THF run with `JOBS=10` and
+  `VAMPIRE_SECONDS=10` produced `PASS 20` using
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11067`.
+- The kernel-v1 metadata audit passed on that artifact, covering 738
+  `kernel_v1` records and 8 `avatar_component` records.
+- The native primitive audit passed on the same artifact, including 8
+  `avatar_component`, 8 `avatar_definition`, 2 `avatar_refutation`, 10
+  `avatar_split`, and 47 `split_dependency` records.
+
 Additional follow-up: Megalodon now validates the structured
 `avatar_refutation` `kernel_v1` metadata as typed SAT certificate data before
 the ordinary strict step checker runs. The importer parses and checks the

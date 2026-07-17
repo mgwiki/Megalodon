@@ -284,6 +284,13 @@ For FOOL exhaustiveness, it requires a parentless
 literal fields rendered by Vampire.
 For AVATAR components, it requires the result clause, rendered literals, and the
 split level/variable/sign fields read from Vampire's component clause split set.
+The strict Megalodon importer validates those `avatar_component` `kernel_v1`
+fields against the parsed certificate step: the result/conclusion clauses must
+match, the component `literal_i` fields must match the non-split literals, and
+the single split descriptor must match the actual `split_N` literal using
+Vampire's convention that `split_positive=1` is represented by a negative
+component split literal. `native_cert_v1_avatar_component_kernel_split_bad.sexp`
+is the negative regression for this boundary.
 For AVATAR definitions and split dependencies, it requires the component split
 level/variable/sign, structured component clause, component variable/de-Bruijn
 sort metadata, dependency count, and dependent result clause.
