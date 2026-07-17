@@ -2397,16 +2397,16 @@ fi
 
 if bin/megalodon \
   -vampirecertv1preprocesspfcheck \
-  -vampirecertv1 tests/vampire_certificate/native_cert_v1_fool_primitive_expansion_valid.sexp \
-  -vampirecertv1source tests/vampire_certificate/native_cert_v1_fool_primitive_expansion_origin_valid.th0.p \
-  "$dummy" >"$WORK_DIR/native_cert_v1_fool_preprocess_dynamic_known_bad.out" \
-  2>"$WORK_DIR/native_cert_v1_fool_preprocess_dynamic_known_bad.err"; then
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_core_skolemize_direct_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_core_skolemize_direct_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_skolem_preprocess_dynamic_known_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_skolem_preprocess_dynamic_known_bad.err"; then
   echo "native preprocess checker accepted a certificate-derived Known primitive without the structural opt-in" >&2
   exit 1
 fi
 
-if ! rg -q 'refuses certificate-derived Known primitive vampire_fool_formula_f1' \
-    "$WORK_DIR/native_cert_v1_fool_preprocess_dynamic_known_bad.err"; then
+if ! rg -q 'refuses certificate-derived Known primitive vampire_skolem_formula_u1' \
+    "$WORK_DIR/native_cert_v1_skolem_preprocess_dynamic_known_bad.err"; then
   echo "native preprocess checker did not explain rejected certificate-derived Known primitive" >&2
   exit 1
 fi
@@ -2471,7 +2471,7 @@ if rg -q 'refuses certificate-derived Known primitive vampire_avatar_|refuses ce
   exit 1
 fi
 
-MEGALODON_CERT_ALLOW_TRANSITIONAL_PREPROCESS_KNOWN=1 bin/megalodon \
+bin/megalodon \
   -vampirecertv1preprocesspfcheck \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_fool_primitive_expansion_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_fool_primitive_expansion_origin_valid.th0.p \
@@ -2497,7 +2497,7 @@ if rg -q 'admit|aby|-allowincompleteqed' \
   exit 1
 fi
 
-MEGALODON_CERT_ALLOW_TRANSITIONAL_PREPROCESS_KNOWN=1 bin/megalodon \
+bin/megalodon \
   -vampirecertv1preprocesspfcheck \
   -vampirecertv1 tests/vampire_certificate/closed_cases/hammer.1032.16.native.sexp \
   -vampirecertv1source tests/vampire_certificate/closed_cases/hammer.1032.16.th0.p \

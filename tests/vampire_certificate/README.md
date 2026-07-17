@@ -526,10 +526,11 @@ resolution templates used for ordinary `Resolve`, and rejects unsupported RUP
 shapes instead of installing trusted implications. General RUP unit-propagation
 traces over non-split component clauses remain open.
 
-The legacy structural diagnostic harnesses may opt in to the old trusted
-primitive behavior by setting
-`MEGALODON_CERT_ALLOW_TRANSITIONAL_PREPROCESS_KNOWN=1`; they report
-`PREPROCESS_STRUCTURAL_PASS`, not proof-term passes. The focused diagnostic is:
+The focused cached-corpus preprocess gate now runs without the old trusted
+primitive opt-in. It reports `PREPROCESS_STRUCTURAL_PASS` for historical
+compatibility with earlier audit output, but the selected cached cases are
+checked by native proof terms and reject certificate-derived `Known`
+propositions by default. The focused gate is:
 
 ```sh
 tests/vampire_certificate/run_native_cert_v1_preprocess_pf_audit.sh
@@ -544,12 +545,12 @@ tests/vampire_certificate/run_native_cert_v1_preprocess_pf_frontier.sh
 
 This first selects the `run_native_cert_v1_preprocess_closed_audit.sh`
 eligible cases, then runs `-vampirecertv1preprocesspfcheck` over them in
-parallel with the explicit transitional-known diagnostic opt-in. Passing cases
-are structural/native-AST plumbing checks, not counted reconstruction proofs.
-Failures are still useful for classifying the next missing real proof-term rule
-or Vampire-side primitive expansion, but the qualifying path is
-`-vampirecertv1corepfcheck` plus future certified preprocessing steps that do
-not use the transitional-known escape hatch.
+parallel. Passing cases are still cached-corpus evidence rather than final
+original-context reconstruction, but they are no longer justified by
+transitional preprocess `Known` primitives. Failures are useful for classifying
+the next missing proof-term rule or Vampire-side primitive expansion. The final
+qualifying path still requires original-context composition and the held-out
+100-theorem gate.
 
 For live THF problems, use:
 

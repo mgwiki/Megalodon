@@ -61,7 +61,7 @@ run_one() {
     return 0
   fi
 
-  if ! MEGALODON_CERT_ALLOW_TRANSITIONAL_PREPROCESS_KNOWN=1 "$MEGALODON" \
+  if ! "$MEGALODON" \
       -vampirecertv1preprocesspfcheck \
       -vampirecertv1 "$native" \
       -vampirecertv1source "$source" \

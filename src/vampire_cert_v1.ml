@@ -12835,14 +12835,12 @@ let elaborate_preprocess_refutation_native
     let use_primitive =
       cnf_step_uses_closed_parent_primitive parent_id
       || Hashtbl.mem transitional_primitive_clause_steps parent_id
-      || is_generated_substitute_step id
     in
     if use_primitive then begin
       let source_clause =
         subst_clause subst parent_clause
       in
-      if not (same_clause_multiset source_clause result)
-         && not (is_generated_substitute_step id) then
+      if not (same_clause_multiset source_clause result) then
         error
           (id ^ ": native proof-term checker instantiation substitution does not produce result clause");
       let parent_prop =
@@ -12970,19 +12968,19 @@ let elaborate_preprocess_refutation_native
           if Hashtbl.mem transitional_primitive_formula_steps parent_id then
             Hashtbl.replace transitional_primitive_formula_steps id true;
           store_formula id result parent_proof
-      | RectifyFormula (id, parent_id, _renamings, result) ->
+      | RectifyFormula (id, parent_id, renamings, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
-          let parent_prop =
-            native_formula_step_prop parent_id parent_formula
-          in
-          let result_prop =
-            native_formula_step_prop id result
-          in
-          let primitive = "vampire_rectify_formula_" ^ id in
-          let primitive_prop = Imp (parent_prop, result_prop) in
-          install_transitional_known id primitive primitive_prop;
-          Hashtbl.replace transitional_primitive_formula_steps id true;
-          store_formula id result (PPfAp (Known primitive, parent_proof))
+          check_rectify_formula
+            [(parent_id, CheckedFormula parent_formula)]
+            id parent_id renamings result;
+          let parent_step_variables = native_core_step_variables cert parent_id in
+          let result_step_variables = native_core_step_variables cert id in
+          if Hashtbl.mem transitional_primitive_formula_steps parent_id then
+            Hashtbl.replace transitional_primitive_formula_steps id true;
+          store_formula id result
+            (native_core_formula_orientation_proof
+               id variables parent_step_variables result_step_variables
+               parent_formula result parent_proof)
       | FoolBool (id, parent_id, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
           store_formula id (formula_tm_of_literal result)
@@ -12991,28 +12989,28 @@ let elaborate_preprocess_refutation_native
           check_fool_atom_lift id source target path
       | FoolFormula (id, parent_id, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
-          let candidates = fool_formula_tm_candidates parent_formula in
-          if not (List.exists (fun expected -> same_fool_formula_lift expected result) candidates) then
-            error (id ^ ": fool_formula result does not match recursive FOOL Boolean lifting");
-          let parent_prop = native_formula_step_prop parent_id parent_formula in
-          let result_prop = native_formula_step_prop id result in
-          let primitive = "vampire_fool_formula_" ^ id in
-          let primitive_prop = Imp (parent_prop, result_prop) in
-          install_transitional_known id primitive primitive_prop;
-          Hashtbl.replace transitional_primitive_formula_steps id true;
-          store_formula id result (PPfAp (Known primitive, parent_proof))
-      | EnnfFormula (id, parent_id, _source, _pairs, result) ->
+          check_fool_formula
+            [(parent_id, CheckedFormula parent_formula)]
+            id parent_id result;
+          let parent_step_variables = native_core_step_variables cert parent_id in
+          let result_step_variables = native_core_step_variables cert id in
+          if Hashtbl.mem transitional_primitive_formula_steps parent_id then
+            Hashtbl.replace transitional_primitive_formula_steps id true;
+          store_formula id result
+            (native_core_fool_formula_proof
+               id variables parent_step_variables result_step_variables
+               parent_formula result parent_proof)
+      | EnnfFormula (id, parent_id, source, pairs, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
-          let expected = ennf_pos parent_formula in
-          if not (same_ennf_tm expected result) then
-            error (id ^ ": ennf_formula result does not match deterministic ENNF transformation");
-          let parent_prop = native_formula_step_prop parent_id parent_formula in
-          let result_prop = native_formula_step_prop id result in
-          let primitive = "vampire_ennf_formula_" ^ id in
-          let primitive_prop = Imp (parent_prop, result_prop) in
-          install_transitional_known id primitive primitive_prop;
-          Hashtbl.replace transitional_primitive_formula_steps id true;
-          store_formula id result (PPfAp (Known primitive, parent_proof))
+          check_ennf_formula
+            [(parent_id, CheckedFormula parent_formula)]
+            id parent_id source pairs result;
+          let result_step_variables = native_core_step_variables cert id in
+          if Hashtbl.mem transitional_primitive_formula_steps parent_id then
+            Hashtbl.replace transitional_primitive_formula_steps id true;
+          store_formula id result
+            (native_core_ennf_formula_proof
+               id variables result_step_variables parent_formula result parent_proof)
       | SkolemFormula (id, parent_id, source, introductions, subst, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
           check_skolem_formula
