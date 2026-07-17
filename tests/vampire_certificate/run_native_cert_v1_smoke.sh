@@ -2535,6 +2535,31 @@ fi
 
 bin/megalodon \
   -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_avatar_split_kernel_valid.sexp \
+  "$dummy" >"$WORK_DIR/native_cert_v1_avatar_split_kernel_valid.log"
+
+if ! rg -q 'Vampire certificate v1 strict checked 6 steps' "$WORK_DIR/native_cert_v1_avatar_split_kernel_valid.log"; then
+  echo "strict native certificate v1 checker did not accept AVATAR split kernel metadata" >&2
+  exit 1
+fi
+
+if bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_avatar_split_kernel_sat_bad.sexp \
+  "$dummy" >"$WORK_DIR/native_cert_v1_avatar_split_kernel_sat_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_avatar_split_kernel_sat_bad.err"; then
+  echo "strict native certificate v1 checker accepted AVATAR split metadata with a bad SAT literal descriptor" >&2
+  exit 1
+fi
+
+if ! rg -q 'avatar_split metadata field sat_literal_0_var expected 1 but got 99\\|metadata field sat_literal_0_var expected 1 but got 99' \
+    "$WORK_DIR/native_cert_v1_avatar_split_kernel_sat_bad.err"; then
+  echo "strict native certificate v1 AVATAR split metadata failure did not explain the bad SAT literal descriptor" >&2
+  exit 1
+fi
+
+bin/megalodon \
+  -vampirecertv1strict \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_split_dependency_kernel_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_avatar_component_valid.th0.p \
   "$dummy" >"$WORK_DIR/native_cert_v1_split_dependency_kernel_valid.log"

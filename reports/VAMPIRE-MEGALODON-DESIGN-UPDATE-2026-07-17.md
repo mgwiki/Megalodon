@@ -1012,3 +1012,39 @@ Validation:
 - The native primitive audit passed on the same artifact, including 2
   `avatar_refutation`, 10 `avatar_split`, 47 `split_dependency`, 8
   `avatar_definition`, and 8 `avatar_component` records.
+
+Additional follow-up: the typed importer now validates structured
+`avatar_split` metadata too. It checks the source unit/first-parent link,
+source and parent clause fields, SAT split literal variables and polarities,
+component-parent references, component split-clause descriptors,
+literal-class maps, and parent-variable-binding maps against the parsed
+`AvatarSplit` certificate step. The regression fixture
+`native_cert_v1_avatar_split_kernel_sat_bad.sexp` verifies that a bad SAT
+split variable is rejected before any proof-term generation path sees the
+record.
+
+With this change, the focused AVATAR metadata families in the current strict
+sample are all consumed at a typed Megalodon boundary: `avatar_component`,
+`avatar_definition`, `split_dependency`, `avatar_split`, and
+`avatar_refutation`. This is a necessary audit response, but not yet the end
+state. The design direction remains to turn the checked AVATAR/SAT object into
+proof-producing code, either by a small dedicated AVATAR/SAT kernel or by
+lowering into explicit Megalodon proof terms.
+
+Validation:
+
+- `TMPDIR=/project/tmp ./makeopt` passed in `/project/Megalodon`.
+- New focused fixtures
+  `native_cert_v1_avatar_split_kernel_valid.sexp` and
+  `native_cert_v1_avatar_split_kernel_sat_bad.sexp` cover the valid metadata
+  path and a bad SAT split descriptor.
+- `TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh`
+  passed.
+- A fresh 20-case strict source-linked live THF run with `JOBS=10` and
+  `VAMPIRE_SECONDS=10` produced `PASS 20` using
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11067`.
+- The kernel-v1 metadata audit passed on that artifact, covering 738
+  `kernel_v1` records and 7 `avatar_split` records.
+- The native primitive audit passed on the same artifact, including 10
+  `avatar_split`, 47 `split_dependency`, 8 `avatar_definition`, 8
+  `avatar_component`, and 2 `avatar_refutation` records.

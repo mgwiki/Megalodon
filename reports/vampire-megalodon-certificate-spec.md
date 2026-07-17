@@ -382,11 +382,16 @@ component clause sexpr, variable sort count, de-Bruijn sort count, and result
 clause must match the parsed certificate step. For `split_dependency`, the
 owner-to-suffixed-step mapping, result clause, dependency count, each
 dependency split descriptor, component clause sexpr, and component sort-count
-fields must match the parsed certificate step. For `avatar_refutation`, the
-SAT input map and SAT proof trace are checked: input origins must name earlier
-certificate units, SAT proof ids must be positive and unique, RUP parents must
-be earlier SAT proof steps, recorded parent clauses must match, RUP side
-conditions are checked, and the final SAT proof step must be the empty clause.
+fields must match the parsed certificate step. For `avatar_split`, the source
+unit must be the first certificate parent, SAT literal descriptors must match
+the result split literals, component-parent references must match the remaining
+certificate parents, component split clauses must match their split descriptors,
+and literal-class/parent-variable-binding count fields must enumerate present
+records. For `avatar_refutation`, the SAT input map and SAT proof trace are
+checked: input origins must name earlier certificate units, SAT proof ids must
+be positive and unique, RUP parents must be earlier SAT proof steps, recorded
+parent clauses must match, RUP side conditions are checked, and the final SAT
+proof step must be the empty clause.
 
 This is still not the final proof reconstruction result. The next spec step is
 to define how the checked AVATAR/SAT object is elaborated into Megalodon proof

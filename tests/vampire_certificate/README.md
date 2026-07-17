@@ -309,7 +309,15 @@ formula, SAT literals, previous split count, component-parent count,
 zero-indexed `component_parent_ref_i` unit/split/clause fields, literal-class
 count, and parent variable binding count that Vampire computes during split
 reconstruction. The literal-class and parent-variable-binding counts must
-enumerate complete indexed maps.
+enumerate complete indexed maps. The strict Megalodon importer validates
+`avatar_split` `kernel_v1` records against the parsed certificate step:
+`source_unit` must be the first certificate parent and refer to an earlier
+unit, SAT literal variables/polarities must match the split literals in the
+certificate result, structured component-parent references must match the
+remaining certificate parents, component split clauses must match their
+split descriptors, and literal-class/parent-variable-binding counts must
+enumerate present fields. `native_cert_v1_avatar_split_kernel_sat_bad.sexp`
+is the negative regression for this boundary.
 For AVATAR refutations, it requires the empty result clause, SAT input clauses,
 input origin units, and SAT proof steps emitted by Vampire.
 The strict Megalodon importer also parses those `avatar_refutation` fields as

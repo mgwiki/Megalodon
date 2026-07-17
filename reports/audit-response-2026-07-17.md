@@ -843,3 +843,33 @@ Validation:
 - native primitive audit: includes 47 `split_dependency`, 8
   `avatar_definition`, 8 `avatar_component`, 2 `avatar_refutation`, and 10
   `avatar_split`
+
+Additional follow-up: Megalodon now validates structured `avatar_split`
+`kernel_v1` metadata as typed certificate data. The importer checks that
+`source_unit` is the first certificate parent and refers to an earlier unit,
+parses the source/parent clause fields, checks SAT literal variables and
+polarities against the split literals in the certificate result, checks the
+structured `component_parent_ref_i` records against the remaining certificate
+parents, validates component split clauses against their split descriptors, and
+requires literal-class and parent-variable-binding count fields to enumerate
+present records. The negative fixture
+`native_cert_v1_avatar_split_kernel_sat_bad.sexp` rejects a bad SAT split
+variable.
+
+This closes the typed-importer validation loop for the AVATAR metadata families
+present in the focused sample: component, definition, split dependency, split,
+and SAT refutation. It still does not claim final Megalodon proof-term lowering
+for AVATAR/SAT. The next proof-producing step should consume these checked
+objects in a small AVATAR/SAT kernel or lower them into explicit Megalodon proof
+terms.
+
+Validation:
+
+- `TMPDIR=/project/tmp ./makeopt`
+- focused valid/bad `avatar_split` metadata fixtures
+- `TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh`
+- 20-case strict live THF run, `JOBS=10`, `VAMPIRE_SECONDS=10`: `PASS 20`
+- kernel-v1 metadata audit: 738 records, including 7 `avatar_split`
+- native primitive audit: includes 10 `avatar_split`, 47
+  `split_dependency`, 8 `avatar_definition`, 8 `avatar_component`, and 2
+  `avatar_refutation`

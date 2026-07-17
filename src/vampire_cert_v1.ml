@@ -4618,6 +4618,207 @@ let validate_kernel_v1_metadata_contracts cert =
           (id ^ ": strict certificate v1 kernel_v1 split_dependency metadata has no matching certificate step")
     end
   in
+  let validate_avatar_split_metadata id fields owner_index =
+    require_rule_fields id fields "avatar_split"
+      ["source_unit";
+       "source_clause";
+       "sat_literal_count";
+       "component_parent_ref_count";
+       "literal_class_count";
+       "parent_var_binding_count";
+       "previous_split_count"];
+    let bool_field key context =
+      match field_int id fields key with
+      | 0 -> false
+      | 1 -> true
+      | _ ->
+          error
+            (id ^ ": strict certificate v1 kernel_v1 avatar_split "
+             ^ context ^ " field " ^ key ^ " must be 0 or 1")
+    in
+    let check_result_split_literal index literal =
+      match split_literal_number literal with
+      | Some split_var ->
+          require_field_int id fields
+            ("sat_literal_" ^ string_of_int index ^ "_var")
+            split_var;
+          let metadata_positive =
+            bool_field
+              ("sat_literal_" ^ string_of_int index ^ "_positive")
+              "SAT literal"
+          in
+          let result_positive =
+            match literal with
+            | Pos _ -> true
+            | Neg _ -> false
+          in
+          if metadata_positive <> result_positive then
+            error
+              (id ^ ": strict certificate v1 kernel_v1 avatar_split SAT literal "
+               ^ string_of_int index
+               ^ " polarity does not match certificate result")
+      | None ->
+          error
+            (id ^ ": strict certificate v1 kernel_v1 avatar_split result literal "
+             ^ string_of_int index ^ " is not a split literal")
+    in
+    begin match Hashtbl.find_opt step_by_id id with
+    | Some (AvatarSplit (_, parent_ids, result)) ->
+        if result = [] then
+          error
+            (id ^ ": strict certificate v1 kernel_v1 avatar_split result is empty");
+        let source_unit = field_required id fields "source_unit" in
+        begin match parent_ids with
+        | source_parent :: _ ->
+            if source_parent <> source_unit then
+              error
+                (id ^ ": strict certificate v1 kernel_v1 avatar_split source_unit "
+                 ^ source_unit ^ " does not match first certificate parent "
+                 ^ source_parent)
+        | [] ->
+            error
+              (id ^ ": strict certificate v1 kernel_v1 avatar_split has no certificate parents")
+        end;
+        require_earlier_step id owner_index "source_unit" source_unit;
+        begin match field_value "parent_0_unit" fields with
+        | Some parent_0_unit ->
+            if parent_0_unit <> source_unit then
+              error
+                (id ^ ": strict certificate v1 kernel_v1 avatar_split parent_0_unit does not match source_unit")
+        | None -> ()
+        end;
+        let source_clause = parse_field id fields "source_clause" parse_clause in
+        begin match field_value "parent_0_clause" fields with
+        | Some _ -> require_field_clause id fields "parent_0_clause" source_clause
+        | None -> ()
+        end;
+        begin match field_value "result_clause" fields with
+        | Some _ -> require_field_clause id fields "result_clause" result
+        | None -> ()
+        end;
+        begin match field_value "conclusion_clause" fields with
+        | Some _ -> require_field_clause id fields "conclusion_clause" result
+        | None -> ()
+        end;
+        begin match field_value "result_literal_count" fields with
+        | Some _ -> require_field_int id fields "result_literal_count" (List.length result)
+        | None -> ()
+        end;
+        List.iteri
+          (fun index literal ->
+             let key = "result_literal_" ^ string_of_int index in
+             match field_value key fields with
+             | Some _ -> require_field_literal id fields key literal
+             | None -> ())
+          result;
+        require_field_int id fields "sat_literal_count" (List.length result);
+        List.iteri check_result_split_literal result;
+        let previous_split_count =
+          require_nonnegative_field_int id fields "previous_split_count"
+        in
+        for index = 0 to previous_split_count - 1 do
+          let prefix = "previous_split_" ^ string_of_int index in
+          let split_level = field_int id fields (prefix ^ "_level") in
+          if split_level < 0 then
+            error
+              (id ^ ": strict certificate v1 kernel_v1 avatar_split "
+               ^ prefix ^ "_level is negative");
+          let split_var = field_int id fields (prefix ^ "_var") in
+          if split_var <= 0 then
+            error
+              (id ^ ": strict certificate v1 kernel_v1 avatar_split "
+               ^ prefix ^ "_var must be positive");
+          ignore (bool_field (prefix ^ "_positive") "previous split" : bool)
+        done;
+        let component_parent_ref_count =
+          require_nonnegative_field_int id fields "component_parent_ref_count"
+        in
+        let expected_component_parents =
+          max 0 (List.length parent_ids - 1)
+        in
+        if component_parent_ref_count <> expected_component_parents then
+          error
+            (Printf.sprintf
+               "%s: strict certificate v1 kernel_v1 avatar_split component_parent_ref_count expected %d but got %d"
+               id expected_component_parents component_parent_ref_count);
+        begin match field_value "component_parent_count" fields with
+        | Some _ ->
+            require_field_int id fields
+              "component_parent_count"
+              component_parent_ref_count
+        | None -> ()
+        end;
+        for index = 0 to component_parent_ref_count - 1 do
+          let prefix = "component_parent_ref_" ^ string_of_int index in
+          let component_unit = field_required id fields (prefix ^ "_unit") in
+          require_earlier_step id owner_index (prefix ^ "_unit") component_unit;
+          let expected_parent = List.nth parent_ids (index + 1) in
+          if component_unit <> expected_parent then
+            error
+              (id ^ ": strict certificate v1 kernel_v1 avatar_split "
+               ^ prefix ^ "_unit " ^ component_unit
+               ^ " does not match certificate parent " ^ expected_parent);
+          let split_level = field_int id fields (prefix ^ "_split_level") in
+          if split_level < 0 then
+            error
+              (id ^ ": strict certificate v1 kernel_v1 avatar_split "
+               ^ prefix ^ "_split_level is negative");
+          let split_var = field_int id fields (prefix ^ "_split_var") in
+          if split_var <= 0 then
+            error
+              (id ^ ": strict certificate v1 kernel_v1 avatar_split "
+               ^ prefix ^ "_split_var must be positive");
+          let split_positive =
+            bool_field (prefix ^ "_split_positive") "component parent"
+          in
+          let component_clause =
+            parse_field id fields (prefix ^ "_clause") parse_clause
+          in
+          check_avatar_component_split id split_var split_positive component_clause
+        done;
+        let literal_class_count =
+          require_nonnegative_field_int id fields "literal_class_count"
+        in
+        for class_index = 0 to literal_class_count - 1 do
+          let prefix = "literal_class_" ^ string_of_int class_index in
+          let literal_count =
+            require_nonnegative_field_int id fields (prefix ^ "_literal_count")
+          in
+          for literal_index = 0 to literal_count - 1 do
+            ignore
+              (field_required id fields
+                 (prefix ^ "_literal_" ^ string_of_int literal_index)
+               : string)
+          done;
+          let matched_split_level =
+            field_int id fields (prefix ^ "_matched_split_level")
+          in
+          if matched_split_level < 0 then
+            error
+              (id ^ ": strict certificate v1 kernel_v1 avatar_split "
+               ^ prefix ^ "_matched_split_level is negative")
+        done;
+        let parent_var_binding_count =
+          require_nonnegative_field_int id fields "parent_var_binding_count"
+        in
+        for index = 0 to parent_var_binding_count - 1 do
+          let prefix = "parent_var_binding_" ^ string_of_int index in
+          ignore (field_required id fields (prefix ^ "_parent_var") : string);
+          ignore (field_required id fields (prefix ^ "_component_var") : string);
+          let split_var = field_int id fields (prefix ^ "_split_var") in
+          if split_var <= 0 then
+            error
+              (id ^ ": strict certificate v1 kernel_v1 avatar_split "
+               ^ prefix ^ "_split_var must be positive")
+        done
+    | Some _ ->
+        error
+          (id ^ ": strict certificate v1 kernel_v1 avatar_split metadata must annotate an avatar_split step")
+    | None ->
+        error
+          (id ^ ": strict certificate v1 kernel_v1 avatar_split metadata has no matching certificate step")
+    end
+  in
   let validate_avatar_refutation_metadata id fields owner_index =
     require_rule_fields id fields "avatar_refutation"
       ["result_clause";
@@ -6368,6 +6569,8 @@ let validate_kernel_v1_metadata_contracts cert =
              validate_avatar_definition_metadata id fields
          | "split_dependency" ->
              validate_split_dependency_metadata id fields owner_index
+         | "avatar_split" ->
+             validate_avatar_split_metadata id fields owner_index
          | "avatar_refutation" ->
              validate_avatar_refutation_metadata id fields owner_index
          | _ -> ()
