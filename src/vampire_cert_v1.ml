@@ -6734,6 +6734,14 @@ let validate_primitive_expansion_contracts cert =
       try int_of_string value with Failure _ ->
         fail ("field " ^ key ^ " is not an integer")
     in
+    let parse_clause_field key =
+      let value = field_required key in
+      try parse_clause (parse_sexpr value) with
+      | Error msg ->
+          fail
+            ("unit_resulting_resolution field " ^ key
+             ^ " is malformed: " ^ msg)
+    in
     let trace_count = field_int "trace_step_count" in
     if trace_count <= 0 then
       fail "unit_resulting_resolution trace_step_count must be positive";
@@ -6782,6 +6790,23 @@ let validate_primitive_expansion_contracts cert =
     let requires_count = field_int "primitive_expansion_requires_count" in
     if requires_count <= 0 then
       fail "unit_resulting_resolution primitive_expansion_requires_count must be positive";
+    let final_result_clause =
+      parse_clause_field "primitive_expansion_final_result_clause"
+    in
+    let result_clause =
+      parse_clause_field "result_clause"
+    in
+    if not (same_clause_multiset final_result_clause result_clause) then
+      fail
+        "unit_resulting_resolution primitive final result does not match result_clause";
+    begin match field_value "conclusion_clause" fields with
+    | Some _ ->
+        let conclusion_clause = parse_clause_field "conclusion_clause" in
+        if not (same_clause_multiset final_result_clause conclusion_clause) then
+          fail
+            "unit_resulting_resolution primitive final result does not match conclusion_clause"
+    | None -> ()
+    end;
     let expected_parent_count = function
       | "resolve" -> 2
       | "substitute" | "equality_symmetry" | "factor" -> 1
@@ -6843,6 +6868,14 @@ let validate_primitive_expansion_contracts cert =
              ^ " is not present in certificate")
       end
     done;
+    let final_step_result =
+      parse_clause_field
+        ("primitive_expansion_step_"
+         ^ string_of_int (step_count - 1) ^ "_result_clause")
+    in
+    if not (same_clause_multiset final_result_clause final_step_result) then
+      fail
+        "unit_resulting_resolution primitive final result does not match final primitive step";
     let has_required_resolve = ref false in
     for index = 0 to requires_count - 1 do
       let key =

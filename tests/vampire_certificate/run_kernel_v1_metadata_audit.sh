@@ -645,6 +645,7 @@ if [[ -s "$WORK_DIR/unit_resulting_resolution.tsv" ]]; then
     'trace_step_0_unit_substituted=' \
     'trace_step_0_remaining_after=' \
     'trace_remaining=' \
+    'primitive_expansion_final_result_clause=' \
     'primitive_expansion_step_count=' \
     'primitive_expansion_step_0_parent_count=' \
     'primitive_expansion_step_0_parent_0_id=' \
