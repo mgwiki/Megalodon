@@ -760,19 +760,27 @@ let x y z.
 assume Hx Hy Hz H.
 exact H.
 Qed.
-Theorem source_direct_11703_live : forall n:set, forall f:set->set, forall g:set->set, forall u v:set,
+Theorem source_direct_11703_live : forall q:set, forall h:set->set, forall n:set, forall f:set->set, forall g:set->set, forall u v:set,
+  True ->
+  True ->
+  True ->
+  True ->
   SNo (exp_SNo_nat (ordsucc (ordsucc Empty)) n) ->
   SNo (f (binintersect u (SNoElts_ n))) ->
   SNo (f (binintersect v (SNoElts_ n))) ->
   add_SNo (exp_SNo_nat (ordsucc (ordsucc Empty)) n) (f (binintersect u (SNoElts_ n))) =
   add_SNo (exp_SNo_nat (ordsucc (ordsucc Empty)) n) (f (binintersect v (SNoElts_ n))) ->
   f (binintersect u (SNoElts_ n)) = f (binintersect v (SNoElts_ n)).
-let n f g u v.
+let q h n f g u v.
+assume Hn : True.
+assume IHn : True.
+assume L2n1 : True.
+assume L2n2 : True.
 assume L2n3 : SNo (exp_SNo_nat (ordsucc (ordsucc Empty)) n).
 assume Lfu3 : SNo (f (binintersect u (SNoElts_ n))).
 assume Lfv3 : SNo (f (binintersect v (SNoElts_ n))).
 assume Hguv : add_SNo (exp_SNo_nat (ordsucc (ordsucc Empty)) n) (f (binintersect u (SNoElts_ n))) = add_SNo (exp_SNo_nat (ordsucc (ordsucc Empty)) n) (f (binintersect v (SNoElts_ n))).
-aby add_SNo_cancel_L L2n3 Lfu3 Lfv3 Hguv.
+aby add_SNo_cancel_L Hn IHn L2n1 L2n2 L2n3 Lfu3 Lfv3 Hguv.
 Qed.
 EOF_SOURCE_DIRECT_11703_LIVE_MG
 bin/megalodon \
