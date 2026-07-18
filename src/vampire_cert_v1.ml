@@ -20135,9 +20135,35 @@ let elaborate_preprocess_refutation_native
           let result_checked_prop =
             native_preprocess_step_formula_prop cert variables id result
           in
-          let result_assumption_step_variables =
+          let base_result_assumption_step_variables =
             native_core_skolem_result_formula_step_variables
               cert id result_step_variables
+          in
+          let preserved_contract_step_variables =
+            match skolem_contract with
+            | None -> []
+            | Some contract ->
+                contract.Vampire_kernel_syntax.skolem_parent_instantiations
+                |> List.filter_map
+                     (fun instantiation ->
+                        if instantiation.Vampire_kernel_syntax.skolem_parent_inst_role
+                           <> "preserved_variable" then
+                          None
+                        else
+                          List.find_opt
+                            (fun (name, tp) ->
+                               name
+                               = instantiation.Vampire_kernel_syntax.skolem_parent_inst_variable
+                               && tp
+                                  = instantiation.Vampire_kernel_syntax.skolem_parent_inst_type)
+                            result_step_variables)
+          in
+          let result_assumption_step_variables =
+            result_step_variables
+            |> List.filter
+                 (fun variable ->
+                    List.mem variable base_result_assumption_step_variables
+                    || List.mem variable preserved_contract_step_variables)
           in
           let result_assumption_prop =
             native_preprocess_step_formula_prop_with_step_variables
