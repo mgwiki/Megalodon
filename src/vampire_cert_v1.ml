@@ -4584,42 +4584,100 @@ let validate_kernel_v1_metadata_contracts cert =
                parse_field id fields (field_prefix ^ "_type") parse_tp
              in
              if actual_tp <> tp then
-               error
+              error
                   (id ^ ": strict certificate v1 kernel_v1 metadata field "
                    ^ field_prefix ^ "_type does not match the raw formula binder type"))
           quantified_variables
   in
-  let require_typed_variable_fields id fields prefix role =
+  let free_variable_names_of_sexpr sexpr =
+    let add_name name names =
+      if List.mem name names then names else name :: names
+    in
+    let rec collect bound names = function
+      | List [Atom "ALLV"; name; _tp; body]
+      | List [Atom "LAMV"; name; _tp; body]
+      | List [Atom "VLAMV"; name; _tp; body] ->
+          collect (atom name :: bound) names body
+      | List [Atom "AP"; List [Atom "TMH"; exists_head];
+              List [Atom binder; name; _tp; body]]
+          when atom exists_head = "vampire_exists_prop"
+               && (binder = "LAMV" || binder = "VLAMV") ->
+          collect (atom name :: bound) names body
+      | List [Atom "AP"; List [Atom "TMH"; exists_head];
+              List [Atom "LAM"; _tp; body]]
+          when atom exists_head = "vampire_exists_prop" ->
+          collect bound names body
+      | List [Atom "TMH"; name] ->
+          let name = atom name in
+          if is_vampire_var_name name && not (List.mem name bound) then
+            add_name name names
+          else
+            names
+      | List items ->
+          List.fold_left (collect bound) names items
+      | Atom _ | Str _ -> names
+    in
+    let variable_sort_key name =
+      match vampire_var_index name with
+      | Some index -> index, name
+      | None -> max_int, name
+    in
+    collect [] [] sexpr
+    |> List.sort_uniq
+         (fun left right -> compare (variable_sort_key left) (variable_sort_key right))
+  in
+  let typed_variable_fields id fields prefix role =
     match field_value (prefix ^ "_" ^ role ^ "_count") fields with
-    | None -> ()
+    | None -> None
     | Some _ ->
         let count =
           require_nonnegative_field_int
             id fields (prefix ^ "_" ^ role ^ "_count")
         in
-        for index = 0 to count - 1 do
-          let field_prefix =
-            prefix ^ "_" ^ role ^ "_" ^ string_of_int index
-          in
-          ignore (field_required id fields (field_prefix ^ "_var") : string);
-          ignore (parse_field id fields (field_prefix ^ "_type") parse_tp : tp)
-        done
+        let rec collect index acc =
+          if index >= count then Some (List.rev acc)
+          else
+            let field_prefix =
+              prefix ^ "_" ^ role ^ "_" ^ string_of_int index
+            in
+            let variable = field_required id fields (field_prefix ^ "_var") in
+            let tp = parse_field id fields (field_prefix ^ "_type") parse_tp in
+            collect (index + 1) ((variable, tp) :: acc)
+        in
+        collect 0 []
+  in
+  let require_formula_free_variable_fields id fields prefix raw_formula =
+    match typed_variable_fields id fields prefix "free_variable" with
+    | None -> ()
+    | Some variables ->
+        let expected =
+          free_variable_names_of_sexpr (parse_sexpr raw_formula)
+        in
+        let actual = List.map fst variables in
+        if actual <> expected then
+          error
+            (id ^ ": strict certificate v1 kernel_v1 metadata field "
+             ^ prefix
+             ^ "_free_variable_* does not match raw formula free variables; expected "
+             ^ String.concat "," expected
+             ^ " but got "
+             ^ String.concat "," actual)
   in
   let validate_skolem_macro_edge_shape_metadata id fields =
     begin match field_value "source_formula" fields with
     | Some raw_source ->
         require_formula_quantifier_fields
           id fields "source_formula" raw_source;
-        require_typed_variable_fields
-          id fields "source_formula" "free_variable"
+        require_formula_free_variable_fields
+          id fields "source_formula" raw_source
     | None -> ()
     end;
     begin match field_value "result_formula" fields with
     | Some raw_result ->
         require_formula_quantifier_fields
           id fields "result_formula" raw_result;
-        require_typed_variable_fields
-          id fields "result_formula" "free_variable"
+        require_formula_free_variable_fields
+          id fields "result_formula" raw_result
     | None -> ()
     end;
     match field_value "skolem_macro_edge_count" fields with
@@ -4634,8 +4692,8 @@ let validate_kernel_v1_metadata_contracts cert =
               require_formula_shape_fields id fields (prefix ^ "_formula") formula;
               require_formula_quantifier_fields
                 id fields (prefix ^ "_formula") raw_formula;
-              require_typed_variable_fields
-                id fields (prefix ^ "_formula") "free_variable"
+              require_formula_free_variable_fields
+                id fields (prefix ^ "_formula") raw_formula
           | None -> ()
           end;
           begin match field_value (prefix ^ "_source") fields with
@@ -4644,8 +4702,8 @@ let validate_kernel_v1_metadata_contracts cert =
               require_formula_shape_fields id fields (prefix ^ "_source") source;
               require_formula_quantifier_fields
                 id fields (prefix ^ "_source") raw_source;
-              require_typed_variable_fields
-                id fields (prefix ^ "_source") "free_variable"
+              require_formula_free_variable_fields
+                id fields (prefix ^ "_source") raw_source
           | None -> ()
           end;
           begin match field_value (prefix ^ "_target") fields with
@@ -4654,8 +4712,8 @@ let validate_kernel_v1_metadata_contracts cert =
               require_formula_shape_fields id fields (prefix ^ "_target") target;
               require_formula_quantifier_fields
                 id fields (prefix ^ "_target") raw_target;
-              require_typed_variable_fields
-                id fields (prefix ^ "_target") "free_variable"
+              require_formula_free_variable_fields
+                id fields (prefix ^ "_target") raw_target
           | None -> ()
           end
         done
