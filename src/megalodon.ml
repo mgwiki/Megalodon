@@ -1162,6 +1162,21 @@ let vampire_aby_source_context cxtm cxpf =
 
 let vampire_native_core_false_tm = All(Prop,DB(0))
 
+let vampire_native_core_exists tp body =
+  All
+    (Prop,
+     Imp
+       (All (tp, Imp (tmshift 1 1 body, DB 1)),
+        DB 0))
+
+let vampire_native_core_not_forall_exists_hash_tp = function
+  | "vampire_not_forall_exists_set" -> Some Set
+  | "vampire_not_forall_exists_prop" -> Some Prop
+  | "vampire_not_forall_exists_set_prop" -> Some (Ar (Set, Prop))
+  | "vampire_not_forall_exists_set_set" -> Some (Ar (Set, Set))
+  | "vampire_not_forall_exists_set_set_prop" -> Some (Ar (Set, Ar (Set, Prop)))
+  | _ -> None
+
 let vampire_source_step_has_proof source_audit step =
   List.exists
     (fun (source_step, _) -> source_step = step)
@@ -1292,10 +1307,15 @@ let vampire_iff_intro_proof left right left_to_right right_to_left =
                 (PPfAp (Hyp 0, shifted_forward_proof),
                  shifted_backward_proof)))
 
-let vampire_loaded_prop_ext_expander proof =
+let vampire_loaded_prop_ext_expander ?delta proof =
   match Hashtbl.find_opt sigknh "prop_ext" with
   | None -> proof
   | Some prop_ext_hash ->
+      let known_available hash =
+        match delta with
+        | Some delta -> Hashtbl.mem delta hash
+        | None -> Hashtbl.mem sigdelta hash
+      in
       let rec expand = function
         | PPfAp
             (PPfAp
@@ -1305,13 +1325,13 @@ let vampire_loaded_prop_ext_expander proof =
             let left_to_right = expand left_to_right in
             let right_to_left = expand right_to_left in
             begin match Hashtbl.find_opt sigknh "prop_ext_2" with
-            | Some prop_ext_2_hash ->
+            | Some prop_ext_2_hash when known_available prop_ext_2_hash ->
                 PPfAp
                   (PPfAp
                      (PTmAp (PTmAp (Known prop_ext_2_hash, left), right),
                       left_to_right),
                    right_to_left)
-            | None ->
+            | Some _ | None ->
                 let iff_proof =
                   vampire_iff_intro_proof
                     left
@@ -1363,14 +1383,136 @@ let vampire_directional_prop_ext_expander proof =
       expand proof
   | _ -> proof
 
-let vampire_prop_ext_variants proof =
+let vampire_live_not_tm target =
+  match Hashtbl.find_opt sigtmh "not" with
+  | Some not_hash -> Ap (TmH not_hash, target)
+  | None -> Imp (target, TmH (!fal))
+
+let vampire_live_false_elim proof target =
+  match Hashtbl.find_opt sigknh "FalseE" with
+  | Some false_elim_hash -> PTmAp (PPfAp (Known false_elim_hash, proof), target)
+  | None -> PTmAp (proof, target)
+
+let vampire_native_exists_intro tp predicate witness witness_proof =
+  TLam
+    (Prop,
+     PLam
+       (All (tp, Imp (Ap (tmshift 0 2 predicate, DB 0), DB 1)),
+        PPfAp
+          (PTmAp (Hyp 0, tmshift 0 1 witness),
+           pfshift 0 1 (pftmshift 0 1 witness_proof))))
+
+let vampire_live_not_forall_exists_proof tp =
+  let p_x = Ap (DB 2, DB 0) in
+  let exists_q = vampire_native_core_exists tp (Ap (DB 1, DB 0)) in
+  let not_exists_q = vampire_live_not_tm exists_q in
+  let not_p_x = vampire_live_not_tm p_x in
+  match Hashtbl.find_opt sigknh "xm" with
+  | None -> None
+  | Some xm_hash ->
+      let rec proof () =
+        TLam
+          (Ar (tp, Prop),
+           TLam
+             (Ar (tp, Prop),
+              PLam
+                (All (tp, Imp (Imp (Ap (DB 2, DB 0), vampire_native_core_false_tm),
+                               Ap (DB 1, DB 0))),
+                 PLam
+                   (Imp (All (tp, Ap (DB 2, DB 0)), vampire_native_core_false_tm),
+                    PPfAp
+                      (PPfAp
+                         (PTmAp (PTmAp (Known xm_hash, exists_q), exists_q),
+                          PLam (exists_q, Hyp 0)),
+                       PLam
+                         (not_exists_q,
+                          let all_p =
+                            TLam
+                              (tp,
+                               PPfAp
+                                 (PPfAp
+                                    (PTmAp (PTmAp (Known xm_hash, p_x), p_x),
+                                     PLam (p_x, Hyp 0)),
+                                  PLam
+                                    (not_p_x,
+                                     let native_not_p_x =
+                                       PLam
+                                         (p_x,
+                                          vampire_live_false_elim
+                                            (PPfAp (Hyp 1, Hyp 0))
+                                            vampire_native_core_false_tm)
+                                     in
+                                     let q_proof =
+                                       PPfAp (PTmAp (Hyp 3, DB 0), native_not_p_x)
+                                     in
+                                     let exists_q_proof =
+                                       vampire_native_exists_intro tp (DB 1) (DB 0) q_proof
+                                     in
+                                     let contradiction =
+                                       PPfAp (Hyp 1, exists_q_proof)
+                                     in
+                                     vampire_live_false_elim contradiction p_x)))
+                          in
+                          let contradiction =
+                            PPfAp (Hyp 1, all_p)
+                          in
+                          PTmAp (contradiction, exists_q)))))))
+      in
+      Some (proof ())
+
+let vampire_live_basis_expander proof =
+  match Hashtbl.find_opt sigknh "xm" with
+  | None -> proof
+  | Some xm_hash ->
+      let rec expand = function
+        | PPfAp (PTmAp (Known h, target), dnotnot)
+            when h = Vampire_cert_v1.native_core_dneg_hash ->
+            let dnotnot = expand dnotnot in
+            let not_target = vampire_live_not_tm target in
+            let native_not_target =
+              PLam
+                (target,
+                 vampire_live_false_elim
+                   (PPfAp (Hyp 1, Hyp 0))
+                   vampire_native_core_false_tm)
+            in
+            let false_proof =
+              PPfAp (pfshift 0 1 dnotnot, native_not_target)
+            in
+            PPfAp
+              (PPfAp
+                 (PTmAp (PTmAp (Known xm_hash, target), target),
+                  PLam (target, Hyp 0)),
+               PLam (not_target, PTmAp (false_proof, target)))
+        | PTpAp (body, tp) -> PTpAp (expand body, tp)
+        | PTmAp (body, tm) -> PTmAp (expand body, tm)
+        | PPfAp (left, right) -> PPfAp (expand left, expand right)
+        | PLam (prop, body) -> PLam (prop, expand body)
+        | TLam (tp, body) -> TLam (tp, expand body)
+        | Known h ->
+            begin match vampire_native_core_not_forall_exists_hash_tp h with
+            | Some tp ->
+                begin match vampire_live_not_forall_exists_proof tp with
+                | Some proof -> proof
+                | None -> Known h
+                end
+            | None -> Known h
+            end
+        | Hyp _ as proof -> proof
+      in
+      expand proof
+
+let vampire_prop_ext_variants ?delta proof =
   let directional = vampire_directional_prop_ext_expander proof in
   [
-    vampire_loaded_prop_ext_expander directional;
     directional;
-    vampire_loaded_prop_ext_expander proof;
+    vampire_loaded_prop_ext_expander ?delta directional;
+    vampire_loaded_prop_ext_expander ?delta proof;
     proof;
   ]
+
+let vampire_expanded_prop_ext_variants ?delta proof_expander proof =
+  vampire_prop_ext_variants ?delta (vampire_live_basis_expander (proof_expander proof))
 
 let vampire_debug_bad_proof_application proof_delta symbol_table cx hyps proof =
   let short_tm tm =
@@ -1428,12 +1570,42 @@ let vampire_debug_bad_proof_application proof_delta symbol_table cx hyps proof =
                     Some
                       (path
                        ^ ": could not extract left proposition: "
-                       ^ Printexc.to_string exn)
+                       ^ Printexc.to_string exn
+                       ^ "; left proof "
+                       ^ short_pf left)
                 end
             end
         end
     | PTpAp (body, _) -> find (path ^ ".tp") cxtm cxpf body
-    | PTmAp (body, _) -> find (path ^ ".tm") cxtm cxpf body
+    | PTmAp (body, tm) ->
+        begin match find (path ^ ".tm") cxtm cxpf body with
+        | Some _ as found -> found
+        | None ->
+            begin
+              try
+                let body_prop, dl =
+                  extr_propofpf proof_delta symbol_table cxtm cxpf body []
+                in
+                match headnorm body_prop proof_delta dl with
+                | All _, _ -> None
+                | prop, _ ->
+                    Some
+                      (path
+                       ^ ": term application left proposition is not universal: "
+                       ^ short_tm prop
+                       ^ "; applied term "
+                       ^ short_tm tm
+                       ^ "; left proof "
+                       ^ short_pf body)
+              with exn ->
+                Some
+                  (path
+                   ^ ": could not extract term-application left proposition: "
+                   ^ Printexc.to_string exn
+                   ^ "; left proof "
+                   ^ short_pf body)
+            end
+        end
     | PLam (prop, body) -> find (path ^ ".plam") cxtm (prop :: cxpf) body
     | TLam (tp, body) ->
         let cxtm = tp :: cxtm in
@@ -1442,6 +1614,45 @@ let vampire_debug_bad_proof_application proof_delta symbol_table cx hyps proof =
     | Hyp _ | Known _ -> None
   in
   find "root" cx hyps proof
+
+let vampire_debug_proof_variants prefix proof_delta symbol_table cx hyps expected variants =
+  let short_tm tm =
+    let text = tm_to_str tm in
+    if String.length text <= 500 then text
+    else String.sub text 0 500 ^ "..."
+  in
+  List.iteri
+    (fun index proof ->
+       try
+         let actual, dl =
+           extr_propofpf proof_delta symbol_table cx hyps proof []
+         in
+         let convertible =
+           match conv actual expected proof_delta dl with
+           | Some _ -> "yes"
+           | None -> "no"
+         in
+         Printf.printf
+           "%s variant %d actual: %s; convertible=%s\n"
+           prefix
+           index
+           (short_tm actual)
+           convertible
+       with exn ->
+         Printf.printf
+           "%s variant %d rejected: %s\n"
+           prefix
+           index
+           (Printexc.to_string exn);
+         begin match
+           vampire_debug_bad_proof_application
+             proof_delta symbol_table cx hyps proof
+         with
+         | Some detail ->
+             Printf.printf "%s variant %d bad application: %s\n" prefix index detail
+         | None -> ()
+         end)
+    variants
 
 let vampire_check_current_goal_proof ?source_map ?extra_delta ?extra_symbols claimtm cxtm cxpf proof =
   let cx =
@@ -1531,7 +1742,7 @@ let vampire_check_current_goal_proof ?source_map ?extra_delta ?extra_symbols cla
               | None ->
               begin match conv actual claimtm live_delta dl with
               | Some _ ->
-                  begin match check_propofpf sigdelta sigtmof cx hyps proof claimtm [] with
+                  begin match check_propofpf live_delta live_symbol_table cx hyps proof claimtm [] with
                   | Some _ -> Some proof
                   | None -> None
                   end
@@ -1545,7 +1756,7 @@ let vampire_check_current_goal_proof ?source_map ?extra_delta ?extra_symbols cla
           in
           match conv actual claimtm live_delta dl with
           | Some _ ->
-              begin match check_propofpf sigdelta sigtmof cx hyps proof claimtm [] with
+              begin match check_propofpf live_delta live_symbol_table cx hyps proof claimtm [] with
               | Some _ -> Some proof
               | None -> None
               end
@@ -1561,20 +1772,31 @@ let vampire_check_current_goal_proof ?source_map ?extra_delta ?extra_symbols cla
           let (actual,dl) = extr_propofpf proof_delta symbol_table cx hyps proof_for_check [] in
           match conv actual claimtm proof_delta dl with
           | Some _ ->
-              let expanded =
-                proof_expander proof_for_check
-                |> vampire_directional_prop_ext_expander
-                |> vampire_loaded_prop_ext_expander
+              let expanded_variants =
+                vampire_expanded_prop_ext_variants ~delta:live_delta proof_expander proof_for_check
               in
-              begin match live_check expanded with
+              begin match List.find_map live_check expanded_variants with
               | Some _ as result -> result
               | None ->
+                  let expanded =
+                    match expanded_variants with
+                    | first :: _ -> first
+                    | [] -> proof_expander proof_for_check
+                  in
                   if debug then
                     begin
                       Printf.printf
                         "Vampire native certificate current-goal proof candidate checked only with certificate delta at line %d char %d; rejecting live proof.\n"
                         !lineno
                         !charno;
+                      vampire_debug_proof_variants
+                        "Vampire native certificate current-goal live-expanded"
+                        live_delta
+                        live_symbol_table
+                        cx
+                        hyps
+                        claimtm
+                        expanded_variants;
                       begin match extra_symbols with
                       | Some extra_symbols ->
                           begin match
@@ -1642,7 +1864,7 @@ let vampire_check_current_goal_proof ?source_map ?extra_delta ?extra_symbols cla
             try_variants rest
         | _ -> try_variants rest
   in
-  try_variants (vampire_prop_ext_variants proof)
+  try_variants (vampire_prop_ext_variants ~delta:proof_delta proof)
 
 let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxpf expected proof =
   let cx =
@@ -1733,7 +1955,7 @@ let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxp
               | None ->
                   begin match conv actual expected live_delta dl with
                   | Some _ ->
-                      begin match check_propofpf sigdelta sigtmof cx hyps expanded expected [] with
+                      begin match check_propofpf live_delta live_symbol_table cx hyps expanded expected [] with
                       | Some _ -> Some expanded
                       | None -> None
                       end
@@ -1751,20 +1973,31 @@ let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxp
           let (actual,dl) = extr_propofpf proof_delta symbol_table cx hyps proof_for_check [] in
           match conv actual expected proof_delta dl with
           | Some _ ->
-              let expanded =
-                proof_expander proof_for_check
-                |> vampire_directional_prop_ext_expander
-                |> vampire_loaded_prop_ext_expander
+              let expanded_variants =
+                vampire_expanded_prop_ext_variants ~delta:live_delta proof_expander proof_for_check
               in
-              begin match live_check expanded with
+              begin match List.find_map live_check expanded_variants with
               | Some _ as result -> result
               | None ->
+                  let expanded =
+                    match expanded_variants with
+                    | first :: _ -> first
+                    | [] -> proof_expander proof_for_check
+                  in
                   if debug then
                     begin
                       Printf.printf
                         "Vampire native proof-of-prop candidate checked only with certificate delta at line %d char %d; rejecting live proof.\n"
                         !lineno
                         !charno;
+                      vampire_debug_proof_variants
+                        "Vampire native proof-of-prop live-expanded"
+                        live_delta
+                        live_symbol_table
+                        cx
+                        hyps
+                        expected
+                        expanded_variants;
                       begin match extra_symbols with
                       | Some extra_symbols ->
                           begin match
@@ -1832,7 +2065,7 @@ let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxp
             try_variants rest
         | _ -> try_variants rest
   in
-  try_variants (vampire_prop_ext_variants proof)
+  try_variants (vampire_prop_ext_variants ~delta:proof_delta proof)
 
 let vampire_actual_prop_of_proof ?source_map ?extra_delta ?extra_symbols cxtm cxpf proof =
   let cx =
@@ -1888,7 +2121,7 @@ let vampire_actual_prop_of_proof ?source_map ?extra_delta ?extra_symbols cxtm cx
         | Failure _ -> try_variants rest
         | _ -> try_variants rest
   in
-  try_variants (vampire_prop_ext_variants proof)
+  try_variants (vampire_prop_ext_variants ~delta:proof_delta proof)
 
 let vampire_xm_double_negation_elim_to ?source_map ?extra_delta ?extra_symbols target cxtm cxpf dnotnot =
   let debug = Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" in
@@ -2728,7 +2961,7 @@ let vampire_source_proof_props ?extra_symbols cxtm cxpf source_map source_audit 
                Some (proof, prop)
              with _ -> try_variants rest
        in
-       try_variants (vampire_prop_ext_variants proof))
+       try_variants (vampire_prop_ext_variants ~delta:proof_delta proof))
     source_audit.Vampire_source_context.source_proofs
 
 let vampire_reconstruct_goal_from_source_audit
