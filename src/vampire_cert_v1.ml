@@ -4439,6 +4439,118 @@ let validate_kernel_v1_metadata_contracts cert =
          ^ key ^ " is negative");
     value
   in
+  let rec formula_shape_summary tm =
+    match tm with
+    | All (_, body) ->
+        let _, exists_count, forall_count, and_count, or_count, imp_count =
+          formula_shape_summary body
+        in
+        ("forall", exists_count, forall_count + 1, and_count, or_count, imp_count)
+    | Imp (left, right) ->
+        let _, left_exists, left_forall, left_and, left_or, left_imp =
+          formula_shape_summary left
+        in
+        let _, right_exists, right_forall, right_and, right_or, right_imp =
+          formula_shape_summary right
+        in
+        ("imp",
+         left_exists + right_exists,
+         left_forall + right_forall,
+         left_and + right_and,
+         left_or + right_or,
+         left_imp + right_imp + 1)
+    | Ap (TmH "vampire_exists_prop", Lam (_, body)) ->
+        let _, exists_count, forall_count, and_count, or_count, imp_count =
+          formula_shape_summary body
+        in
+        ("exists", exists_count + 1, forall_count, and_count, or_count, imp_count)
+    | Ap (TmH "vampire_exists_prop", Ap (TmH "vLAM", body)) ->
+        let _, exists_count, forall_count, and_count, or_count, imp_count =
+          formula_shape_summary body
+        in
+        ("exists", exists_count + 1, forall_count, and_count, or_count, imp_count)
+    | Ap (Ap (TmH "vampire_and", left), right) ->
+        let _, left_exists, left_forall, left_and, left_or, left_imp =
+          formula_shape_summary left
+        in
+        let _, right_exists, right_forall, right_and, right_or, right_imp =
+          formula_shape_summary right
+        in
+        ("and",
+         left_exists + right_exists,
+         left_forall + right_forall,
+         left_and + right_and + 1,
+         left_or + right_or,
+         left_imp + right_imp)
+    | Ap (Ap (TmH "vampire_or", left), right) ->
+        let _, left_exists, left_forall, left_and, left_or, left_imp =
+          formula_shape_summary left
+        in
+        let _, right_exists, right_forall, right_and, right_or, right_imp =
+          formula_shape_summary right
+        in
+        ("or",
+         left_exists + right_exists,
+         left_forall + right_forall,
+         left_and + right_and,
+         left_or + right_or + 1,
+         left_imp + right_imp)
+    | TmH "vampire_false" | TmH "f__false" ->
+        ("false", 0, 0, 0, 0, 0)
+    | TmH "f__true" ->
+        ("true", 0, 0, 0, 0, 0)
+    | _ ->
+        ("literal", 0, 0, 0, 0, 0)
+  in
+  let connective_matches expected actual =
+    expected = actual
+    || expected = "literal"
+    || expected = "bool_term"
+  in
+  let require_formula_shape_fields id fields prefix formula =
+    let actual_connective, actual_exists, actual_forall, actual_and, actual_or, actual_imp =
+      formula_shape_summary formula
+    in
+    let connective = field_required id fields (prefix ^ "_connective") in
+    if not (connective_matches connective actual_connective) then
+      error
+        (Printf.sprintf
+           "%s: strict certificate v1 kernel_v1 metadata field %s_connective expected %s but parsed formula has %s"
+           id prefix connective actual_connective);
+    require_field_int id fields (prefix ^ "_exists_count") actual_exists;
+    require_field_int id fields (prefix ^ "_forall_count") actual_forall;
+    require_field_int id fields (prefix ^ "_and_count") actual_and;
+    require_field_int id fields (prefix ^ "_or_count") actual_or;
+    ignore actual_imp;
+    ignore (require_nonnegative_field_int id fields (prefix ^ "_imp_count") : int)
+  in
+  let validate_skolem_macro_edge_shape_metadata id fields =
+    match field_value "skolem_macro_edge_count" fields with
+    | None -> ()
+    | Some _ ->
+        let count = require_nonnegative_field_int id fields "skolem_macro_edge_count" in
+        for index = 0 to count - 1 do
+          let prefix = "skolem_macro_edge_" ^ string_of_int index in
+          begin match field_value (prefix ^ "_formula") fields with
+          | Some _ ->
+              let formula = parse_field id fields (prefix ^ "_formula") parse_tm in
+              require_formula_shape_fields id fields (prefix ^ "_formula") formula
+          | None -> ()
+          end;
+          begin match field_value (prefix ^ "_source") fields with
+          | Some _ ->
+              let source = parse_field id fields (prefix ^ "_source") parse_tm in
+              require_formula_shape_fields id fields (prefix ^ "_source") source
+          | None -> ()
+          end;
+          begin match field_value (prefix ^ "_target") fields with
+          | Some _ ->
+              let target = parse_field id fields (prefix ^ "_target") parse_tm in
+              require_formula_shape_fields id fields (prefix ^ "_target") target
+          | None -> ()
+          end
+        done
+  in
   let require_field_sat_clause id fields key expected =
     let actual = parse_field id fields key parse_sat_clause in
     if normalize_sat_clause actual <> normalize_sat_clause expected then
@@ -5848,6 +5960,7 @@ let validate_kernel_v1_metadata_contracts cert =
                  | Some _ -> require_field_formula id fields "conclusion_formula" result
                  | None -> ()
                  end;
+                 validate_skolem_macro_edge_shape_metadata id fields;
                  let introduced_count = field_int id fields "introduced_count" in
                  if introduced_count < 0 then
                    error
