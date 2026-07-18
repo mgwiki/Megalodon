@@ -35,6 +35,7 @@ sed -n '1,500p' examples/hammer/100thms_12_h.mg > "$tmp_mg"
   -vampireaby "$VAMPIRE" \
   -vampireabytimeout "${MEGALODON_VAMPIRE_TIMEOUT:-10}" \
   -vampireabyoutdir "$tmp_out" \
+  -vampireabyproof megalodon \
   -vampireabynativestrict \
   "$tmp_mg" > "$log" 2>&1
 

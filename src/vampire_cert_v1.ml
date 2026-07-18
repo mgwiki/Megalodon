@@ -159,6 +159,7 @@ type core_native_proof = {
   core_native_symbol_table : (string, int * tp) Hashtbl.t;
   core_native_steps : int;
   core_native_source_bindings : core_native_source_binding list;
+  core_native_source_assumption_bindings : core_native_source_binding list;
   core_native_source_assumptions : int;
 }
 
@@ -5486,9 +5487,21 @@ let validate_kernel_v1_metadata_contracts cert =
                  if parent_unit main_parent_index <> main_parent_id then
                    error
                      (id ^ ": strict certificate v1 kernel_v1 subsumption_resolution main_parent_index does not point to certificate main parent");
-                 if parent_unit side_parent_index <> side_parent_id then
-                   error
-                     (id ^ ": strict certificate v1 kernel_v1 subsumption_resolution side_parent_index does not point to certificate side parent");
+                 let metadata_side_parent_id = parent_unit side_parent_index in
+                 let side_parent_source_id, side_parent_subst =
+                   if metadata_side_parent_id = side_parent_id then
+                     side_parent_id, []
+                   else
+                     begin match Hashtbl.find_opt step_by_id side_parent_id with
+                     | Some (Substitute (_, subst_parent_id, subst, _))
+                         when subst_parent_id = metadata_side_parent_id ->
+                         metadata_side_parent_id, subst
+                     | _ ->
+                         error
+                           (id ^ ": strict certificate v1 kernel_v1 subsumption_resolution side_parent_index "
+                            ^ "does not point to certificate side parent or its substitution parent")
+                     end
+                 in
                  require_field_int id fields "selected_parent_index" main_parent_index;
                  require_field_int id fields "side_pivot_parent_index" side_parent_index;
                  require_field_int id fields "selected_literal_index" selected_index;
@@ -5499,11 +5512,12 @@ let validate_kernel_v1_metadata_contracts cert =
                      (id ^ ": strict certificate v1 kernel_v1 subsumption_resolution selected_parent_unit "
                       ^ selected_parent_unit ^ " does not match certificate main parent " ^ main_parent_id);
                  let side_pivot_parent_unit = field_required id fields "side_pivot_parent_unit" in
-                 if side_pivot_parent_unit <> side_parent_id then
+                 if side_pivot_parent_unit <> side_parent_source_id then
                    error
                      (id ^ ": strict certificate v1 kernel_v1 subsumption_resolution side_pivot_parent_unit "
-                      ^ side_pivot_parent_unit ^ " does not match certificate side parent " ^ side_parent_id);
-                 require_field_substitution id fields "side_substitution" [];
+                      ^ side_pivot_parent_unit ^ " does not match certificate side parent "
+                      ^ side_parent_source_id);
+                 require_field_substitution id fields "side_substitution" side_parent_subst;
                  begin match Hashtbl.find_opt step_by_id main_parent_id with
                  | Some parent_step ->
                      begin match step_clause_opt parent_step with
@@ -5524,7 +5538,7 @@ let validate_kernel_v1_metadata_contracts cert =
                        (id ^ ": strict certificate v1 kernel_v1 subsumption_resolution references missing main parent "
                         ^ main_parent_id)
                  end;
-                 begin match Hashtbl.find_opt step_by_id side_parent_id with
+                 begin match Hashtbl.find_opt step_by_id side_parent_source_id with
                  | Some parent_step ->
                      begin match step_clause_opt parent_step with
                      | Some parent_clause ->
@@ -5533,16 +5547,17 @@ let validate_kernel_v1_metadata_contracts cert =
                              (id ^ " strict kernel_v1 subsumption_resolution side pivot literal")
                          in
                          require_field_literal id fields "side_pivot" side_pivot;
-                         require_field_literal id fields "side_pivot_substituted" side_pivot
+                         require_field_literal id fields "side_pivot_substituted"
+                           (subst_literal side_parent_subst side_pivot)
                      | None ->
                          error
                            (id ^ ": strict certificate v1 kernel_v1 subsumption_resolution side parent "
-                            ^ side_parent_id ^ " is not a clause-bearing step")
+                            ^ side_parent_source_id ^ " is not a clause-bearing step")
                      end
                  | None ->
                      error
                        (id ^ ": strict certificate v1 kernel_v1 subsumption_resolution references missing side parent "
-                        ^ side_parent_id)
+                        ^ side_parent_source_id)
                  end;
                  require_field_clause id fields "result_clause" result;
                  begin match field_value "conclusion_clause" fields with
@@ -14605,6 +14620,8 @@ let elaborate_core_resolution_refutation_native
     core_native_symbol_table = symbol_table;
     core_native_steps = core_steps;
     core_native_source_bindings = !source_bindings;
+    core_native_source_assumption_bindings =
+      List.map (fun (_, _, binding) -> binding) !source_inputs;
     core_native_source_assumptions = source_count;
   }
 
@@ -14624,12 +14641,15 @@ let elaborate_preprocess_refutation_native
       (native_core_type_raw_equalities_step cert variables symbol_table)
       cert.steps
   in
+  let used_steps = proof_dependency_closure typed_steps in
+  let step_is_used id = Hashtbl.mem used_steps id in
   let source_inputs = ref [] in
   let source_bindings = ref [] in
   let add_source_input id source proposition =
     let binding = native_core_source_binding source_map id source proposition in
     source_bindings := !source_bindings @ [binding];
-    if not (native_core_source_is_set_reflexivity source_map source)
+    if step_is_used id
+       && not (native_core_source_is_set_reflexivity source_map source)
        && native_core_source_proof source_proofs id = None then
       source_inputs := !source_inputs @ [(id, proposition, binding)]
   in
@@ -14846,51 +14866,62 @@ let elaborate_preprocess_refutation_native
     (function
       | Input (id, source, clause)
           when native_core_source_is_set_reflexivity source_map source ->
-          let proof =
-            match native_core_source_proof shifted_source_proofs id with
-            | Some proof -> proof
-            | None -> native_core_set_reflexivity_clause_proof id clause
-          in
-          store_clause id clause proof
+          if step_is_used id then
+            let proof =
+              match native_core_source_proof shifted_source_proofs id with
+              | Some proof -> proof
+              | None -> native_core_set_reflexivity_clause_proof id clause
+            in
+            store_clause id clause proof
       | Input (id, _, clause) ->
-          let proof =
-            match native_core_source_proof shifted_source_proofs id with
-            | Some proof -> proof
-            | None -> Hyp (source_hyp_index id)
-          in
-          store_clause id clause proof
+          if step_is_used id then begin
+            let proof =
+              match native_core_source_proof shifted_source_proofs id with
+              | Some proof -> proof
+              | None -> Hyp (source_hyp_index id)
+            in
+            store_clause id clause proof
+          end
       | FormulaInput (id, source, literal)
           when native_core_source_is_set_reflexivity source_map source ->
-          let proof =
-            match native_core_source_proof shifted_source_proofs id with
-            | Some proof -> proof
-            | None -> native_core_set_reflexivity_literal_proof id literal
-          in
-          store_clause id [literal] proof;
-          store_formula id (native_core_literal_prop literal) proof
+          if step_is_used id then begin
+            let proof =
+              match native_core_source_proof shifted_source_proofs id with
+              | Some proof -> proof
+              | None -> native_core_set_reflexivity_literal_proof id literal
+            in
+            store_clause id [literal] proof;
+            store_formula id (native_core_literal_prop literal) proof
+          end
       | FormulaInput (id, _, literal) ->
-          let proof =
-            match native_core_source_proof shifted_source_proofs id with
-            | Some proof -> proof
-            | None -> Hyp (source_hyp_index id)
-          in
-          store_clause id [literal] proof;
-          store_formula id (native_core_literal_prop literal) proof
+          if step_is_used id then begin
+            let proof =
+              match native_core_source_proof shifted_source_proofs id with
+              | Some proof -> proof
+              | None -> Hyp (source_hyp_index id)
+            in
+            store_clause id [literal] proof;
+            store_formula id (native_core_literal_prop literal) proof
+          end
       | FormulaTermInput (id, source, formula)
           when native_core_source_is_set_reflexivity source_map source ->
-          let proof =
-            match native_core_source_proof shifted_source_proofs id with
-            | Some proof -> proof
-            | None -> native_core_set_reflexivity_atom_proof id formula
-          in
-          store_formula id formula proof
+          if step_is_used id then begin
+            let proof =
+              match native_core_source_proof shifted_source_proofs id with
+              | Some proof -> proof
+              | None -> native_core_set_reflexivity_atom_proof id formula
+            in
+            store_formula id formula proof
+          end
       | FormulaTermInput (id, _, formula) ->
-          let proof =
-            match native_core_source_proof shifted_source_proofs id with
-            | Some proof -> proof
-            | None -> Hyp (source_hyp_index id)
-          in
-          store_formula id formula proof
+          if step_is_used id then begin
+            let proof =
+              match native_core_source_proof shifted_source_proofs id with
+              | Some proof -> proof
+              | None -> Hyp (source_hyp_index id)
+            in
+            store_formula id formula proof
+          end
       | PredicateDefinition (id, symbol, result) ->
           check_predicate_definition id symbol result;
           let result_step_variables = native_core_step_variables cert id in
@@ -15300,6 +15331,8 @@ let elaborate_preprocess_refutation_native
     core_native_symbol_table = symbol_table;
     core_native_steps = List.length cert.steps;
     core_native_source_bindings = !source_bindings;
+    core_native_source_assumption_bindings =
+      List.map (fun (_, _, binding) -> binding) !source_inputs;
     core_native_source_assumptions = source_count;
   }
 

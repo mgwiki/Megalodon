@@ -1514,6 +1514,150 @@ let vampire_double_negation_target = function
       Some target
   | _ -> None
 
+let vampire_native_negation_target = function
+  | All (Prop, Imp (target, DB 0)) -> Some target
+  | _ -> None
+
+let vampire_native_refutation_target = function
+  | All (Prop, Imp (native_negation, DB 0)) ->
+      vampire_native_negation_target native_negation
+  | Imp (native_negation, target) ->
+      begin match vampire_native_negation_target native_negation with
+      | Some native_target when native_target = target -> Some target
+      | _ -> None
+      end
+  | _ -> None
+
+let vampire_xm_native_refutation_elim_to
+    ?source_map
+    ?extra_delta
+    ?extra_symbols
+    target
+    cxtm
+    cxpf
+    proof
+    proposition =
+  let debug = Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" in
+  let check candidate =
+    vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxpf target candidate
+  in
+  let false_elim proof target =
+    match Hashtbl.find_opt sigknh "FalseE" with
+    | Some false_elim_hash -> PTmAp (PPfAp (Known false_elim_hash, proof), target)
+    | None -> PTmAp (proof, target)
+  in
+  let proof_delta =
+    match source_map with
+    | None -> vampire_source_context_delta_with_locals cxtm
+    | Some source_map ->
+        vampire_source_context_delta_with_source_map ~cxtm source_map
+  in
+  begin match extra_delta with
+  | None -> ()
+  | Some extra_delta ->
+      Hashtbl.iter
+        (fun h v -> Hashtbl.replace proof_delta h v)
+        extra_delta
+  end;
+  let convertible left right =
+    match conv left right proof_delta [] with
+    | Some _ -> true
+    | None -> false
+  in
+  let refutation_for_target =
+    match proposition with
+    | All (Prop, body) ->
+        let instantiated = tmsubst body 0 target in
+        if debug then
+          begin
+            Printf.printf
+              "Vampire native certificate trying native-refutation detection after target instantiation.\ninstantiated: %s\ntarget: %s\n"
+              (tm_to_str instantiated)
+              (tm_to_str target);
+            flush stdout
+          end;
+        begin match instantiated with
+        | Imp (native_negation, result)
+            when convertible result target ->
+            begin match vampire_native_negation_target native_negation with
+            | Some native_target when convertible native_target target ->
+                Some (PTmAp (proof, target), native_target, false)
+            | _ -> None
+            end
+        | _ ->
+            let instantiated_false = tmsubst body 0 vampire_native_core_false_tm in
+            if debug then
+              begin
+                Printf.printf
+                  "Vampire native certificate trying native-refutation detection after native-false instantiation.\ninstantiated: %s\n"
+                  (tm_to_str instantiated_false);
+                flush stdout
+              end;
+            begin match instantiated_false with
+            | Imp (native_negation, false_result)
+                when vampire_false_like false_result ->
+                begin match vampire_native_negation_target native_negation with
+                | Some native_target when convertible native_target target ->
+                    Some (PTmAp (proof, vampire_native_core_false_tm), native_target, true)
+                | _ -> None
+                end
+            | _ -> None
+            end
+        end
+    | Imp (native_negation, result)
+        when convertible result target ->
+        begin match vampire_native_negation_target native_negation with
+        | Some native_target when convertible native_target target ->
+            Some (proof, native_target, false)
+        | _ -> None
+        end
+    | _ -> None
+  in
+  match refutation_for_target, Hashtbl.find_opt sigknh "xm" with
+  | Some (refutes_native_negation, _native_target, returns_native_false), Some xm_hash ->
+      let live_not_target = Imp (target, TmH (!fal)) in
+      let native_negation_from_live_not =
+        TLam
+          (Prop,
+           PLam
+             (tmshift 0 1 target,
+              false_elim (PPfAp (Hyp 1, Hyp 0)) (DB 0)))
+      in
+      let candidate =
+        PPfAp
+          (PPfAp
+             (PTmAp (PTmAp (Known xm_hash, target), target),
+              PLam (target, Hyp 0)),
+           PLam
+             (live_not_target,
+              let contradiction =
+                PPfAp
+                  (pfshift 0 1 refutes_native_negation,
+                   native_negation_from_live_not)
+              in
+              if returns_native_false then PTmAp (contradiction, target)
+              else contradiction))
+      in
+      let result = check candidate in
+      if result = None && debug then
+        begin
+          Printf.printf
+            "Vampire native certificate native-refutation elimination candidate rejected for target: %s\n"
+            (tm_to_str target);
+          flush stdout
+        end;
+      result
+  | Some _, _ ->
+      if debug then
+        begin
+          Printf.printf
+            "Vampire native certificate native-refutation elimination has no xm proof for target: %s\n"
+            (tm_to_str target);
+          flush stdout
+        end;
+      None
+  | None, _ -> None
+
 let vampire_expanded_equality_sides = function
   | All (Ar (left_tp, Ar (right_tp, Prop)),
          Imp (Ap (Ap (DB 0, left_a), right_a),
@@ -1699,53 +1843,67 @@ let vampire_reconstruct_current_goal_from_refutation ?source_map ?extra_delta ?e
     | Some _ as result -> result
     | None ->
         begin
-          match vampire_xm_double_negation_elim ?source_map ?extra_delta ?extra_symbols claimtm cxtm cxpf proof with
+          match vampire_xm_native_refutation_elim_to
+                  ?source_map ?extra_delta ?extra_symbols
+                  claimtm cxtm cxpf proof proposition with
           | Some _ as result -> result
           | None ->
-              begin match vampire_double_negation_target proposition with
-              | Some target ->
-                  if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
-                    begin
-                      Printf.printf
-                        "Vampire native certificate found double-negated target for current goal: %s\n"
-                        (tm_to_str target);
-                      flush stdout
-                    end;
-                  begin match vampire_xm_double_negation_elim_to ?source_map ?extra_delta ?extra_symbols target cxtm cxpf proof with
-                  | Some target_proof ->
-                      begin match
-                        vampire_reconstruct_goal_from_proved_prop
-                          ?source_map
-                          ?extra_delta
-                          ?extra_symbols
-                          claimtm cxtm cxpf target_proof target
-                      with
-                      | Some _ as result -> result
-                      | None -> None
-                      end
-                  | None -> None
-                  end
-              | None ->
-                  if depth <= 0 then None
-                  else
-                    match proposition with
-                    | All(tp,body) ->
-                        let rec try_terms = function
-                          | [] -> None
-                          | tm :: rest ->
-                              begin
-                                match
-                                  try_proof
-                                    (depth - 1)
-                                    (PTmAp(proof,tm))
-                                    (tmsubst body 0 tm)
-                                with
-                                | Some _ as result -> result
-                                | None -> try_terms rest
-                              end
-                        in
-                        try_terms (vampire_context_terms_of_type cxtm tp)
-                    | _ -> None
+              begin
+                match vampire_xm_double_negation_elim ?source_map ?extra_delta ?extra_symbols claimtm cxtm cxpf proof with
+                | Some _ as result -> result
+                | None ->
+                    begin match vampire_double_negation_target proposition with
+                    | Some target ->
+                        if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+                          begin
+                            Printf.printf
+                              "Vampire native certificate found double-negated target for current goal: %s\n"
+                              (tm_to_str target);
+                            flush stdout
+                          end;
+                        begin match vampire_xm_double_negation_elim_to ?source_map ?extra_delta ?extra_symbols target cxtm cxpf proof with
+                        | Some target_proof ->
+                            begin match
+                              vampire_reconstruct_goal_from_proved_prop
+                                ?source_map
+                                ?extra_delta
+                                ?extra_symbols
+                                claimtm cxtm cxpf target_proof target
+                            with
+                            | Some _ as result -> result
+                            | None -> None
+                            end
+                        | None -> None
+                        end
+                    | None ->
+                        if depth <= 0 then None
+                        else
+                          match proposition with
+                          | All(tp,body) ->
+                              let rec try_terms = function
+                                | [] -> None
+                                | tm :: rest ->
+                                    begin
+                                      match
+                                        try_proof
+                                          (depth - 1)
+                                          (PTmAp(proof,tm))
+                                          (tmsubst body 0 tm)
+                                      with
+                                      | Some _ as result -> result
+                                      | None -> try_terms rest
+                                    end
+                              in
+                              let terms =
+                                match tp with
+                                | Prop ->
+                                    List.sort_uniq compare
+                                      (claimtm :: vampire_context_terms_of_type cxtm tp)
+                                | _ -> vampire_context_terms_of_type cxtm tp
+                              in
+                              try_terms terms
+                          | _ -> None
+                    end
               end
         end
   in
@@ -1834,7 +1992,7 @@ let vampire_reconstruct_final_conjecture_from_native_core source_map source_proo
   match
     vampire_remaining_source_bindings_for_proofs
       source_proofs
-      native_core.Vampire_cert_v1.core_native_source_bindings
+      native_core.Vampire_cert_v1.core_native_source_assumption_bindings
   with
   | [binding] ->
       begin match vampire_negated_conjecture_target binding with
@@ -2074,7 +2232,7 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
     vampire_source_context_external_definition_names cxtm source_map
   in
   let native_core =
-    Vampire_cert_v1.elaborate_core_resolution_refutation_native
+    Vampire_cert_v1.elaborate_preprocess_refutation_native
       ~source_map
       ~source_proofs:source_proofs_for_core
       ~external_delta_table:
@@ -2085,7 +2243,7 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
   let remaining_bindings =
     vampire_remaining_source_bindings_for_proofs
       source_proofs_for_core
-      native_core.Vampire_cert_v1.core_native_source_bindings
+      native_core.Vampire_cert_v1.core_native_source_assumption_bindings
   in
   if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
     begin
@@ -9103,7 +9261,7 @@ let check_vampire_cert_v1_file fn =
           vampire_print_remaining_source_summary
             "Vampire certificate v1 native core"
             !source_proofs_for_native
-            native_core.Vampire_cert_v1.core_native_source_bindings;
+            native_core.Vampire_cert_v1.core_native_source_assumption_bindings;
           Printf.printf
             "Vampire certificate v1 native core source propositions recorded %d assumption%s.\n"
             (List.length
@@ -9156,7 +9314,7 @@ let check_vampire_cert_v1_file fn =
           vampire_print_remaining_source_summary
             "Vampire certificate v1 native preprocess"
             !source_proofs_for_native
-            native_preprocess.Vampire_cert_v1.core_native_source_bindings;
+            native_preprocess.Vampire_cert_v1.core_native_source_assumption_bindings;
           Printf.printf
             "Vampire certificate v1 native preprocess source propositions recorded %d assumption%s.\n"
             (List.length
