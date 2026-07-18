@@ -8837,6 +8837,28 @@ let native_core_skolem_proof_object cert id =
                id (List.length branches) expected)
       | _ -> ()
       end;
+      let top_witness_symbols =
+        contract.Vampire_kernel_syntax.skolem_introduced_witnesses
+        |> List.map
+             (fun witness ->
+                witness.Vampire_kernel_syntax.skolem_witness_symbol)
+      in
+      List.iter
+        (fun branch ->
+           branch.Vampire_kernel_syntax.skolem_branch_introduced_witnesses
+           |> List.iter
+                (fun witness ->
+                   let symbol =
+                     witness.Vampire_kernel_syntax.skolem_witness_symbol
+                   in
+                   if not (List.mem symbol top_witness_symbols) then
+                     error
+                       (Printf.sprintf
+                          "%s: typed Skolem branch contract %d introduces witness %s outside the top-level contract"
+                          id
+                          branch.Vampire_kernel_syntax.skolem_branch_index
+                          symbol)))
+        branches;
       Some
         {
           Vampire_kernel_syntax.skolem_proof_contract = contract;
