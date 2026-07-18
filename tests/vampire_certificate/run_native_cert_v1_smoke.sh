@@ -2647,6 +2647,12 @@ if ! rg -q 'u30: native preprocess first stored formula proof containing certifi
   exit 1
 fi
 
+if ! rg -q 'native preprocess Skolem CPS abstracted 4 result subproof' \
+    "$WORK_DIR/native_cert_v1_skolem_cps_guard.err"; then
+  echo "native preprocess checker did not abstract opened Skolem result proof spines" >&2
+  exit 1
+fi
+
 if rg -q 'native preprocess Skolem CPS discharged certificate-local witnesses|admit|-allowincompleteqed' \
     "$WORK_DIR/native_cert_v1_skolem_cps_guard.out" \
     "$WORK_DIR/native_cert_v1_skolem_cps_guard.err"; then

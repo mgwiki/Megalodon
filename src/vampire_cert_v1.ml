@@ -15282,18 +15282,35 @@ let elaborate_preprocess_refutation_native
         debug_failure (Printexc.to_string exn);
         false
   in
-  let abstract_skolem_result_by_prop result_prop _result_proof shifted_final =
+  let abstract_skolem_result_by_prop result_prop result_proof shifted_final =
     let replaced = ref 0 in
+    let rec tm_app_spine args = function
+      | PTmAp (body, tm) -> tm_app_spine (tm :: args) body
+      | head -> head, args
+    in
+    let rebuild_tm_app_spine head args =
+      List.fold_left (fun proof tm -> PTmAp (proof, tm)) head args
+    in
     let rec replace term_depth proof_depth cxtm cxpf proof =
-      let expected = tmshift 0 term_depth result_prop in
       let proof =
-        try
-          match check_propofpf proof_delta symbol_table cxtm cxpf proof expected [] with
-          | Some _ ->
-              incr replaced;
-              Hyp proof_depth
-          | None -> proof
-        with _ -> proof
+        let expected_head =
+          result_proof
+          |> pftmshift 0 term_depth
+          |> pfshift proof_depth 1
+        in
+        let head, args = tm_app_spine [] proof in
+        if args <> [] && head = expected_head then begin
+          incr replaced;
+          rebuild_tm_app_spine (Hyp proof_depth) args
+        end else
+          let expected = tmshift 0 term_depth result_prop in
+          try
+            match check_propofpf proof_delta symbol_table cxtm cxpf proof expected [] with
+            | Some _ ->
+                incr replaced;
+                Hyp proof_depth
+            | None -> proof
+          with _ -> proof
       in
       match proof with
       | PTpAp (body, tp) ->
