@@ -13037,9 +13037,10 @@ let rec native_core_direct_skolem_formula_proof
           | Some name when compact_named_body ->
               subst_tm [(name, target_witness)] body, replacements
           | Some name ->
-              subst_named_tm name body,
+              let body = subst_named_tm name body in
+              body,
               (target_witness, Ap (TmH (native_core_eps_symbol tp),
-                                Lam (tp, native_core_formula_prop (subst_named_tm name body))))
+                                Lam (tp, native_core_formula_prop body)))
               :: replacements
           | None ->
               body,
@@ -13169,9 +13170,10 @@ let rec native_core_direct_skolem_formula_proof
                   | Some name when compact_named_body ->
                       subst_tm [(name, target_witness)] body, replacements
                   | Some name ->
-                      subst_named_tm name body,
+                      let body = subst_named_tm name body in
+                      body,
                       (target_witness, Ap (TmH (native_core_eps_symbol tp),
-                                        Lam (tp, native_core_formula_prop (subst_named_tm name body))))
+                                        Lam (tp, native_core_formula_prop body)))
                       :: replacements
                   | None ->
                       body,
