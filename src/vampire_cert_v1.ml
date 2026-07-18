@@ -13745,6 +13745,30 @@ let native_core_replace_witness_symbols_in_pf replacements proof =
   in
   replace_pf 0 proof
 
+let native_core_replace_terms_in_tm replacements tm =
+  let normalize tm =
+    tm
+    |> native_core_normalize_bool_constants
+    |> tm_beta_eta_norm
+  in
+  let rec replace_tm depth tm =
+    match
+      List.find_opt
+        (fun (needle, _) -> tm = tmshift 0 depth needle)
+        replacements
+    with
+    | Some (_, replacement) -> tmshift 0 depth replacement |> normalize
+    | None ->
+        match tm with
+        | TpAp (body, tp) -> TpAp (replace_tm depth body, tp)
+        | Ap (left, right) -> Ap (replace_tm depth left, replace_tm depth right)
+        | Lam (tp, body) -> Lam (tp, replace_tm (depth + 1) body)
+        | Imp (left, right) -> Imp (replace_tm depth left, replace_tm depth right)
+        | All (tp, body) -> All (tp, replace_tm (depth + 1) body)
+        | DB _ | TmH _ | Prim _ -> tm
+  in
+  replace_tm 0 tm |> normalize
+
 let native_core_replace_terms_in_pf replacements proof =
   let normalize tm =
     tm
@@ -14341,13 +14365,22 @@ let native_core_skolem_refutation_cps_proof
 	      tmshift 0 term_depth result_checked_prop
 	      |> native_core_replace_witness_symbols_in_tm
 	           (replacements @ fallback_replacements)
+	      |> native_core_replace_terms_in_tm term_replacements
+	    in
+	    let result_prop_after_term_replacements =
+	      native_core_replace_terms_in_tm term_replacements result_prop
 	    in
 	    debug_prop_pair
 	      "result-to-target replaced-checked/current"
 	      term_depth
 	      proof_depth
 	      checked_result_prop
-	      result_prop;
+	      result_prop_after_term_replacements;
+	    if checked_result_prop <> result_prop_after_term_replacements
+	       && Sys.getenv_opt "MEGALODON_CERT_FAIL_FAST_SKOLEM_CONTRACT" = Some "1" then
+	      error
+	        (id
+	         ^ ": native preprocess Skolem CPS result-to-target continuation contract mismatch");
 	    let shifted_result_to_target =
 	      result_to_target
 	      |> pftmshift 0 term_depth

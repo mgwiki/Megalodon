@@ -91,7 +91,11 @@ current Skolem/CPS frontier without making routine checks fail.
 For line-233-style Skolem replay debugging, add
 `MEGALODON_CERT_DEBUG=1 MEGALODON_CERT_FAIL_FAST_SKOLEM_CPS=1` so Megalodon
 stops at the first Skolem CPS candidate rejection instead of continuing through
-the slower fallback proof.
+the slower fallback proof. Add
+`MEGALODON_CERT_FAIL_FAST_SKOLEM_CONTRACT=1` when the target is specifically
+the shadow result-to-target continuation contract; this diagnostic stops at
+the first syntactic post-replacement contract mismatch and is intentionally
+stricter than the default final proof checker.
 
 For freshly exported TH0 files containing `% megalodon_source_map` comments,
 set `CHECK_SOURCE_MAP=1` to additionally run `-vampirecertv1source` for every
