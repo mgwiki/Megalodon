@@ -8587,6 +8587,94 @@ let native_core_kernel_v1_formula_child_fields cert id prefix =
       in
       collect 0 []
 
+let native_core_kernel_v1_skolem_contract cert id =
+  match native_core_kernel_v1_field cert id "skolem_contract" with
+  | None -> None
+  | Some version ->
+      if version <> "choice_macro_v1" then
+        error
+          (id ^ ": kernel_v1 metadata field skolem_contract has unsupported version "
+           ^ version);
+      let primitive_rule =
+        native_core_kernel_v1_required_field
+          cert id "skolem_contract_primitive_rule"
+      in
+      if primitive_rule <> "skolem_formula" then
+        error
+          (id ^ ": kernel_v1 metadata field skolem_contract_primitive_rule must be skolem_formula");
+      let convert_child (role, formula) =
+        {
+          Vampire_kernel_syntax.skolem_child_role = role;
+          skolem_child_formula = formula;
+        }
+      in
+      let source_children =
+        native_core_kernel_v1_formula_child_fields
+          cert id "skolem_contract_source_formula"
+        |> List.map convert_child
+      in
+      let result_children =
+        native_core_kernel_v1_formula_child_fields
+          cert id "skolem_contract_result_formula"
+        |> List.map convert_child
+      in
+      let introduced_count =
+        match
+          native_core_kernel_v1_int_field
+            cert id "skolem_contract_introduced_count"
+        with
+        | Some count -> count
+        | None ->
+            begin match native_core_kernel_v1_int_field cert id "introduced_count" with
+            | Some count -> count
+            | None -> 0
+            end
+      in
+      if introduced_count < 0 then
+        error
+          (id ^ ": kernel_v1 metadata field skolem_contract_introduced_count is negative");
+      let introduced_witnesses =
+        List.init introduced_count
+          (fun index ->
+             let prefix = "introduced_" ^ string_of_int index in
+             {
+               Vampire_kernel_syntax.skolem_witness_symbol =
+                 native_core_kernel_v1_required_field
+                   cert id (prefix ^ "_symbol");
+               skolem_witness_replaced_var =
+                 native_core_kernel_v1_required_field
+                   cert id (prefix ^ "_replaced_var");
+               skolem_witness_term =
+                 native_core_kernel_v1_tm_field
+                   cert id (prefix ^ "_witness_term");
+             })
+      in
+      Some
+        {
+          Vampire_kernel_syntax.skolem_source_children = source_children;
+          skolem_result_children = result_children;
+          skolem_introduced_witnesses = introduced_witnesses;
+        }
+
+let native_core_debug_skolem_contract id = function
+  | Some contract when Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" ->
+      prerr_endline
+        (Printf.sprintf
+           "%s: native Skolem typed contract source_children=%d result_children=%d witnesses=%d"
+           id
+           (List.length contract.Vampire_kernel_syntax.skolem_source_children)
+           (List.length contract.Vampire_kernel_syntax.skolem_result_children)
+           (List.length contract.Vampire_kernel_syntax.skolem_introduced_witnesses))
+  | _ -> ()
+
+let native_core_skolem_contract_introduced_names = function
+  | None -> []
+  | Some contract ->
+      contract.Vampire_kernel_syntax.skolem_introduced_witnesses
+      |> List.map
+           (fun witness ->
+              witness.Vampire_kernel_syntax.skolem_witness_symbol)
+
 let native_core_skolem_macro_edges cert id =
   match native_core_kernel_v1_int_field cert id "skolem_macro_edge_count" with
   | None -> []
@@ -17872,11 +17960,23 @@ let elaborate_core_resolution_refutation_native
           let helper_formulas =
             native_core_skolem_parent_helper_formulas cert id
           in
-          let introduced_names =
+          let skolem_contract =
+            native_core_kernel_v1_skolem_contract cert id
+          in
+          native_core_debug_skolem_contract id skolem_contract;
+          let introduced_names_from_step =
             introductions
             |> List.filter_map
                  (fun introduction ->
                     native_core_ident_opt introduction.skolem_intro_symbol)
+          in
+          let introduced_names_from_contract =
+            native_core_skolem_contract_introduced_names skolem_contract
+          in
+          let introduced_names =
+            List.sort_uniq
+              String.compare
+              (introduced_names_from_step @ introduced_names_from_contract)
           in
           let register_witness_replacement target_witness epsilon_witness =
             match native_core_flatten_value_application target_witness with
@@ -19164,11 +19264,23 @@ let elaborate_preprocess_refutation_native
           let helper_formulas =
             native_core_skolem_parent_helper_formulas cert id
           in
-          let introduced_names =
+          let skolem_contract =
+            native_core_kernel_v1_skolem_contract cert id
+          in
+          native_core_debug_skolem_contract id skolem_contract;
+          let introduced_names_from_step =
             introductions
             |> List.filter_map
                  (fun introduction ->
                     native_core_ident_opt introduction.skolem_intro_symbol)
+          in
+          let introduced_names_from_contract =
+            native_core_skolem_contract_introduced_names skolem_contract
+          in
+          let introduced_names =
+            List.sort_uniq
+              String.compare
+              (introduced_names_from_step @ introduced_names_from_contract)
           in
           let register_witness_replacement target_witness epsilon_witness =
             match native_core_flatten_value_application target_witness with
