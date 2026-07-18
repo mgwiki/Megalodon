@@ -21,6 +21,7 @@ type skolem_contract = {
   skolem_source_children : skolem_formula_child list;
   skolem_result_children : skolem_formula_child list;
   skolem_introduced_witnesses : skolem_introduced_witness list;
+  skolem_macro_edge_count : int option;
 }
 
 type skolem_branch_contract = {
@@ -31,6 +32,11 @@ type skolem_branch_contract = {
   skolem_branch_source_formula : Syntax.tm option;
   skolem_branch_target_formula : Syntax.tm option;
   skolem_branch_introduced_witnesses : skolem_introduced_witness list;
+}
+
+type skolem_proof_object = {
+  skolem_proof_contract : skolem_contract;
+  skolem_proof_branches : skolem_branch_contract list;
 }
 
 let schema = "prover9-small-kernel-v1"

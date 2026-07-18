@@ -8643,17 +8643,26 @@ let native_core_kernel_v1_skolem_contract cert id =
           Vampire_kernel_syntax.skolem_source_children = source_children;
           skolem_result_children = result_children;
           skolem_introduced_witnesses = introduced_witnesses;
+          skolem_macro_edge_count =
+            native_core_kernel_v1_int_field
+              cert id "skolem_contract_macro_edge_count";
         }
 
 let native_core_debug_skolem_contract id = function
   | Some contract when Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" ->
+      let macro_edge_count =
+        match contract.Vampire_kernel_syntax.skolem_macro_edge_count with
+        | Some count -> string_of_int count
+        | None -> "?"
+      in
       prerr_endline
         (Printf.sprintf
-           "%s: native Skolem typed contract source_children=%d result_children=%d witnesses=%d"
+           "%s: native Skolem typed contract source_children=%d result_children=%d witnesses=%d macro_edges=%s"
            id
            (List.length contract.Vampire_kernel_syntax.skolem_source_children)
            (List.length contract.Vampire_kernel_syntax.skolem_result_children)
-           (List.length contract.Vampire_kernel_syntax.skolem_introduced_witnesses))
+           (List.length contract.Vampire_kernel_syntax.skolem_introduced_witnesses)
+           macro_edge_count)
   | _ -> ()
 
 let native_core_skolem_contract_introduced_names = function
@@ -8808,8 +8817,56 @@ let native_core_skolem_macro_edges cert id =
             }
           in
           collect (index + 1) (edge :: acc)
-      in
+  in
       collect 0 []
+
+let native_core_skolem_proof_object cert id =
+  match native_core_kernel_v1_skolem_contract cert id with
+  | None -> None
+  | Some contract ->
+      let branches =
+        native_core_skolem_macro_edges cert id
+        |> List.filter_map
+             (fun edge -> edge.native_skolem_macro_edge_branch_contract)
+      in
+      begin match contract.Vampire_kernel_syntax.skolem_macro_edge_count with
+      | Some expected when branches <> [] && List.length branches <> expected ->
+          error
+            (Printf.sprintf
+               "%s: typed Skolem proof object has %d branch contracts but top-level contract expects %d macro edges"
+               id (List.length branches) expected)
+      | _ -> ()
+      end;
+      Some
+        {
+          Vampire_kernel_syntax.skolem_proof_contract = contract;
+          skolem_proof_branches = branches;
+        }
+
+let native_core_debug_skolem_proof_object id = function
+  | Some proof_object when Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" ->
+      let contract = proof_object.Vampire_kernel_syntax.skolem_proof_contract in
+      let branches = proof_object.Vampire_kernel_syntax.skolem_proof_branches in
+      let branch_indices =
+        branches
+        |> List.map
+             (fun branch ->
+                string_of_int
+                  branch.Vampire_kernel_syntax.skolem_branch_index)
+      in
+      prerr_endline
+        (Printf.sprintf
+           "%s: native Skolem proof object source_children=%d result_children=%d witnesses=%d macro_edges=%s branches=%d[%s]"
+           id
+           (List.length contract.Vampire_kernel_syntax.skolem_source_children)
+           (List.length contract.Vampire_kernel_syntax.skolem_result_children)
+           (List.length contract.Vampire_kernel_syntax.skolem_introduced_witnesses)
+           (match contract.Vampire_kernel_syntax.skolem_macro_edge_count with
+            | Some count -> string_of_int count
+            | None -> "?")
+           (List.length branches)
+           (String.concat "," branch_indices))
+  | _ -> ()
 
 let native_core_symbol_table cert =
   let symbols = Hashtbl.create 257 in
@@ -17982,10 +18039,16 @@ let elaborate_core_resolution_refutation_native
           let helper_formulas =
             native_core_skolem_parent_helper_formulas cert id
           in
-          let skolem_contract =
-            native_core_kernel_v1_skolem_contract cert id
+          let skolem_proof_object =
+            native_core_skolem_proof_object cert id
           in
-          native_core_debug_skolem_contract id skolem_contract;
+          native_core_debug_skolem_proof_object id skolem_proof_object;
+          let skolem_contract =
+            Option.map
+              (fun proof_object ->
+                 proof_object.Vampire_kernel_syntax.skolem_proof_contract)
+              skolem_proof_object
+          in
           let introduced_names_from_step =
             introductions
             |> List.filter_map
@@ -19286,10 +19349,16 @@ let elaborate_preprocess_refutation_native
           let helper_formulas =
             native_core_skolem_parent_helper_formulas cert id
           in
-          let skolem_contract =
-            native_core_kernel_v1_skolem_contract cert id
+          let skolem_proof_object =
+            native_core_skolem_proof_object cert id
           in
-          native_core_debug_skolem_contract id skolem_contract;
+          native_core_debug_skolem_proof_object id skolem_proof_object;
+          let skolem_contract =
+            Option.map
+              (fun proof_object ->
+                 proof_object.Vampire_kernel_syntax.skolem_proof_contract)
+              skolem_proof_object
+          in
           let introduced_names_from_step =
             introductions
             |> List.filter_map
