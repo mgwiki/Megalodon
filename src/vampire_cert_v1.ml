@@ -9229,6 +9229,62 @@ let native_core_certificate_sgdelta cert symbol_table =
       | TmH raw_name -> native_core_ident_opt raw_name
       | _ -> None
     in
+    let witness_dependency_names witness =
+      match native_core_flatten_value_application witness with
+      | TmH _, args ->
+          let dependency_names = List.filter_map dependency_arg_name args in
+          if List.length dependency_names = List.length args then
+            Some dependency_names
+          else
+            None
+      | _ -> None
+    in
+    let context_names_in_body context body =
+      let context_count = List.length context in
+      let add_name name names =
+        if List.mem name names then names else name :: names
+      in
+      let rec collect depth names = function
+        | DB index when index >= depth ->
+            let external_index = index - depth in
+            if external_index = 0 then names
+            else
+              let context_index = context_count - external_index in
+              begin match List.nth_opt context context_index with
+              | Some (name, _) -> add_name name names
+              | None -> names
+              end
+        | TpAp (tm, _) -> collect depth names tm
+        | Ap (left, right) | Imp (left, right) ->
+            collect depth (collect depth names left) right
+        | Lam (_, body) | All (_, body) -> collect (depth + 1) names body
+        | TmH _ | DB _ | Prim _ -> names
+      in
+      collect 0 [] body
+    in
+    let witness_dependencies_cover context required witness =
+      match witness_dependency_names witness with
+      | Some dependency_names ->
+          List.for_all
+            (fun name -> List.mem_assoc name context)
+            dependency_names
+          && List.for_all
+               (fun name -> List.mem name dependency_names)
+               required
+      | None -> false
+    in
+    let choose_witness context body subst =
+      let required = context_names_in_body context body in
+      let rec choose skipped = function
+        | [] -> None
+        | ((_, witness) as binding) :: rest ->
+            if witness_dependencies_cover context required witness then
+              Some (witness, List.rev_append skipped rest)
+            else
+              choose (binding :: skipped) rest
+      in
+      choose [] subst
+    in
     let dependency_type context name =
       match List.assoc_opt name context with
       | Some tp -> Some tp
@@ -9304,9 +9360,13 @@ let native_core_certificate_sgdelta cert symbol_table =
     in
     let rec add all_index context source subst =
       match source, subst with
-      | Ap (TmH "vampire_exists_prop", Lam (tp, body)), (_, witness) :: rest ->
-          add_definition context tp body witness;
-          add all_index context (tmsubst body 0 witness) rest
+      | Ap (TmH "vampire_exists_prop", Lam (tp, body)), _ ->
+          begin match choose_witness context body subst with
+          | Some (witness, rest) ->
+              add_definition context tp body witness;
+              add all_index context (tmsubst body 0 witness) rest
+          | None -> subst
+          end
       | All (tp, body), _ ->
           let name = variable_name all_index tp in
           add (all_index + 1) (context @ [(name, tp)]) body subst
