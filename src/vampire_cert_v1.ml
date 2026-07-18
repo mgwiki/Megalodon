@@ -14551,9 +14551,9 @@ let native_core_skolem_refutation_cps_proof
       parent_proof
       parent_step_variables
   in
-  let legacy_result_to_target =
+  let result_to_target_source_prop, base_result_to_target =
     match result_to_target_body with
-    | Some body -> PLam (result_checked_prop, body)
+    | Some body -> result_assumption_prop, PLam (result_assumption_prop, body)
     | None ->
         let shifted_final = pfshift 0 1 final_proof in
         let abstracted =
@@ -14564,14 +14564,14 @@ let native_core_skolem_refutation_cps_proof
               native_core_abstract_shifted_subproof result_proof shifted_final
         in
         match abstracted with
-        | Some body -> PLam (result_checked_prop, body)
+        | Some body -> result_checked_prop, PLam (result_checked_prop, body)
         | None ->
             error
               (id ^ ": native preprocess Skolem CPS could not isolate the Skolem result proof in the refutation")
   in
   let result_to_target =
-    if result_assumption_prop = result_checked_prop then
-      legacy_result_to_target
+    if result_assumption_prop = result_to_target_source_prop then
+      base_result_to_target
     else
       let legacy_result_proof =
         native_core_bind_result_step_variables
@@ -14581,7 +14581,7 @@ let native_core_skolem_refutation_cps_proof
       in
       PLam
         (result_assumption_prop,
-         PPfAp (pfshift 0 1 legacy_result_to_target, legacy_result_proof))
+         PPfAp (pfshift 0 1 base_result_to_target, legacy_result_proof))
   in
   let result_to_target =
     native_core_close_pf variables result_to_target
@@ -18145,12 +18145,25 @@ let elaborate_preprocess_refutation_native
         cnf_step_uses_closed_parent_primitive parent_id
     | _ -> false
   in
-  let shadow_skolem_final_refutation skolem_id result_checked_prop result_formula =
+  let shadow_skolem_final_refutation
+      ?skolem_assumption_prop
+      ?skolem_assumption_step_variables
+      skolem_id result_checked_prop result_formula =
+    let skolem_assumption_prop =
+      match skolem_assumption_prop with
+      | Some prop -> prop
+      | None -> result_checked_prop
+    in
+    let skolem_assumption_step_variables =
+      match skolem_assumption_step_variables with
+      | Some step_variables -> step_variables
+      | None -> native_core_step_variables cert skolem_id
+    in
     let shadow_clause_table = Hashtbl.create 101 in
     let shadow_formula_table = Hashtbl.create 101 in
     let shadow_final_proof = ref None in
     let first_shadow_choice = ref None in
-    let shadow_context = result_checked_prop :: closed_source_context in
+    let shadow_context = skolem_assumption_prop :: closed_source_context in
     let debug_shadow_choice kind id proof =
       if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
         match !first_shadow_choice with
@@ -18220,6 +18233,11 @@ let elaborate_preprocess_refutation_native
       debug_shadow_choice "formula" id proof;
       Hashtbl.replace shadow_formula_table id (formula, proof)
     in
+    let store_shadow_formula_with_prop id formula prop proof =
+      check_shadow_step_proof id prop proof;
+      debug_shadow_choice "formula" id proof;
+      Hashtbl.replace shadow_formula_table id (formula, proof)
+    in
     let shifted_normal_formula id =
       let formula, proof = lookup_formula id in
       (formula, pfshift 0 1 proof)
@@ -18264,7 +18282,8 @@ let elaborate_preprocess_refutation_native
     in
     let replay_step = function
       | SkolemFormula (id, _, _, _, _, _) when id = skolem_id ->
-          store_shadow_formula id result_formula (Hyp 0)
+          store_shadow_formula_with_prop
+            id result_formula skolem_assumption_prop (Hyp 0)
       | FormulaTermCopy (id, parent_id, result) when has_shadow_formula parent_id ->
           let parent_formula, parent_proof = shadow_formula_parent parent_id in
           if parent_formula <> result then
@@ -18298,10 +18317,14 @@ let elaborate_preprocess_refutation_native
             error
               (id ^ ": native preprocess Skolem shadow refuses transitional cnf_formula_clause parent")
           else
+            let parent_step_variables =
+              if parent_id = skolem_id then skolem_assumption_step_variables
+              else native_core_step_variables cert parent_id
+            in
             store_shadow_clause id result
               (native_core_cnf_formula_clause_proof
                  id variables
-                 (native_core_step_variables cert parent_id)
+                 parent_step_variables
                  (native_core_step_variables cert id)
                  parent_formula result parent_proof)
       | SplitDependency (id, owner_id, _dependencies, result)
@@ -19005,7 +19028,11 @@ let elaborate_preprocess_refutation_native
                    (id ^ ": native preprocess Skolem CPS shadow replay disabled by environment");
                None
              end else
-               try shadow_skolem_final_refutation id result_checked_prop result
+               try
+                 shadow_skolem_final_refutation
+                   ~skolem_assumption_prop:result_assumption_prop
+                   ~skolem_assumption_step_variables:result_assumption_step_variables
+                   id result_checked_prop result
                with (Error _ | Failure _) -> None
            in
            begin match shadow_result_to_target with
