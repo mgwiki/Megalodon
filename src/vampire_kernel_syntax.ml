@@ -6,6 +6,23 @@ type literal =
 
 type clause = literal list
 
+type skolem_formula_child = {
+  skolem_child_role : string;
+  skolem_child_formula : Syntax.tm;
+}
+
+type skolem_introduced_witness = {
+  skolem_witness_symbol : string;
+  skolem_witness_replaced_var : string;
+  skolem_witness_term : Syntax.tm option;
+}
+
+type skolem_contract = {
+  skolem_source_children : skolem_formula_child list;
+  skolem_result_children : skolem_formula_child list;
+  skolem_introduced_witnesses : skolem_introduced_witness list;
+}
+
 let schema = "prover9-small-kernel-v1"
 
 let primitive_contracts = [
@@ -52,3 +69,7 @@ let required_primitives_for_rule rule =
   match List.assoc_opt rule primitive_contracts with
   | Some primitives -> primitives
   | None -> []
+
+let is_skolem_transform_primitive = function
+  | "skolem_formula" | "skolem_branch" -> true
+  | _ -> false
