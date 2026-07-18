@@ -12691,6 +12691,186 @@ let native_core_skolem_formula_proof
   let body_proof = convert source target parent_proof in
   native_core_bind_result_step_variables variables result_step_variables body_proof
 
+let native_core_replace_witness_symbols_in_tm replacements tm =
+  let rec replace depth tm =
+    match tm with
+    | TmH name ->
+        begin match List.assoc_opt name replacements with
+        | Some witness -> tmshift 0 depth witness
+        | None -> tm
+        end
+    | TpAp (body, tp) -> TpAp (replace depth body, tp)
+    | Ap (left, right) -> Ap (replace depth left, replace depth right)
+    | Lam (tp, body) -> Lam (tp, replace (depth + 1) body)
+    | Imp (left, right) -> Imp (replace depth left, replace depth right)
+    | All (tp, body) -> All (tp, replace (depth + 1) body)
+    | DB _ | Prim _ -> tm
+  in
+  replace 0 tm
+
+let native_core_replace_witness_symbols_in_pf replacements proof =
+  let rec replace_tm depth tm =
+    match tm with
+    | TmH name ->
+        begin match List.assoc_opt name replacements with
+        | Some witness -> tmshift 0 depth witness
+        | None -> tm
+        end
+    | TpAp (body, tp) -> TpAp (replace_tm depth body, tp)
+    | Ap (left, right) -> Ap (replace_tm depth left, replace_tm depth right)
+    | Lam (tp, body) -> Lam (tp, replace_tm (depth + 1) body)
+    | Imp (left, right) -> Imp (replace_tm depth left, replace_tm depth right)
+    | All (tp, body) -> All (tp, replace_tm (depth + 1) body)
+    | DB _ | Prim _ -> tm
+  in
+  let rec replace_pf depth proof =
+    match proof with
+    | PTpAp (body, tp) -> PTpAp (replace_pf depth body, tp)
+    | PTmAp (body, tm) ->
+        PTmAp (replace_pf depth body, replace_tm depth tm)
+    | PPfAp (left, right) -> PPfAp (replace_pf depth left, replace_pf depth right)
+    | PLam (prop, body) ->
+        PLam (replace_tm depth prop, replace_pf depth body)
+    | TLam (tp, body) -> TLam (tp, replace_pf (depth + 1) body)
+    | Hyp _ | Known _ -> proof
+  in
+  replace_pf 0 proof
+
+let native_core_abstract_shifted_subproof needle proof =
+  let replaced = ref false in
+  let rec replace term_depth proof_depth proof =
+    let expected =
+      needle
+      |> pftmshift 0 term_depth
+      |> pfshift proof_depth 1
+    in
+    if proof = expected then begin
+      replaced := true;
+      Hyp proof_depth
+    end else
+      match proof with
+      | PTpAp (body, tp) -> PTpAp (replace term_depth proof_depth body, tp)
+      | PTmAp (body, tm) -> PTmAp (replace term_depth proof_depth body, tm)
+      | PPfAp (left, right) ->
+          PPfAp
+            (replace term_depth proof_depth left,
+             replace term_depth proof_depth right)
+      | PLam (prop, body) ->
+          PLam (prop, replace term_depth (proof_depth + 1) body)
+      | TLam (tp, body) ->
+          TLam (tp, replace (term_depth + 1) proof_depth body)
+      | Hyp _ | Known _ -> proof
+  in
+  let proof = replace 0 0 proof in
+  if !replaced then Some proof else None
+
+let native_core_skolem_refutation_cps_proof
+    ?abstract_result_proof
+    id variables parent_step_variables result_step_variables source subst result
+    result_checked_prop parent_proof result_proof final_proof target_prop =
+  let witness_symbols =
+    subst
+    |> List.map
+         (function
+           | _, TmH symbol -> symbol
+           | _ ->
+               error
+                 (id ^ ": native preprocess Skolem CPS currently supports only nullary introduced witnesses"))
+  in
+  let rec source_exists_count = function
+    | Ap (TmH "vampire_exists_prop", Lam (_, body)) ->
+        1 + source_exists_count body
+    | _ -> 0
+  in
+  if source_exists_count source <> List.length witness_symbols then
+    error
+      (id ^ ": native preprocess Skolem CPS source existential count does not match substitution count");
+  let result_prop = native_core_formula_prop result in
+  let parent_proof =
+    let dummy_step_argument tp =
+      match tp with
+      | Prop -> native_core_false
+      | _ ->
+          error
+            (id
+             ^ ": native preprocess Skolem CPS cannot open non-prop parent step variable")
+    in
+    List.fold_left
+      (fun proof (_, tp) -> PTmAp (proof, dummy_step_argument tp))
+      parent_proof
+      parent_step_variables
+  in
+  let result_to_target =
+    let shifted_final = pfshift 0 1 final_proof in
+    let abstracted =
+      match abstract_result_proof with
+      | Some abstract_result_proof ->
+          abstract_result_proof result_checked_prop result_proof shifted_final
+      | None ->
+          native_core_abstract_shifted_subproof result_proof shifted_final
+    in
+    match abstracted with
+    | Some body -> PLam (result_checked_prop, body)
+    | None ->
+        error
+          (id ^ ": native preprocess Skolem CPS could not isolate the Skolem result proof in the refutation")
+  in
+  let target_prop = tm_beta_eta_norm target_prop in
+  let rec eliminate replacements witnesses source proof result_to_target =
+    match source, witnesses with
+    | Ap (TmH "vampire_exists_prop", Lam (tp, body)), witness :: rest ->
+        let replacements_under_binder =
+          (witness, DB 0)
+          :: List.map (fun (name, tm) -> (name, tmshift 0 1 tm)) replacements
+        in
+        let body_prop =
+          native_core_formula_prop body
+          |> native_core_replace_witness_symbols_in_tm replacements_under_binder
+        in
+        let continuation =
+          TLam
+            (tp,
+             PLam
+               (body_prop,
+                eliminate
+                  replacements_under_binder
+                  rest
+                  body
+                  (Hyp 0)
+                  (pfshift 0 1 (pftmshift 0 1 result_to_target))))
+        in
+        PPfAp (PTmAp (proof, target_prop), continuation)
+    | _, [] ->
+        let source_prop =
+          native_core_formula_prop source
+          |> native_core_replace_witness_symbols_in_tm replacements
+          |> tm_beta_eta_norm
+        in
+        let expected_result_prop =
+          result_prop
+          |> native_core_replace_witness_symbols_in_tm replacements
+          |> tm_beta_eta_norm
+        in
+        if source_prop <> expected_result_prop then begin
+          if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
+            prerr_endline ("native preprocess Skolem CPS source base: " ^ tm_to_str source_prop);
+            prerr_endline ("native preprocess Skolem CPS result base: " ^ tm_to_str expected_result_prop)
+          end;
+          error
+            (id ^ ": native preprocess Skolem CPS source body does not match the Skolem result")
+        end;
+        let result_checked_proof =
+          native_core_bind_result_step_variables variables result_step_variables proof
+        in
+        PPfAp
+          (native_core_replace_witness_symbols_in_pf replacements result_to_target,
+           result_checked_proof)
+    | _ ->
+        error
+          (id ^ ": native preprocess Skolem CPS source has fewer existential binders than substitutions")
+  in
+  eliminate [] witness_symbols source parent_proof result_to_target
+
 let native_core_truth_conflict_false_proof id literal proof =
   let is_true = function
     | TmH "f__true" | TmH "vampire_true" -> true
@@ -14870,6 +15050,7 @@ let elaborate_preprocess_refutation_native
   let avatar_definition_table = Hashtbl.create 17 in
   let transitional_primitive_formula_steps = Hashtbl.create 17 in
   let transitional_primitive_clause_steps = Hashtbl.create 17 in
+  let skolem_cps_entries = ref [] in
   let final_proof = ref None in
   let store_clause id clause proof =
     let prop = native_core_step_clause_prop cert variables id clause in
@@ -14881,6 +15062,122 @@ let elaborate_preprocess_refutation_native
     let prop = native_preprocess_step_formula_prop cert variables id formula in
     check_step_proof id prop proof;
     Hashtbl.replace formula_table id (formula, proof)
+  in
+  let final_refutation_proof_checks proof =
+    let rec proof_node_count = function
+      | Hyp _ | Known _ -> 1
+      | PTpAp (body, _) -> 1 + proof_node_count body
+      | PTmAp (body, _) -> 1 + proof_node_count body
+      | PPfAp (left, right) -> 1 + proof_node_count left + proof_node_count right
+      | PLam (_, body) -> 1 + proof_node_count body
+      | TLam (_, body) -> 1 + proof_node_count body
+    in
+    let short_tm tm =
+      let text = tm_to_str tm in
+      if String.length text <= 500 then text
+      else String.sub text 0 500 ^ "..."
+    in
+    let find_bad_application proof =
+      let rec find cxtm cxpf proof =
+        match proof with
+        | PPfAp (left, right) ->
+            begin
+              try
+                let left_prop, _ =
+                  extr_propofpf proof_delta symbol_table cxtm cxpf left []
+                in
+                match tm_beta_eta_norm left_prop with
+                | Imp (_, _) -> begin match find cxtm cxpf left with
+                    | Some _ as found -> found
+                    | None -> find cxtm cxpf right
+                    end
+                | prop ->
+                    Some ("left proposition is not implication: " ^ short_tm prop)
+              with exn ->
+                Some ("could not extract left proposition: " ^ Printexc.to_string exn)
+            end
+        | PTpAp (body, _) | PTmAp (body, _) -> find cxtm cxpf body
+        | PLam (prop, body) -> find cxtm (prop :: cxpf) body
+        | TLam (tp, body) ->
+            let cxtm = tp :: cxtm in
+            let cxpf = List.map (fun prop -> tmshift 0 1 prop) cxpf in
+            find cxtm cxpf body
+        | Hyp _ | Known _ -> None
+      in
+      find variable_types closed_source_context proof
+    in
+    let debug_failure msg =
+      if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
+        prerr_endline ("native preprocess final refutation proof debug: " ^ msg);
+        prerr_endline
+          ("native preprocess final refutation proof nodes: "
+           ^ string_of_int (proof_node_count proof));
+        begin match find_bad_application proof with
+        | Some detail ->
+            prerr_endline
+              ("native preprocess final refutation first bad application: " ^ detail)
+        | None -> ()
+        end
+      end
+    in
+    try
+      match check_propofpf proof_delta symbol_table variable_types closed_source_context proof native_core_false [] with
+      | Some _ -> true
+      | None ->
+          debug_failure "wrong proposition";
+          false
+    with Failure msg ->
+      debug_failure msg;
+      false
+    | Error _ as exn -> raise exn
+    | exn ->
+        debug_failure (Printexc.to_string exn);
+        false
+  in
+  let abstract_skolem_result_by_prop result_prop _result_proof shifted_final =
+    let replaced = ref 0 in
+    let rec replace term_depth proof_depth cxtm cxpf proof =
+      let expected = tmshift 0 term_depth result_prop in
+      let proof =
+        try
+          match check_propofpf proof_delta symbol_table cxtm cxpf proof expected [] with
+          | Some _ ->
+              incr replaced;
+              Hyp proof_depth
+          | None -> proof
+        with _ -> proof
+      in
+      match proof with
+      | PTpAp (body, tp) ->
+          PTpAp (replace term_depth proof_depth cxtm cxpf body, tp)
+      | PTmAp (body, tm) ->
+          PTmAp (replace term_depth proof_depth cxtm cxpf body, tm)
+      | PPfAp (left, right) ->
+          PPfAp
+            (replace term_depth proof_depth cxtm cxpf left,
+             replace term_depth proof_depth cxtm cxpf right)
+      | PLam (prop, body) ->
+          PLam (prop, replace term_depth (proof_depth + 1) cxtm (prop :: cxpf) body)
+      | TLam (tp, body) ->
+          let cxtm = tp :: cxtm in
+          let cxpf = List.map (fun prop -> tmshift 0 1 prop) cxpf in
+          TLam (tp, replace (term_depth + 1) proof_depth cxtm cxpf body)
+      | Hyp _ | Known _ -> proof
+    in
+    let body =
+      replace
+        0
+        0
+        variable_types
+        (result_prop :: closed_source_context)
+        shifted_final
+    in
+    if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" && !replaced > 0 then
+      prerr_endline
+        ("native preprocess Skolem CPS abstracted "
+         ^ string_of_int !replaced
+         ^ " result subproof(s)");
+    if !replaced > 0 then Some body else None
   in
   let store_avatar_definition_with_key key id split_name component_literals proof =
     let split_prop = native_core_literal_prop (Pos (TmH split_name)) in
@@ -15182,11 +15479,21 @@ let elaborate_preprocess_refutation_native
           in
           let parent_step_variables = native_core_step_variables cert parent_id in
           let result_step_variables = native_core_step_variables cert id in
-          store_formula id result
-            (native_core_skolem_formula_proof
-               ~normalize_formula_for_match:normalize_generated_skolems
-               id variables parent_step_variables result_step_variables
-               subst source_formula result parent_proof)
+          let proof =
+            native_core_skolem_formula_proof
+              ~normalize_formula_for_match:normalize_generated_skolems
+              id variables parent_step_variables result_step_variables
+              subst source_formula result parent_proof
+          in
+          store_formula id result proof;
+          let result_checked_prop =
+            native_preprocess_step_formula_prop cert variables id result
+          in
+          skolem_cps_entries :=
+            (id, source_formula, subst, result, parent_step_variables,
+             result_step_variables,
+             result_checked_prop, parent_proof, proof)
+            :: !skolem_cps_entries
       | FormulaCopy (id, parent_id, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
           if native_core_normalize_bool_constants (native_core_literal_prop result)
@@ -15451,6 +15758,39 @@ let elaborate_preprocess_refutation_native
     match !final_proof with
     | Some proof -> proof
     | None -> error "native preprocess proof-term checker found no empty-clause proof"
+  in
+  let proof =
+    List.fold_left
+      (fun current
+           (id, source_formula, subst, result, parent_step_variables,
+            result_step_variables, result_checked_prop, parent_proof,
+            result_proof) ->
+         try
+           let candidate =
+             native_core_skolem_refutation_cps_proof
+               ~abstract_result_proof:abstract_skolem_result_by_prop
+               id variables parent_step_variables result_step_variables
+               source_formula subst result result_checked_prop parent_proof
+               result_proof current native_core_false
+           in
+           if final_refutation_proof_checks candidate then begin
+             if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+               prerr_endline
+                 (id ^ ": native preprocess Skolem CPS discharged certificate-local witnesses");
+             candidate
+           end else begin
+             if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+               prerr_endline
+                 (id ^ ": native preprocess Skolem CPS candidate did not check; keeping original refutation");
+             current
+           end
+         with (Error _ | Failure _) as exn ->
+           if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+             prerr_endline
+               (id ^ ": native preprocess Skolem CPS skipped: " ^ Printexc.to_string exn);
+           current)
+      proof
+      !skolem_cps_entries
   in
   let body_prop =
     List.fold_right
