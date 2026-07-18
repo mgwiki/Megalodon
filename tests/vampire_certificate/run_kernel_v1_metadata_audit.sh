@@ -876,6 +876,7 @@ if [[ -s "$WORK_DIR/skolemize.tsv" ]]; then
             print formula_field "\t" $0
           }
           check_quantifier_fields(prefix "_formula", $0)
+          check_typed_variable_fields(prefix "_formula", "free_variable", $0)
           if (index($0, binder_count_field) == 0) {
             print binder_count_field "\t" $0
           } else {
@@ -899,10 +900,12 @@ if [[ -s "$WORK_DIR/skolemize.tsv" ]]; then
             print source_field "\t" $0
           }
           check_quantifier_fields(prefix "_source", $0)
+          check_typed_variable_fields(prefix "_source", "free_variable", $0)
           if (index($0, target_field) == 0) {
             print target_field "\t" $0
           }
           check_quantifier_fields(prefix "_target", $0)
+          check_typed_variable_fields(prefix "_target", "free_variable", $0)
         }
       }
     }

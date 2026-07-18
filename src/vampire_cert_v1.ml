@@ -4633,7 +4633,9 @@ let validate_kernel_v1_metadata_contracts cert =
               let formula = parse_tm (parse_sexpr raw_formula) in
               require_formula_shape_fields id fields (prefix ^ "_formula") formula;
               require_formula_quantifier_fields
-                id fields (prefix ^ "_formula") raw_formula
+                id fields (prefix ^ "_formula") raw_formula;
+              require_typed_variable_fields
+                id fields (prefix ^ "_formula") "free_variable"
           | None -> ()
           end;
           begin match field_value (prefix ^ "_source") fields with
@@ -4641,7 +4643,9 @@ let validate_kernel_v1_metadata_contracts cert =
               let source = parse_tm (parse_sexpr raw_source) in
               require_formula_shape_fields id fields (prefix ^ "_source") source;
               require_formula_quantifier_fields
-                id fields (prefix ^ "_source") raw_source
+                id fields (prefix ^ "_source") raw_source;
+              require_typed_variable_fields
+                id fields (prefix ^ "_source") "free_variable"
           | None -> ()
           end;
           begin match field_value (prefix ^ "_target") fields with
@@ -4649,7 +4653,9 @@ let validate_kernel_v1_metadata_contracts cert =
               let target = parse_tm (parse_sexpr raw_target) in
               require_formula_shape_fields id fields (prefix ^ "_target") target;
               require_formula_quantifier_fields
-                id fields (prefix ^ "_target") raw_target
+                id fields (prefix ^ "_target") raw_target;
+              require_typed_variable_fields
+                id fields (prefix ^ "_target") "free_variable"
           | None -> ()
           end
         done
