@@ -970,6 +970,16 @@ let vampire_certificate_only_symbol_in_tm live_symbols extra_symbols tm =
   in
   tm_symbol tm
 
+let vampire_live_safe_extra_delta live_symbols extra_symbols extra_delta =
+  let filtered = Hashtbl.create (Hashtbl.length extra_delta) in
+  Hashtbl.iter
+    (fun name (arity, body) ->
+       match vampire_certificate_only_symbol_in_tm live_symbols extra_symbols body with
+       | Some _ -> ()
+       | None -> Hashtbl.replace filtered name (arity, body))
+    extra_delta;
+  filtered
+
 let vampire_certificate_only_symbol_in_proof live_symbols extra_delta extra_symbols proof =
   let tm_symbol = vampire_certificate_only_symbol_in_tm live_symbols extra_symbols in
   let rec pf_symbol = function
@@ -996,6 +1006,73 @@ let vampire_certificate_only_symbol_in_proof live_symbols extra_delta extra_symb
     | TLam (_, body) -> pf_symbol body
   in
   pf_symbol proof
+
+let vampire_debug_certificate_only_symbol_in_proof live_symbols extra_delta extra_symbols proof =
+  let short_tm tm =
+    let text = tm_to_str tm in
+    if String.length text <= 500 then text
+    else String.sub text 0 500 ^ "..."
+  in
+  let short_pf pf =
+    let text = pf_to_str pf in
+    if String.length text <= 500 then text
+    else String.sub text 0 500 ^ "..."
+  in
+  let rec find_tm path enclosing tm =
+    match tm with
+    | TmH name when Hashtbl.mem extra_symbols name && not (Hashtbl.mem live_symbols name) ->
+        Some
+          (Printf.sprintf
+             "%s: certificate-only term symbol %s in term %s; enclosing term %s"
+             path
+             name
+             (short_tm tm)
+             (short_tm enclosing))
+    | TmH _ | DB _ | Prim _ -> None
+    | TpAp (body, _) -> find_tm (path ^ ".tp") tm body
+    | Ap (left, right) ->
+        begin match find_tm (path ^ ".left") tm left with
+        | Some _ as result -> result
+        | None -> find_tm (path ^ ".right") tm right
+        end
+    | Lam (_, body) -> find_tm (path ^ ".lam") tm body
+    | All (_, body) -> find_tm (path ^ ".all") tm body
+    | Imp (left, right) ->
+        begin match find_tm (path ^ ".antecedent") tm left with
+        | Some _ as result -> result
+        | None -> find_tm (path ^ ".consequent") tm right
+        end
+  in
+  let rec find_pf path pf =
+    match pf with
+    | Hyp _ -> None
+    | Known name when Hashtbl.mem extra_delta name && not (Hashtbl.mem sigdelta name) ->
+        Some
+          (Printf.sprintf
+             "%s: certificate-only known proof symbol %s in proof %s"
+             path
+             name
+             (short_pf pf))
+    | Known _ -> None
+    | PTpAp (body, _) -> find_pf (path ^ ".tp") body
+    | PTmAp (body, tm) ->
+        begin match find_pf (path ^ ".proof") body with
+        | Some _ as result -> result
+        | None -> find_tm (path ^ ".term") tm tm
+        end
+    | PPfAp (left, right) ->
+        begin match find_pf (path ^ ".left") left with
+        | Some _ as result -> result
+        | None -> find_pf (path ^ ".right") right
+        end
+    | PLam (prop, body) ->
+        begin match find_tm (path ^ ".prop") prop prop with
+        | Some _ as result -> result
+        | None -> find_pf (path ^ ".body") body
+        end
+    | TLam (_, body) -> find_pf (path ^ ".body") body
+  in
+  find_pf "root" proof
 
 let vampire_source_context_local_definition_names cxtm =
   List.filter_map
@@ -1255,6 +1332,117 @@ let vampire_loaded_prop_ext_expander proof =
       in
       expand proof
 
+let vampire_directional_prop_ext_expander proof =
+  match Hashtbl.find_opt sigknh "prop_ext", Hashtbl.find_opt sigknh "iffI" with
+  | Some prop_ext_hash, Some iffI_hash ->
+      let prop_ext_like h =
+        h = prop_ext_hash || h = Vampire_cert_v1.native_core_prop_ext_hash
+      in
+      let rec expand = function
+        | PPfAp
+            (PTmAp (PTmAp (Known h, left), right),
+             PPfAp
+               (PPfAp
+                  (PTmAp (PTmAp (Known iff_h, _), _),
+                   left_to_right),
+                right_to_left))
+            when prop_ext_like h
+                 && iff_h = iffI_hash ->
+            PPfAp
+              (PPfAp
+                 (PTmAp (PTmAp (Known h, left), right),
+                  expand left_to_right),
+               expand right_to_left)
+        | PTpAp (body, tp) -> PTpAp (expand body, tp)
+        | PTmAp (body, tm) -> PTmAp (expand body, tm)
+        | PPfAp (left, right) -> PPfAp (expand left, expand right)
+        | PLam (prop, body) -> PLam (prop, expand body)
+        | TLam (tp, body) -> TLam (tp, expand body)
+        | Hyp _ | Known _ as proof -> proof
+      in
+      expand proof
+  | _ -> proof
+
+let vampire_prop_ext_variants proof =
+  let directional = vampire_directional_prop_ext_expander proof in
+  [
+    vampire_loaded_prop_ext_expander directional;
+    directional;
+    vampire_loaded_prop_ext_expander proof;
+    proof;
+  ]
+
+let vampire_debug_bad_proof_application proof_delta symbol_table cx hyps proof =
+  let short_tm tm =
+    let text = tm_to_str tm in
+    if String.length text <= 500 then text
+    else String.sub text 0 500 ^ "..."
+  in
+  let short_pf pf =
+    let text = pf_to_str pf in
+    if String.length text <= 500 then text
+    else String.sub text 0 500 ^ "..."
+  in
+  let rec find path cxtm cxpf proof =
+    match proof with
+    | PPfAp (left, right) ->
+        begin match find (path ^ ".left") cxtm cxpf left with
+        | Some _ as found -> found
+        | None ->
+            begin match find (path ^ ".right") cxtm cxpf right with
+            | Some _ as found -> found
+            | None ->
+                begin
+                  try
+                    let left_prop, _ =
+                      extr_propofpf proof_delta symbol_table cxtm cxpf left []
+                    in
+                    match tm_beta_eta_norm left_prop with
+                    | Imp (expected, _) ->
+                        begin
+                          try
+                            let right_prop, _ =
+                              extr_propofpf proof_delta symbol_table cxtm cxpf right []
+                            in
+                            if tm_beta_eta_norm expected <> tm_beta_eta_norm right_prop then
+                              Some
+                                (path
+                                 ^ ": implication argument mismatch; expected "
+                                 ^ short_tm expected
+                                 ^ "; actual "
+                                 ^ short_tm right_prop
+                                 ^ "; left proof "
+                                 ^ short_pf left
+                                 ^ "; right proof "
+                                 ^ short_pf right)
+                            else None
+                          with exn ->
+                            Some
+                              (path
+                               ^ ": could not extract right proposition: "
+                               ^ Printexc.to_string exn)
+                        end
+                    | prop ->
+                        Some (path ^ ": left proposition is not implication: " ^ short_tm prop)
+                  with exn ->
+                    Some
+                      (path
+                       ^ ": could not extract left proposition: "
+                       ^ Printexc.to_string exn)
+                end
+            end
+        end
+    | PTpAp (body, _) -> find (path ^ ".tp") cxtm cxpf body
+    | PTmAp (body, _) -> find (path ^ ".tm") cxtm cxpf body
+    | PLam (prop, body) -> find (path ^ ".plam") cxtm (prop :: cxpf) body
+    | TLam (tp, body) ->
+        let cxtm = tp :: cxtm in
+        let cxpf = List.map (fun prop -> tmshift 0 1 prop) cxpf in
+        find (path ^ ".tlam") cxtm cxpf body
+    | Hyp _ | Known _ -> None
+  in
+  find "root" cx hyps proof
+
 let vampire_check_current_goal_proof ?source_map ?extra_delta ?extra_symbols claimtm cxtm cxpf proof =
   let cx =
     List.filter_map
@@ -1299,9 +1487,6 @@ let vampire_check_current_goal_proof ?source_map ?extra_delta ?extra_symbols cla
            if not (Hashtbl.mem symbol_table h) then Hashtbl.add symbol_table h v)
         extra_symbols
   end;
-  let proof_expander =
-    vampire_expand_returned_proof ?extra_delta cxtm source_map
-  in
   let live_delta = vampire_source_context_delta_with_locals cxtm in
   let live_symbol_table = Hashtbl.copy sigtmof in
   let empty_extra_delta = Hashtbl.create 1 in
@@ -1309,6 +1494,16 @@ let vampire_check_current_goal_proof ?source_map ?extra_delta ?extra_symbols cla
     match extra_delta with
     | Some extra_delta -> extra_delta
     | None -> empty_extra_delta
+  in
+  let live_extra_delta =
+    match extra_delta, extra_symbols with
+    | Some extra_delta, Some extra_symbols ->
+        Some (vampire_live_safe_extra_delta live_symbol_table extra_symbols extra_delta)
+    | Some extra_delta, None -> Some extra_delta
+    | None, _ -> None
+  in
+  let proof_expander =
+    vampire_expand_returned_proof ?extra_delta:live_extra_delta cxtm source_map
   in
   let live_check proof =
     try
@@ -1366,7 +1561,11 @@ let vampire_check_current_goal_proof ?source_map ?extra_delta ?extra_symbols cla
           let (actual,dl) = extr_propofpf proof_delta symbol_table cx hyps proof_for_check [] in
           match conv actual claimtm proof_delta dl with
           | Some _ ->
-              let expanded = proof_expander proof_for_check in
+              let expanded =
+                proof_expander proof_for_check
+                |> vampire_directional_prop_ext_expander
+                |> vampire_loaded_prop_ext_expander
+              in
               begin match live_check expanded with
               | Some _ as result -> result
               | None ->
@@ -1376,6 +1575,33 @@ let vampire_check_current_goal_proof ?source_map ?extra_delta ?extra_symbols cla
                         "Vampire native certificate current-goal proof candidate checked only with certificate delta at line %d char %d; rejecting live proof.\n"
                         !lineno
                         !charno;
+                      begin match extra_symbols with
+                      | Some extra_symbols ->
+                          begin match
+                            vampire_debug_certificate_only_symbol_in_proof
+                              live_symbol_table
+                              certificate_delta
+                              extra_symbols
+                              expanded
+                          with
+                          | Some detail ->
+                              Printf.printf
+                                "Vampire native certificate current-goal live rejection certificate-only proof detail: %s\n"
+                                detail
+                          | None -> ()
+                          end
+                      | None -> ()
+                      end;
+                      begin match
+                        vampire_debug_bad_proof_application
+                          live_delta live_symbol_table cx hyps expanded
+                      with
+                      | Some detail ->
+                          Printf.printf
+                            "Vampire native certificate current-goal live bad application: %s\n"
+                            detail
+                      | None -> ()
+                      end;
                       flush stdout
                     end;
                   try_variants rest
@@ -1401,12 +1627,22 @@ let vampire_check_current_goal_proof ?source_map ?extra_delta ?extra_symbols cla
                   !lineno
                   !charno
                   msg;
+                begin match
+                  vampire_debug_bad_proof_application
+                    proof_delta symbol_table cx hyps proof_for_check
+                with
+                | Some detail ->
+                    Printf.printf
+                      "Vampire native certificate current-goal bad application: %s\n"
+                      detail
+                | None -> ()
+                end;
                 flush stdout
               end;
             try_variants rest
         | _ -> try_variants rest
   in
-  try_variants [vampire_loaded_prop_ext_expander proof; proof]
+  try_variants (vampire_prop_ext_variants proof)
 
 let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxpf expected proof =
   let cx =
@@ -1452,9 +1688,6 @@ let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxp
            if not (Hashtbl.mem symbol_table h) then Hashtbl.add symbol_table h v)
         extra_symbols
   end;
-  let proof_expander =
-    vampire_expand_returned_proof ?extra_delta cxtm source_map
-  in
   let live_delta = vampire_source_context_delta_with_locals cxtm in
   let live_symbol_table = Hashtbl.copy sigtmof in
   let empty_extra_delta = Hashtbl.create 1 in
@@ -1462,6 +1695,16 @@ let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxp
     match extra_delta with
     | Some extra_delta -> extra_delta
     | None -> empty_extra_delta
+  in
+  let live_extra_delta =
+    match extra_delta, extra_symbols with
+    | Some extra_delta, Some extra_symbols ->
+        Some (vampire_live_safe_extra_delta live_symbol_table extra_symbols extra_delta)
+    | Some extra_delta, None -> Some extra_delta
+    | None, _ -> None
+  in
+  let proof_expander =
+    vampire_expand_returned_proof ?extra_delta:live_extra_delta cxtm source_map
   in
   let live_check expanded =
     match extra_symbols with
@@ -1508,7 +1751,11 @@ let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxp
           let (actual,dl) = extr_propofpf proof_delta symbol_table cx hyps proof_for_check [] in
           match conv actual expected proof_delta dl with
           | Some _ ->
-              let expanded = proof_expander proof_for_check in
+              let expanded =
+                proof_expander proof_for_check
+                |> vampire_directional_prop_ext_expander
+                |> vampire_loaded_prop_ext_expander
+              in
               begin match live_check expanded with
               | Some _ as result -> result
               | None ->
@@ -1518,6 +1765,33 @@ let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxp
                         "Vampire native proof-of-prop candidate checked only with certificate delta at line %d char %d; rejecting live proof.\n"
                         !lineno
                         !charno;
+                      begin match extra_symbols with
+                      | Some extra_symbols ->
+                          begin match
+                            vampire_debug_certificate_only_symbol_in_proof
+                              live_symbol_table
+                              certificate_delta
+                              extra_symbols
+                              expanded
+                          with
+                          | Some detail ->
+                              Printf.printf
+                                "Vampire native proof-of-prop live rejection certificate-only proof detail: %s\n"
+                                detail
+                          | None -> ()
+                          end
+                      | None -> ()
+                      end;
+                      begin match
+                        vampire_debug_bad_proof_application
+                          live_delta live_symbol_table cx hyps expanded
+                      with
+                      | Some detail ->
+                          Printf.printf
+                            "Vampire native proof-of-prop live bad application: %s\n"
+                            detail
+                      | None -> ()
+                      end;
                       flush stdout
                     end;
                   try_variants rest
@@ -1543,12 +1817,22 @@ let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxp
                   !lineno
                   !charno
                   msg;
+                begin match
+                  vampire_debug_bad_proof_application
+                    proof_delta symbol_table cx hyps proof_for_check
+                with
+                | Some detail ->
+                    Printf.printf
+                      "Vampire native proof-of-prop bad application: %s\n"
+                      detail
+                | None -> ()
+                end;
                 flush stdout
               end;
             try_variants rest
         | _ -> try_variants rest
   in
-  try_variants [vampire_loaded_prop_ext_expander proof; proof]
+  try_variants (vampire_prop_ext_variants proof)
 
 let vampire_actual_prop_of_proof ?source_map ?extra_delta ?extra_symbols cxtm cxpf proof =
   let cx =
@@ -1604,7 +1888,7 @@ let vampire_actual_prop_of_proof ?source_map ?extra_delta ?extra_symbols cxtm cx
         | Failure _ -> try_variants rest
         | _ -> try_variants rest
   in
-  try_variants [vampire_loaded_prop_ext_expander proof; proof]
+  try_variants (vampire_prop_ext_variants proof)
 
 let vampire_xm_double_negation_elim_to ?source_map ?extra_delta ?extra_symbols target cxtm cxpf dnotnot =
   let debug = Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" in
@@ -2434,11 +2718,17 @@ let vampire_source_proof_props ?extra_symbols cxtm cxpf source_map source_audit 
   let symbol_table = vampire_symbol_table ?extra_symbols source_map in
   List.filter_map
     (fun (_, proof) ->
-       try
-         let proof = vampire_loaded_prop_ext_expander proof in
-         let (prop, _) = extr_propofpf proof_delta symbol_table cx hyps proof [] in
-         Some (proof, prop)
-       with _ -> None)
+       let rec try_variants = function
+         | [] -> None
+         | proof :: rest ->
+             try
+               let (prop, _) =
+                 extr_propofpf proof_delta symbol_table cx hyps proof []
+               in
+               Some (proof, prop)
+             with _ -> try_variants rest
+       in
+       try_variants (vampire_prop_ext_variants proof))
     source_audit.Vampire_source_context.source_proofs
 
 let vampire_reconstruct_goal_from_source_audit
