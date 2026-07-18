@@ -36,6 +36,16 @@ let compact_presentation_scanned_files : (string,int) Hashtbl.t =
 let compact_presentation_exact_duplicates = ref 0
 let compact_presentation_conflicts = ref 0
 
+(** When true, the compact renderer still folds proof structure, premise
+    lists, helper claims, and proof terms, but it does not truncate the
+    informal mathematical formulas themselves.  Formula rendering then
+    traverses the complete [ltree], recursively applying presentation-table
+    templates wherever they are available. *)
+let compact_full_formulas = ref false
+
+let set_compact_full_formulas b =
+  compact_full_formulas := b
+
 let clear_compact_presentations () =
   Hashtbl.clear compact_presentations;
   Hashtbl.clear compact_presentation_scanned_files;
@@ -7037,6 +7047,7 @@ let compact_tex_join sep xl = String.concat sep xl
 
 let compact_tex_infix_name = function
   | "=" -> "="
+  | "->" -> "\\to"
   | "and" -> "\\land"
   | "or" -> "\\lor"
   | "iff" -> "\\leftrightarrow"
@@ -7065,7 +7076,13 @@ let rec compact_ltree_tex depth a =
             | None ->
                 compact_tex_name x ^ "\\left(" ^ compact_tex_join "," argtex ^ "\\right)"
             end
-        | None -> "\\cdots"
+        | None ->
+            begin match a with
+            | ImplopL(f,x) ->
+                "\\left(" ^ compact_ltree_tex (depth-1) f ^ "\\right)"
+                ^ "\\left(" ^ compact_ltree_tex (depth-1) x ^ "\\right)"
+            | _ -> assert false
+            end
         end
     | InfoL(op,l,r) ->
         let argtex =
@@ -7149,8 +7166,9 @@ let rec compact_ltree_tex depth a =
         ^ compact_ltree_tex (depth-1) b
 
 let compact_presentation_for_named_args names args =
+  let depth = if !compact_full_formulas then max_int else 5 in
   compact_presentation_from_rendered_args
-    names (List.map (compact_ltree_tex 5) args)
+    names (List.map (compact_ltree_tex depth) args)
 
 let compact_presentation_for_application a =
   match compact_application_head a with
@@ -7174,9 +7192,19 @@ let compact_output_presentation_html ch p tex =
     p.compact_presentation_line
     (compact_html_escape_text tex)
 
+let compact_output_formula_tex_html ch tex =
+  Printf.fprintf ch
+    "<span class='compactformula compactformulafull'>\\(%s\\)</span>"
+    (compact_html_escape_text tex)
+
+let compact_output_full_formula_html ch a =
+  compact_output_formula_tex_html ch (compact_ltree_tex max_int a)
+
 let rec compact_output_object_html depth cx ch a stmh sknh =
   let a = compact_strip_parens a in
-  if depth <= 0 then
+  if !compact_full_formulas then
+    compact_output_full_formula_html ch a
+  else if depth <= 0 then
     output_string ch "&hellip;"
   else
     match compact_presentation_for_ltree a with
@@ -7252,7 +7280,9 @@ let compact_output_binder_preview_html cx ch x vll body stmh sknh =
 let rec compact_output_goal_preview_html e ch a stmh sknh =
   let cx = e.pfti_context in
   let a0 = compact_strip_parens a in
-  match compact_presentation_for_ltree a0 with
+  if !compact_full_formulas then
+    compact_output_full_formula_html ch a0
+  else match compact_presentation_for_ltree a0 with
   | Some(p,tex) -> compact_output_presentation_html ch p tex
   | None ->
       if compact_ltree_size a <= 18 then

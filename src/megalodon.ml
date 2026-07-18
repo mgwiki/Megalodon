@@ -96,6 +96,7 @@ let sqltermout : bool ref = ref false
 let presentationonly : bool ref = ref false
 let compactproofs : bool ref = ref false
 let terseproofs : bool ref = ref true
+let mathjax_enabled : bool ref = ref true
 let compact_pftac_buffer : pftacitem_info list ref = ref []
 let mainfilehash : string option ref = ref None
 let solvesproblemfile : string option ref = ref None
@@ -486,6 +487,30 @@ let ensure_directory path =
   else
     Unix.mkdir path 0o755
 
+let mathjax_component_url =
+  "https://cdn.jsdelivr.net/npm/mathjax@4/tex-chtml.js"
+
+let output_mathjax_head ch =
+  if !mathjax_enabled then
+    Printf.fprintf ch
+      "<script defer data-megalodon-mathjax='1' src=\"%s\"></script>\n"
+      mathjax_component_url
+
+(** Megawiki entries are HTML fragments rather than complete documents, so
+    they have no [head] in which to place a normal loader.  This small,
+    idempotent bootstrap loads MathJax when necessary and asks an already
+    loaded MathJax instance to typeset a fragment that was inserted later. *)
+let mathjax_fragment_loader_html () =
+  if !mathjax_enabled then
+    Printf.sprintf
+      "<script class='megalodon-mathjax-loader'>(function(){var c=document.currentScript,r=c&&c.parentElement,w=function(e){if(window.console&&console.warn)console.warn('MathJax typesetting failed',e);},t=function(){if(!window.MathJax)return;var p=MathJax.startup&&MathJax.startup.promise?MathJax.startup.promise:Promise.resolve();p.then(function(){if(MathJax.typesetPromise)return MathJax.typesetPromise(r?[r]:undefined);}).catch(w);},s=document.querySelector(\"script[data-megalodon-mathjax],script[src*='mathjax']\");if(window.MathJax&&MathJax.typesetPromise){t();return;}if(s){s.addEventListener('load',t,{once:true});t();return;}s=document.createElement('script');s.src='%s';s.setAttribute('data-megalodon-mathjax','1');s.addEventListener('load',t,{once:true});(document.head||document.documentElement).appendChild(s);})();</script>\n"
+      mathjax_component_url
+  else
+    ""
+
+let output_mathjax_fragment_loader ch =
+  output_string ch (mathjax_fragment_loader_html ())
+
 let read_pfg_supp fn =
   let f = open_in fn in
   try
@@ -562,6 +587,7 @@ let megawiki_theorem_exists pfgahv =
 let finalize_megawiki_theorem proved =
   match !megawiki,!megawiki_thm with
   | Some mw,Some st ->
+      if proved then output_mathjax_fragment_loader st.tmpout;
       close_out_noerr st.tmpout;
       let tpath = Filename.concat mw.tdir st.hash in
       let cpath = Filename.concat mw.cdir st.hash in
@@ -2119,6 +2145,7 @@ let evaluate_docitem ditem =
       (fun (hc,close_now,legend_opt) ->
         if close_now then
           begin
+            output_mathjax_fragment_loader hc;
             close_out hc;
             match !megawiki,legend_opt with
             | Some mw,Some(hash,name) -> append_megawiki_legend mw hash name
@@ -2137,7 +2164,9 @@ let evaluate_docitem ditem =
              if Sys.file_exists tmpfn then Sys.remove tmpfn;
              let ch = open_out tmpfn in
              output_string ch frag;
-             let sth = theorem_statement_only_html frag in
+             let sth =
+               theorem_statement_only_html frag ^ mathjax_fragment_loader_html ()
+             in
              megawiki_thm := Some({ hash = xh; name = x; tempfile = tmpfn; tmpout = ch; statement_html = sth });
            with Not_found ->
              megawiki_thm := None
@@ -4902,6 +4931,14 @@ let _ =
             compactproofs := true;
             terseproofs := true
           end
+        else if Sys.argv.(!j) = "-compactfullformulas"
+             || Sys.argv.(!j) = "-fullinformalformulas"
+             || Sys.argv.(!j) = "-noformulaellipsis" then
+          begin
+            compactproofs := true;
+            terseproofs := true;
+            Syntax.set_compact_full_formulas true
+          end
         else if Sys.argv.(!j) = "-compactproofs-expanded" then
           begin
             compactproofs := true;
@@ -4925,7 +4962,9 @@ let _ =
                 let hc = open_out (Sys.argv.(!j)) in
 		html := Some(hc);
                 Printf.fprintf hc "<html><head>\n";
+                Printf.fprintf hc "<meta charset=\"utf-8\">\n";
                 Printf.fprintf hc "<link rel=\"stylesheet\" href=\"mg.css\">\n";
+                output_mathjax_head hc;
                 Printf.fprintf hc "</head><body>\n";
 	      end
 	    else

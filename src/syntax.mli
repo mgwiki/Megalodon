@@ -22,6 +22,7 @@ val scan_compact_presentations_file : string -> int
 val compact_presentation_count : unit -> int
 val compact_presentation_duplicate_count : unit -> int
 val compact_presentation_conflict_count : unit -> int
+val set_compact_full_formulas : bool -> unit
 
 type pfgthy = HF | Egal | Mizar | HOAS | SetMM;;
 val pfgtheory : pfgthy ref
