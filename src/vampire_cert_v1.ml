@@ -8816,6 +8816,41 @@ let native_core_skolem_macro_edges cert id =
                 native_core_kernel_v1_skolem_branch_contract cert id index prefix;
             }
           in
+          begin match edge.native_skolem_macro_edge_branch_contract with
+          | Some contract ->
+              begin match
+                contract.Vampire_kernel_syntax.skolem_branch_parent_index,
+                edge.native_skolem_macro_edge_parent_index
+              with
+              | Some expected, Some actual when expected <> actual ->
+                  error
+                    (Printf.sprintf
+                       "%s: typed Skolem branch contract %d parent index %d does not match macro edge parent index %d"
+                       id index expected actual)
+              | _ -> ()
+              end;
+              begin match
+                contract.Vampire_kernel_syntax.skolem_branch_unit,
+                edge.native_skolem_macro_edge_unit
+              with
+              | Some expected, Some actual when expected <> actual ->
+                  error
+                    (Printf.sprintf
+                       "%s: typed Skolem branch contract %d unit %s does not match macro edge unit %s"
+                       id index expected actual)
+              | _ -> ()
+              end;
+              begin match contract.Vampire_kernel_syntax.skolem_branch_binder_count with
+              | Some expected when expected <> List.length edge.native_skolem_macro_edge_binders ->
+                  error
+                    (Printf.sprintf
+                       "%s: typed Skolem branch contract %d binder count %d does not match macro edge binder count %d"
+                       id index expected
+                       (List.length edge.native_skolem_macro_edge_binders))
+              | _ -> ()
+              end
+          | None -> ()
+          end;
           collect (index + 1) (edge :: acc)
   in
       collect 0 []
