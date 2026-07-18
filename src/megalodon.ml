@@ -2741,7 +2741,7 @@ let check_vampire_aby_native_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) ?(proof_
             match reconstructed with
             | Some _ when !verbosity > 2 ->
                 Printf.printf
-                  "Vampire native certificate reconstructed %s proof term at line %d char %d.\n"
+                  "Vampire native certificate built local %s proof candidate at line %d char %d.\n"
                   proof_command_label
                   !lineno
                   !charno;

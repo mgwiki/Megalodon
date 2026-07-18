@@ -702,7 +702,7 @@ if ! rg -q 'source_context known=0 local=1 local_definition=0 conjecture=1 unres
   echo "live vampireaby source-context resolver did not bind the local Hp hypothesis" >&2
   exit 1
 fi
-if ! rg -q 'Vampire native certificate reconstructed aby proof term' \
+if ! rg -q 'Vampire certified aby at' \
     "$WORK_DIR/native_cert_v1_live_local_source_context.log"; then
   echo "live vampireaby did not compose the native certificate proof into the current Megalodon goal" >&2
   exit 1
@@ -866,7 +866,7 @@ if ! rg -q 'source_context known=0 local=1 local_definition=0 conjecture=1 unres
   echo "targeted live vampireaby did not resolve the selected local source context" >&2
   exit 1
 fi
-if ! rg -q 'Vampire native certificate reconstructed aby proof term' \
+if ! rg -q 'Vampire certified aby at' \
     "$WORK_DIR/native_cert_v1_targeted_vampireaby_live.log"; then
   echo "targeted live vampireaby did not reconstruct the selected proof term" >&2
   exit 1
@@ -945,7 +945,7 @@ bin/megalodon \
   "$targeted_stop_dir/targeted_vampireaby_stop.mg" \
   >"$WORK_DIR/native_cert_v1_targeted_vampireaby_stop.log" \
   2>"$WORK_DIR/native_cert_v1_targeted_vampireaby_stop.err"
-if ! rg -q 'Vampire native certificate reconstructed aby proof term' \
+if ! rg -q 'Vampire certified aby at' \
     "$WORK_DIR/native_cert_v1_targeted_vampireaby_stop.log"; then
   echo "targeted live vampireaby stop did not reconstruct the selected proof term" >&2
   exit 1
@@ -1057,7 +1057,7 @@ if ! rg -q 'source_context known=1 local=4 local_definition=0 conjecture=2 unres
   echo "live vampireaby 11703 source-direct fixture did not resolve known/local/conjecture sources" >&2
   exit 1
 fi
-if ! rg -q 'Vampire native certificate reconstructed aby proof term' \
+if ! rg -q 'Vampire certified aby at' \
     "$WORK_DIR/native_cert_v1_live_source_direct_11703.log"; then
   echo "live vampireaby 11703 source-direct fixture did not reconstruct the current goal from checked source proofs" >&2
   exit 1
@@ -1131,7 +1131,7 @@ if ! rg -q 'Vampire native certificate trying equality-symmetry goal transport' 
   echo "live vampireaby did not exercise checked equality-symmetry goal transport" >&2
   exit 1
 fi
-if ! rg -q 'Vampire native certificate reconstructed aby proof term' \
+if ! rg -q 'Vampire certified aby at' \
     "$WORK_DIR/native_cert_v1_live_local_equality_transport.log"; then
   echo "live vampireaby did not reconstruct the equality-transport proof term" >&2
   exit 1
@@ -1366,7 +1366,7 @@ bin/megalodon \
   "$library_source_live_dir/library_source_live.mg" \
   >"$WORK_DIR/native_cert_v1_live_library_source_context.log" \
   2>"$WORK_DIR/native_cert_v1_live_library_source_context.err"
-if ! rg -q 'Vampire native certificate reconstructed aby proof term' \
+if ! rg -q 'Vampire certified aby at' \
     "$WORK_DIR/native_cert_v1_live_library_source_context.log"; then
   echo "live vampireaby did not compose a native certificate proof in the larger library context" >&2
   exit 1
@@ -1429,7 +1429,7 @@ if ! rg -q 'source_context known=0 local=2 local_definition=0 conjecture=1 unres
   echo "live vampireaby multi-local fixture did not bind both local hypotheses" >&2
   exit 1
 fi
-if ! rg -q 'Vampire native certificate reconstructed aby proof term' \
+if ! rg -q 'Vampire certified aby at' \
     "$WORK_DIR/native_cert_v1_live_multi_local_source_context.log"; then
   echo "live vampireaby did not compose the multi-local native certificate proof" >&2
   exit 1
@@ -1491,7 +1491,7 @@ if ! rg -q 'source_context known=0 local=1 local_definition=0 conjecture=1 unres
   echo "live vampireaby local-term fixture did not bind the local term-dependent hypothesis" >&2
   exit 1
 fi
-if ! rg -q 'Vampire native certificate reconstructed aby proof term' \
+if ! rg -q 'Vampire certified aby at' \
     "$WORK_DIR/native_cert_v1_live_local_term_source_context.log"; then
   echo "live vampireaby did not compose the local term-dependent native certificate proof" >&2
   exit 1
