@@ -12896,6 +12896,27 @@ let native_core_skolem_parent_helper_formulas cert id =
     | Imp _ -> Some tps
     | _ -> None
   in
+  let explicit_binder_types prefix =
+    match native_core_metadata_step_extra_field cert id "kernel_v1" (prefix ^ "_binder_count") with
+    | Some value ->
+        let count =
+          try int_of_string value
+          with Failure _ -> 0
+        in
+        let rec collect index acc =
+          if index >= count then List.rev acc
+          else
+            let key = prefix ^ "_binder_" ^ string_of_int index ^ "_type" in
+            let acc =
+              match native_core_metadata_step_extra_field cert id "kernel_v1" key with
+              | Some value -> parse_tp (parse_sexpr value) :: acc
+              | None -> acc
+            in
+            collect (index + 1) acc
+        in
+        collect 0 []
+    | None -> []
+  in
   let wrap_quantifiers tps body =
     List.fold_right (fun tp acc -> All (tp, acc)) tps body
   in
@@ -12918,9 +12939,13 @@ let native_core_skolem_parent_helper_formulas cert id =
               with
               | Some formula, Some source, Some target ->
                   let tps =
-                    match quantified_implication_prefix [] formula with
-                    | Some tps -> tps
-                    | None -> []
+                    match explicit_binder_types prefix with
+                    | [] ->
+                        begin match quantified_implication_prefix [] formula with
+                        | Some tps -> tps
+                        | None -> []
+                        end
+                    | tps -> tps
                   in
                   wrap_quantifiers tps (Imp (source, target)) :: acc
               | _, Some source, Some target -> Imp (source, target) :: acc

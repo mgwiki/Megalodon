@@ -807,6 +807,7 @@ if [[ -s "$WORK_DIR/skolemize.tsv" ]]; then
           parent_index_field = prefix "_parent_index="
           unit_field = prefix "_unit="
           formula_field = prefix "_formula="
+          binder_count_field = prefix "_binder_count="
           source_field = prefix "_source="
           target_field = prefix "_target="
           if (index($0, parent_index_field) == 0) {
@@ -817,6 +818,25 @@ if [[ -s "$WORK_DIR/skolemize.tsv" ]]; then
           }
           if (index($0, formula_field) == 0) {
             print formula_field "\t" $0
+          }
+          if (index($0, binder_count_field) == 0) {
+            print binder_count_field "\t" $0
+          } else {
+            binder_count_pattern = prefix "_binder_count=([0-9]+)"
+            if (match($0, binder_count_pattern, binder_count_match)) {
+              binder_count = binder_count_match[1] + 0
+              for (binder_index = 0; binder_index < binder_count; ++binder_index) {
+                binder_prefix = prefix "_binder_" binder_index
+                binder_var_field = binder_prefix "_var="
+                binder_type_field = binder_prefix "_type="
+                if (index($0, binder_var_field) == 0) {
+                  print binder_var_field "\t" $0
+                }
+                if (index($0, binder_type_field) == 0) {
+                  print binder_type_field "\t" $0
+                }
+              }
+            }
           }
           if (index($0, source_field) == 0) {
             print source_field "\t" $0
