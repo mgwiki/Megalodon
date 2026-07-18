@@ -13711,6 +13711,34 @@ let native_core_pf_contains_term_symbol names proof =
   in
   pf_contains proof
 
+let native_core_tm_term_symbol_detail names tm =
+  let rec tm_detail path enclosing = function
+    | TmH name when List.mem name names ->
+        Some
+          (path
+           ^ ": introduced term symbol "
+           ^ name
+           ^ " in term "
+           ^ tm_to_str (TmH name)
+           ^ "; enclosing term "
+           ^ tm_to_str enclosing)
+    | TpAp (body, _) -> tm_detail (path ^ ".tp") enclosing body
+    | Ap (left, right) ->
+        begin match tm_detail (path ^ ".left") enclosing left with
+        | Some _ as found -> found
+        | None -> tm_detail (path ^ ".right") enclosing right
+        end
+    | Lam (_, body) -> tm_detail (path ^ ".body") body body
+    | Imp (left, right) ->
+        begin match tm_detail (path ^ ".left") enclosing left with
+        | Some _ as found -> found
+        | None -> tm_detail (path ^ ".right") enclosing right
+        end
+    | All (_, body) -> tm_detail (path ^ ".body") body body
+    | DB _ | TmH _ | Prim _ -> None
+  in
+  tm_detail "root" tm tm
+
 let native_core_pf_term_symbol_detail names proof =
   let rec tm_detail path enclosing = function
     | TmH name when List.mem name names ->
@@ -13979,9 +14007,10 @@ let native_core_skolem_refutation_cps_proof
     native_core_close_pf variables result_to_target
   in
   let target_prop = tm_beta_eta_norm target_prop in
-  let formula_prop_with_replacements replacements formula =
+  let formula_prop_with_replacements ?(fallback_replacements=[]) replacements formula =
+    let all_replacements = replacements @ fallback_replacements in
     native_core_formula_prop formula
-    |> native_core_replace_witness_symbols_in_tm replacements
+    |> native_core_replace_witness_symbols_in_tm all_replacements
     |> native_core_close_tm ~depth:(List.length replacements) variables
     |> tm_beta_eta_norm
   in
@@ -14120,14 +14149,89 @@ let native_core_skolem_refutation_cps_proof
       _ ->
         let left_count = source_exists_count source_left in
         let right_count = source_exists_count source_right in
+        let rec split_witnesses n acc rest =
+          if n = 0 then (List.rev acc, rest)
+          else
+            match rest with
+            | witness :: rest -> split_witnesses (n - 1) (witness :: acc) rest
+            | [] ->
+                error
+                  (id ^ ": native preprocess Skolem CPS source has fewer existential binders than substitutions")
+        in
         if left_count > 0 && right_count > 0 then
-          error
-            (id ^ ": native preprocess Skolem CPS currently supports conjunction traversal with one Skolemized branch")
+          let left_witnesses, right_witnesses =
+            split_witnesses left_count [] witnesses
+          in
+          let captured_term_depth = term_depth in
+          let captured_proof_depth = proof_depth in
+          let source_left_prop = formula_prop_with_replacements ~fallback_replacements replacements source_left in
+          let source_right_prop = formula_prop_with_replacements ~fallback_replacements replacements source_right in
+          let source_left_proof =
+            native_core_and_elim_left source_left_prop source_right_prop proof
+          in
+          let source_right_proof =
+            native_core_and_elim_right source_left_prop source_right_prop proof
+          in
+          let left_result_to_target_builder term_depth proof_depth term_replacements replacements fallback_replacements =
+            let captured_result_left_term_depth = term_depth in
+            let captured_result_left_proof_depth = proof_depth + 1 in
+            let result_left_proof = Hyp 0 in
+            let right_source_proof =
+              shift_captured_pf
+                captured_term_depth captured_proof_depth
+                term_depth (proof_depth + 1) source_right_proof
+            in
+            let right_result_to_target_builder term_depth proof_depth term_replacements replacements fallback_replacements =
+              let result_left_prop = formula_prop_with_replacements ~fallback_replacements replacements result_left in
+              let result_right_prop = formula_prop_with_replacements ~fallback_replacements replacements result_right in
+              PLam
+                (result_right_prop,
+                 let rebuilt =
+                   native_core_and_intro
+                     result_left_prop
+                     result_right_prop
+                     (shift_captured_pf
+                        captured_result_left_term_depth
+                        captured_result_left_proof_depth
+                        term_depth (proof_depth + 1) result_left_proof)
+                     (Hyp 0)
+                 in
+                 PPfAp
+                   (result_to_target_builder
+                      term_depth (proof_depth + 1)
+                      term_replacements replacements fallback_replacements,
+                    rebuilt))
+            in
+            PLam
+              (formula_prop_with_replacements ~fallback_replacements replacements result_left,
+               eliminate
+                 term_depth
+                 (proof_depth + 1)
+                 term_replacements
+                 replacements
+                 fallback_replacements
+                 right_witnesses
+                 source_right
+                 result_right
+                 right_source_proof
+                 right_result_to_target_builder)
+          in
+          eliminate
+            term_depth
+            proof_depth
+            term_replacements
+            replacements
+            fallback_replacements
+            left_witnesses
+            source_left
+            result_left
+            source_left_proof
+            left_result_to_target_builder
 	        else if left_count > 0 then
 	          let captured_term_depth = term_depth in
 	          let captured_proof_depth = proof_depth in
-	          let source_left_prop = formula_prop_with_replacements replacements source_left in
-	          let source_right_prop = formula_prop_with_replacements replacements source_right in
+	          let source_left_prop = formula_prop_with_replacements ~fallback_replacements replacements source_left in
+	          let source_right_prop = formula_prop_with_replacements ~fallback_replacements replacements source_right in
 	          let source_left_proof =
 	            native_core_and_elim_left source_left_prop source_right_prop proof
 	          in
@@ -14135,8 +14239,8 @@ let native_core_skolem_refutation_cps_proof
 	            native_core_and_elim_right source_left_prop source_right_prop proof
 	          in
 		          let left_result_to_target_builder term_depth proof_depth term_replacements replacements fallback_replacements =
-		            let result_left_prop = formula_prop_with_replacements replacements result_left in
-		            let result_right_prop = formula_prop_with_replacements replacements result_right in
+		            let result_left_prop = formula_prop_with_replacements ~fallback_replacements replacements result_left in
+		            let result_right_prop = formula_prop_with_replacements ~fallback_replacements replacements result_right in
 		            PLam
 		              (result_left_prop,
 		               let rebuilt =
@@ -14168,8 +14272,8 @@ let native_core_skolem_refutation_cps_proof
 	        else if right_count > 0 then
 	          let captured_term_depth = term_depth in
 	          let captured_proof_depth = proof_depth in
-	          let source_left_prop = formula_prop_with_replacements replacements source_left in
-	          let source_right_prop = formula_prop_with_replacements replacements source_right in
+	          let source_left_prop = formula_prop_with_replacements ~fallback_replacements replacements source_left in
+	          let source_right_prop = formula_prop_with_replacements ~fallback_replacements replacements source_right in
 	          let source_left_proof =
 	            native_core_and_elim_left source_left_prop source_right_prop proof
 	          in
@@ -14177,8 +14281,8 @@ let native_core_skolem_refutation_cps_proof
 	            native_core_and_elim_right source_left_prop source_right_prop proof
 	          in
 		          let right_result_to_target_builder term_depth proof_depth term_replacements replacements fallback_replacements =
-		            let result_left_prop = formula_prop_with_replacements replacements result_left in
-		            let result_right_prop = formula_prop_with_replacements replacements result_right in
+		            let result_left_prop = formula_prop_with_replacements ~fallback_replacements replacements result_left in
+		            let result_right_prop = formula_prop_with_replacements ~fallback_replacements replacements result_right in
 		            PLam
 		              (result_right_prop,
 	               let rebuilt =
@@ -14226,16 +14330,16 @@ let native_core_skolem_refutation_cps_proof
         let left_witnesses, right_witnesses =
           split_witnesses left_count [] witnesses
         in
-		        let source_left_prop = formula_prop_with_replacements replacements source_left in
-		        let source_right_prop = formula_prop_with_replacements replacements source_right in
+		        let source_left_prop = formula_prop_with_replacements ~fallback_replacements replacements source_left in
+		        let source_right_prop = formula_prop_with_replacements ~fallback_replacements replacements source_right in
 		        debug_witness_tm "or source_left_prop" source_left_prop;
 		        debug_witness_tm "or source_right_prop" source_right_prop;
-			        let result_left_prop = formula_prop_with_replacements replacements result_left in
-			        let result_right_prop = formula_prop_with_replacements replacements result_right in
+			        let result_left_prop = formula_prop_with_replacements ~fallback_replacements replacements result_left in
+			        let result_right_prop = formula_prop_with_replacements ~fallback_replacements replacements result_right in
 		        let branch_target = target_prop in
 	        let rebuild_left_to_target_builder term_depth proof_depth term_replacements replacements fallback_replacements =
-	          let result_left_prop = formula_prop_with_replacements replacements result_left in
-	          let result_right_prop = formula_prop_with_replacements replacements result_right in
+	          let result_left_prop = formula_prop_with_replacements ~fallback_replacements replacements result_left in
+	          let result_right_prop = formula_prop_with_replacements ~fallback_replacements replacements result_right in
 	          debug_witness_tm "or result_left_prop" result_left_prop;
 	          debug_witness_tm "or result_right_prop" result_right_prop;
 	          PLam
@@ -14253,8 +14357,8 @@ let native_core_skolem_refutation_cps_proof
 	                rebuilt))
 	        in
 	        let rebuild_right_to_target_builder term_depth proof_depth term_replacements replacements fallback_replacements =
-	          let result_left_prop = formula_prop_with_replacements replacements result_left in
-	          let result_right_prop = formula_prop_with_replacements replacements result_right in
+	          let result_left_prop = formula_prop_with_replacements ~fallback_replacements replacements result_left in
+	          let result_right_prop = formula_prop_with_replacements ~fallback_replacements replacements result_right in
 	          PLam
 	            (result_right_prop,
 	             let rebuilt =
@@ -14340,12 +14444,59 @@ let native_core_skolem_refutation_cps_proof
         error
           (id ^ ": native preprocess Skolem CPS source has fewer existential binders than substitutions")
 	  and eliminate_base term_depth proof_depth term_replacements replacements fallback_replacements source result proof result_to_target_builder =
-        let source_prop = formula_prop_with_replacements replacements source in
-        let expected_result_prop = formula_prop_with_replacements replacements result in
+        let source_prop = formula_prop_with_replacements ~fallback_replacements replacements source in
+        let expected_result_prop = formula_prop_with_replacements ~fallback_replacements replacements result in
         if source_prop <> expected_result_prop then begin
           if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
             prerr_endline ("native preprocess Skolem CPS source base: " ^ tm_to_str source_prop);
-            prerr_endline ("native preprocess Skolem CPS result base: " ^ tm_to_str expected_result_prop)
+            prerr_endline ("native preprocess Skolem CPS result base: " ^ tm_to_str expected_result_prop);
+            prerr_endline
+              ("native preprocess Skolem CPS replacements: "
+               ^ String.concat ", " (List.map fst replacements));
+            prerr_endline
+              ("native preprocess Skolem CPS fallback replacements: "
+               ^ String.concat ", " (List.map fst fallback_replacements));
+            begin match native_core_tm_term_symbol_detail witness_symbols expected_result_prop with
+            | Some detail ->
+                prerr_endline
+                  ("native preprocess Skolem CPS result base first witness: " ^ detail)
+            | None -> ()
+            end;
+            let short_tm tm =
+              let text = tm_to_str tm in
+              if String.length text <= 300 then text
+              else String.sub text 0 300 ^ "..."
+            in
+            let rec first_tm_difference path left right =
+              if left = right then None
+              else
+                match left, right with
+                | TpAp (left_body, left_tp), TpAp (right_body, right_tp) ->
+                    if left_tp <> right_tp then Some (path ^ ".type", left, right)
+                    else first_tm_difference (path ^ ".tpap") left_body right_body
+                | Ap (left_fun, left_arg), Ap (right_fun, right_arg) ->
+                    begin match first_tm_difference (path ^ ".fun") left_fun right_fun with
+                    | Some _ as found -> found
+                    | None -> first_tm_difference (path ^ ".arg") left_arg right_arg
+                    end
+                | Lam (left_tp, left_body), Lam (right_tp, right_body)
+                | All (left_tp, left_body), All (right_tp, right_body) ->
+                    if left_tp <> right_tp then Some (path ^ ".binder-type", left, right)
+                    else first_tm_difference (path ^ ".body") left_body right_body
+                | Imp (left_a, left_b), Imp (right_a, right_b) ->
+                    begin match first_tm_difference (path ^ ".left") left_a right_a with
+                    | Some _ as found -> found
+                    | None -> first_tm_difference (path ^ ".right") left_b right_b
+                    end
+                | _ -> Some (path, left, right)
+            in
+            begin match first_tm_difference "root" source_prop expected_result_prop with
+            | Some (path, left, right) ->
+                prerr_endline ("native preprocess Skolem CPS first diff path: " ^ path);
+                prerr_endline ("native preprocess Skolem CPS first diff source: " ^ short_tm left);
+                prerr_endline ("native preprocess Skolem CPS first diff target: " ^ short_tm right)
+            | None -> ()
+            end
           end;
           error
             (id ^ ": native preprocess Skolem CPS source body does not match the Skolem result")
@@ -16634,6 +16785,7 @@ let elaborate_preprocess_refutation_native
   let transitional_primitive_formula_steps = Hashtbl.create 17 in
   let transitional_primitive_clause_steps = Hashtbl.create 17 in
   let skolem_cps_entries = ref [] in
+  let skolem_witness_replacements = ref [] in
   let final_proof = ref None in
   let first_stored_choice_witness = ref None in
   let debug_stored_choice_witness kind id proof =
@@ -17443,7 +17595,10 @@ let elaborate_preprocess_refutation_native
                          ^ " := "
                          ^ tm_to_str closed_witness);
                     Hashtbl.replace proof_delta name (0, closed_witness);
-                    Hashtbl.replace definition_delta name (0, closed_witness)
+                    Hashtbl.replace definition_delta name (0, closed_witness);
+                    skolem_witness_replacements :=
+                      (name, closed_witness)
+                      :: List.remove_assoc name !skolem_witness_replacements
                 | _ -> ()
                 end
             | TmH raw_name, _ :: _ ->
@@ -17849,6 +18004,66 @@ let elaborate_preprocess_refutation_native
            current)
       proof
       !skolem_cps_entries
+  in
+  let proof =
+    let split_replacements =
+      avatar_definition_table
+      |> Hashtbl.to_seq_values
+      |> List.of_seq
+      |> List.map
+           (fun (split_name, _component_literals, component_prop, _definition_proof) ->
+              (split_name,
+               component_prop
+               |> native_core_normalize_bool_constants
+               |> tm_beta_eta_norm))
+      |> List.sort_uniq compare
+    in
+    let split_names = List.map fst split_replacements in
+    if split_replacements = []
+       || not (native_core_pf_contains_term_symbol split_names proof) then
+      proof
+    else
+      let candidate =
+        native_core_replace_witness_symbols_in_pf split_replacements proof
+      in
+      if final_refutation_proof_checks candidate then begin
+        if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+          prerr_endline
+            ("native preprocess refutation discharged AVATAR split symbols "
+             ^ String.concat ", " split_names);
+        candidate
+      end else begin
+        if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+          prerr_endline
+            "native preprocess refutation AVATAR split replacement candidate did not check";
+        proof
+      end
+  in
+  let proof =
+    let replacements =
+      !skolem_witness_replacements
+      |> List.sort_uniq compare
+    in
+    let witness_names = List.map fst replacements in
+    if replacements = []
+       || not (native_core_pf_contains_term_symbol witness_names proof) then
+      proof
+    else
+      let candidate =
+        native_core_replace_witness_symbols_in_pf replacements proof
+      in
+      if final_refutation_proof_checks candidate then begin
+        if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+          prerr_endline
+            ("native preprocess refutation discharged Skolem witness symbols "
+             ^ String.concat ", " witness_names);
+        candidate
+      end else begin
+        if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+          prerr_endline
+            "native preprocess refutation Skolem witness replacement candidate did not check";
+        proof
+      end
   in
   let body_prop =
     List.fold_right
