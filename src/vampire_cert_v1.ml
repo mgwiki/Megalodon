@@ -12885,6 +12885,7 @@ let native_core_abstract_shifted_subproof needle proof =
 
 let native_core_skolem_refutation_cps_proof
     ?abstract_result_proof
+    ?result_to_target_body
     ?(split_replacements=[])
     id variables parent_step_variables result_step_variables source subst result
     result_checked_prop parent_proof result_proof final_proof target_prop =
@@ -12921,19 +12922,22 @@ let native_core_skolem_refutation_cps_proof
       parent_step_variables
   in
   let result_to_target =
-    let shifted_final = pfshift 0 1 final_proof in
-    let abstracted =
-      match abstract_result_proof with
-      | Some abstract_result_proof ->
-          abstract_result_proof result_checked_prop result_proof shifted_final
-      | None ->
-          native_core_abstract_shifted_subproof result_proof shifted_final
-    in
-    match abstracted with
+    match result_to_target_body with
     | Some body -> PLam (result_checked_prop, body)
     | None ->
-        error
-          (id ^ ": native preprocess Skolem CPS could not isolate the Skolem result proof in the refutation")
+        let shifted_final = pfshift 0 1 final_proof in
+        let abstracted =
+          match abstract_result_proof with
+          | Some abstract_result_proof ->
+              abstract_result_proof result_checked_prop result_proof shifted_final
+          | None ->
+              native_core_abstract_shifted_subproof result_proof shifted_final
+        in
+        match abstracted with
+        | Some body -> PLam (result_checked_prop, body)
+        | None ->
+            error
+              (id ^ ": native preprocess Skolem CPS could not isolate the Skolem result proof in the refutation")
   in
   let target_prop = tm_beta_eta_norm target_prop in
   let rec eliminate replacements witnesses source proof result_to_target =
@@ -15483,6 +15487,291 @@ let elaborate_preprocess_refutation_native
         cnf_step_uses_closed_parent_primitive parent_id
     | _ -> false
   in
+  let shadow_skolem_final_refutation skolem_id result_checked_prop result_formula =
+    let shadow_clause_table = Hashtbl.create 101 in
+    let shadow_formula_table = Hashtbl.create 101 in
+    let shadow_final_proof = ref None in
+    let first_shadow_choice = ref None in
+    let shadow_context = result_checked_prop :: closed_source_context in
+    let debug_shadow_choice kind id proof =
+      if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+        match !first_shadow_choice with
+        | Some _ -> ()
+        | None ->
+            let witness = native_core_pf_choice_witness_detail proof in
+            let theorem = native_core_pf_choice_known_detail proof in
+            begin match witness, theorem with
+            | None, None -> ()
+            | _ ->
+                first_shadow_choice := Some id;
+                begin match witness with
+                | Some detail ->
+                    prerr_endline
+                      (id ^ ": native preprocess Skolem shadow first stored "
+                       ^ kind ^ " choice witness: " ^ detail)
+                | None -> ()
+                end;
+                begin match theorem with
+                | Some detail ->
+                    prerr_endline
+                      (id ^ ": native preprocess Skolem shadow first stored "
+                       ^ kind ^ " choice theorem: " ^ detail)
+                | None -> ()
+                end
+            end
+    in
+    let check_shadow_step_proof id prop proof =
+      let step_variables = native_core_step_variables cert id in
+      let proof = native_core_close_pf (variables @ step_variables) proof in
+      native_core_reject_certificate_knowns "preprocess-shadow" id proof;
+      let debug_failure msg =
+        if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
+          prerr_endline ("native preprocess Skolem shadow debug step " ^ id ^ ": " ^ msg);
+          prerr_endline ("native preprocess Skolem shadow proposition: " ^ tm_to_str prop);
+          prerr_endline ("native preprocess Skolem shadow proof: " ^ pf_to_str proof)
+        end
+      in
+      try
+        match check_propofpf proof_delta symbol_table variable_types shadow_context proof prop [] with
+        | Some _ -> ()
+        | None ->
+            debug_failure "wrong proposition";
+            error
+              (id ^ ": native preprocess Skolem shadow built a proof of the wrong proposition")
+      with Failure msg ->
+        debug_failure msg;
+        error
+          (id ^ ": native preprocess Skolem shadow built an ill-formed proof term: " ^ msg)
+      | Error _ as exn -> raise exn
+      | exn ->
+          let msg = Printexc.to_string exn in
+          debug_failure msg;
+          error
+            (id ^ ": native preprocess Skolem shadow built an ill-formed proof term: " ^ msg)
+    in
+    let store_shadow_clause id clause proof =
+      let prop = native_core_step_clause_prop cert variables id clause in
+      check_shadow_step_proof id prop proof;
+      debug_shadow_choice "clause" id proof;
+      Hashtbl.replace shadow_clause_table id (clause, proof);
+      if clause = [] then shadow_final_proof := Some proof
+    in
+    let store_shadow_formula id formula proof =
+      let prop = native_preprocess_step_formula_prop cert variables id formula in
+      check_shadow_step_proof id prop proof;
+      debug_shadow_choice "formula" id proof;
+      Hashtbl.replace shadow_formula_table id (formula, proof)
+    in
+    let shifted_normal_formula id =
+      let formula, proof = lookup_formula id in
+      (formula, pfshift 0 1 proof)
+    in
+    let shifted_normal_clause id =
+      let clause, proof = lookup_clause id in
+      (clause, pfshift 0 1 proof)
+    in
+    let shadow_formula_parent id =
+      match Hashtbl.find_opt shadow_formula_table id with
+      | Some parent -> parent
+      | None -> shifted_normal_formula id
+    in
+    let shadow_clause_parent id =
+      match Hashtbl.find_opt shadow_clause_table id with
+      | Some parent -> parent
+      | None -> shifted_normal_clause id
+    in
+    let has_shadow_formula id = Hashtbl.mem shadow_formula_table id in
+    let has_shadow_clause id = Hashtbl.mem shadow_clause_table id in
+    let combined_shadow_clause_table () =
+      let table = Hashtbl.create 101 in
+      Hashtbl.iter
+        (fun id (clause, proof) ->
+           Hashtbl.replace table id (clause, pfshift 0 1 proof))
+        clause_table;
+      Hashtbl.iter
+        (fun id value -> Hashtbl.replace table id value)
+        shadow_clause_table;
+      table
+    in
+    let shadow_avatar_definition_table =
+      let table = Hashtbl.create 17 in
+      Hashtbl.iter
+        (fun key (split_name, component_literals, component_prop, definition_proof) ->
+           Hashtbl.replace
+             table
+             key
+             (split_name, component_literals, component_prop, pfshift 0 1 definition_proof))
+        avatar_definition_table;
+      table
+    in
+    let replay_step = function
+      | SkolemFormula (id, _, _, _, _, _) when id = skolem_id ->
+          store_shadow_formula id result_formula (Hyp 0)
+      | FormulaTermCopy (id, parent_id, result) when has_shadow_formula parent_id ->
+          let parent_formula, parent_proof = shadow_formula_parent parent_id in
+          if parent_formula <> result then
+            error (id ^ ": native preprocess Skolem shadow formula_term_copy is not an identity copy");
+          store_shadow_formula id result parent_proof
+      | FormulaCopy (id, parent_id, result) when has_shadow_formula parent_id ->
+          let parent_formula, parent_proof = shadow_formula_parent parent_id in
+          if native_core_normalize_bool_constants (native_core_literal_prop result)
+             <> native_core_normalize_bool_constants (native_core_formula_prop parent_formula) then
+            error (id ^ ": native preprocess Skolem shadow formula_copy result is not the parent formula");
+          store_shadow_formula id (formula_tm_of_literal result) parent_proof;
+          store_shadow_clause id [result] parent_proof
+      | CnfLiteral (id, parent_id, result) when has_shadow_formula parent_id ->
+          let parent_formula, parent_proof = shadow_formula_parent parent_id in
+          let parent_prop =
+            native_core_normalize_bool_constants
+              (native_core_formula_prop parent_formula)
+          in
+          let result_prop =
+            native_core_normalize_bool_constants
+              (native_core_clause_prop id result)
+          in
+          if parent_prop <> result_prop then
+            error
+              (id ^ ": native preprocess Skolem shadow cnf_literal result is not propositionally identical to the parent formula");
+          store_shadow_clause id result parent_proof
+      | CnfFormulaClause (id, parent_id, _index, _count, result)
+          when has_shadow_formula parent_id ->
+          let parent_formula, parent_proof = shadow_formula_parent parent_id in
+          if Hashtbl.mem transitional_primitive_formula_steps parent_id then
+            error
+              (id ^ ": native preprocess Skolem shadow refuses transitional cnf_formula_clause parent")
+          else
+            store_shadow_clause id result
+              (native_core_cnf_formula_clause_proof
+                 id variables
+                 (native_core_step_variables cert parent_id)
+                 (native_core_step_variables cert id)
+                 parent_formula result parent_proof)
+      | SplitDependency (id, owner_id, _dependencies, result)
+          when has_shadow_clause owner_id ->
+          let owner_clause, owner_proof = shadow_clause_parent owner_id in
+          if owner_clause <> result then
+            error (id ^ ": native preprocess Skolem shadow split_dependency result does not match owner clause");
+          store_shadow_clause id result owner_proof
+      | Substitute (id, parent_id, subst, result) when has_shadow_clause parent_id ->
+          let parent_clause, parent_proof = shadow_clause_parent parent_id in
+          store_shadow_clause id result
+            (native_core_substitute_in_result_context
+               cert id variables parent_id parent_clause subst parent_proof result)
+      | Resolve (id, left_id, right_id, left_index, right_index, result)
+          when has_shadow_clause left_id || has_shadow_clause right_id ->
+          let left_clause, left_proof = shadow_clause_parent left_id in
+          let right_clause, right_proof = shadow_clause_parent right_id in
+          store_shadow_clause id result
+            (native_core_resolve_in_result_context
+               cert id variables left_id left_clause left_proof
+               right_id right_clause right_proof left_index right_index result)
+      | Factor (id, parent_id, left_index, right_index, result)
+          when has_shadow_clause parent_id ->
+          let parent_clause, parent_proof = shadow_clause_parent parent_id in
+          store_shadow_clause id result
+            (native_core_factor_in_result_context
+               cert id variables parent_id parent_clause parent_proof
+               left_index right_index result)
+      | EqualityResolution (id, parent_id, literal_index, result)
+          when has_shadow_clause parent_id ->
+          let parent_clause, parent_proof = shadow_clause_parent parent_id in
+          store_shadow_clause id result
+            (native_core_equality_resolution_in_result_context
+               cert id variables parent_id parent_clause parent_proof literal_index result)
+      | EqualitySymmetry (id, parent_id, literal_index, result)
+          when has_shadow_clause parent_id ->
+          let parent_clause, parent_proof = shadow_clause_parent parent_id in
+          store_shadow_clause id result
+            (native_core_equality_symmetry_in_result_context
+               cert id variables parent_id parent_clause parent_proof literal_index result)
+      | TruthConflict (id, parent_id, literal_index, result)
+          when has_shadow_clause parent_id ->
+          let parent_clause, parent_proof = shadow_clause_parent parent_id in
+          store_shadow_clause id result
+            (native_core_truth_conflict_in_result_context
+               cert id variables parent_id parent_clause parent_proof literal_index result)
+      | SubsumptionResolution
+          (id, main_parent_id, side_parent_id, selected, side_pivot, side_subst, result)
+          when has_shadow_clause main_parent_id || has_shadow_clause side_parent_id ->
+          let main_clause, main_proof = shadow_clause_parent main_parent_id in
+          let side_clause, side_proof = shadow_clause_parent side_parent_id in
+          let side_clause = subst_clause side_subst side_clause in
+          let side_pivot = subst_literal side_subst side_pivot in
+          let side_proof =
+            native_core_instantiate_step_proof cert side_parent_id side_subst side_proof
+          in
+          store_shadow_clause id result
+            (native_core_subsumption_resolution_unit
+               id main_clause main_proof side_clause side_proof selected side_pivot result)
+      | Paramodulate
+          (id, equality_parent_id, target_parent_id, equality_index, target_index,
+           position, from_tm, to_tm, result)
+          when has_shadow_clause equality_parent_id || has_shadow_clause target_parent_id ->
+          let equality_clause, equality_proof = shadow_clause_parent equality_parent_id in
+          let target_clause, target_proof = shadow_clause_parent target_parent_id in
+          store_shadow_clause id result
+            (native_core_paramodulate_unit_in_result_context
+               cert id variables equality_parent_id equality_clause equality_proof
+               target_parent_id target_clause target_proof
+               equality_index target_index position from_tm to_tm result)
+      | AvatarSplit (id, parent_ids, result)
+          when List.exists has_shadow_clause parent_ids ->
+          store_shadow_clause id result
+            (native_core_avatar_split_proof
+               cert id parent_ids result
+               (combined_shadow_clause_table ())
+               shadow_avatar_definition_table)
+      | AvatarRefutation (id, parent_ids, sat_clauses, sat_proof, result)
+          when List.exists has_shadow_clause parent_ids ->
+          store_shadow_clause id result
+            (native_core_avatar_refutation_proof
+               id parent_ids sat_clauses sat_proof result
+               (combined_shadow_clause_table ()))
+      | Contradiction (id, parent_id) when has_shadow_clause parent_id ->
+          let parent_clause, parent_proof = shadow_clause_parent parent_id in
+          if parent_clause <> [] then
+            error (id ^ ": native preprocess Skolem shadow contradiction parent is not empty");
+          store_shadow_clause id [] parent_proof
+      | _ -> ()
+    in
+    List.iter
+      (fun step ->
+         try replay_step step
+         with Error _ as exn ->
+           if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+             prerr_endline
+               (skolem_id
+                ^ ": native preprocess Skolem shadow replay stopped at "
+                ^ step_id step
+                ^ ": "
+                ^ Printexc.to_string exn);
+           raise exn)
+      typed_steps;
+    match !shadow_final_proof with
+    | Some proof ->
+        if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
+          prerr_endline
+            (skolem_id ^ ": native preprocess Skolem shadow replay reached empty clause");
+          begin match native_core_pf_choice_witness_detail proof with
+          | Some detail ->
+              prerr_endline
+                (skolem_id ^ ": native preprocess Skolem shadow first choice witness: " ^ detail)
+          | None -> ()
+          end;
+          begin match native_core_pf_choice_known_detail proof with
+          | Some detail ->
+              prerr_endline
+                (skolem_id ^ ": native preprocess Skolem shadow first choice theorem: " ^ detail)
+          | None -> ()
+          end
+        end;
+        Some proof
+    | None ->
+        if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+          prerr_endline
+            (skolem_id ^ ": native preprocess Skolem shadow replay did not reach empty clause");
+        None
+  in
   seed_avatar_metadata_definitions ();
   List.iter
     (function
@@ -15975,9 +16264,20 @@ let elaborate_preprocess_refutation_native
                (id
                 ^ ": native preprocess Skolem CPS inlining AVATAR splits "
                 ^ String.concat ", " (List.map fst split_replacements));
+           let shadow_result_to_target =
+             try shadow_skolem_final_refutation id result_checked_prop result
+             with (Error _ | Failure _) -> None
+           in
+           begin match shadow_result_to_target with
+           | Some _ when Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" ->
+               prerr_endline
+                 (id ^ ": native preprocess Skolem CPS using shadow replay continuation")
+           | _ -> ()
+           end;
            let candidate =
              native_core_skolem_refutation_cps_proof
                ~abstract_result_proof:abstract_skolem_result_by_prop
+               ?result_to_target_body:shadow_result_to_target
                ~split_replacements
                id variables parent_step_variables result_step_variables
                source_formula subst result result_checked_prop parent_proof

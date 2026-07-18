@@ -2653,9 +2653,27 @@ if ! rg -q 'u30: native preprocess first stored formula proof containing certifi
   exit 1
 fi
 
-if ! rg -q 'native preprocess Skolem CPS abstracted 4 result subproof' \
+if ! rg -q 'u30: native preprocess Skolem shadow replay reached empty clause' \
     "$WORK_DIR/native_cert_v1_skolem_cps_guard.err"; then
-  echo "native preprocess checker did not abstract opened Skolem result proof spines" >&2
+  echo "native preprocess checker did not replay the Skolem shadow continuation to the empty clause" >&2
+  exit 1
+fi
+
+if ! rg -q 'u52: native preprocess Skolem shadow first stored clause choice witness: .*certificate-local choice witness Eps_prop in term' \
+    "$WORK_DIR/native_cert_v1_skolem_cps_guard.err"; then
+  echo "native preprocess checker did not localize the first shadow choice witness to the quantified AVATAR split" >&2
+  exit 1
+fi
+
+if ! rg -q 'u52: native preprocess Skolem shadow first stored clause choice theorem: .*certificate-local choice theorem vampire_exists_prop_choice' \
+    "$WORK_DIR/native_cert_v1_skolem_cps_guard.err"; then
+  echo "native preprocess checker did not localize the first shadow choice theorem to the quantified AVATAR split" >&2
+  exit 1
+fi
+
+if ! rg -q 'u30: native preprocess Skolem CPS using shadow replay continuation' \
+    "$WORK_DIR/native_cert_v1_skolem_cps_guard.err"; then
+  echo "native preprocess checker did not use the Skolem shadow replay continuation" >&2
   exit 1
 fi
 
