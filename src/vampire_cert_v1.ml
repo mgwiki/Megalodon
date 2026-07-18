@@ -13667,15 +13667,25 @@ let native_core_skolem_parent_helper_formulas cert id =
   let wrap_quantifiers tps body =
     List.fold_right (fun tp acc -> All (tp, acc)) tps body
   in
-  let explicit_macro_edges =
-    native_core_skolem_macro_edges cert id
-    |> List.filter_map
-         (fun edge ->
-            match
-              edge.native_skolem_macro_edge_formula,
-              edge.native_skolem_macro_edge_source,
-              edge.native_skolem_macro_edge_target
-            with
+	  let explicit_macro_edges =
+	    native_core_skolem_macro_edges cert id
+	    |> List.filter_map
+	         (fun edge ->
+	            let edge_source =
+	              match edge.native_skolem_macro_edge_contract_source_formula with
+	              | Some source -> Some source
+	              | None -> edge.native_skolem_macro_edge_source
+	            in
+	            let edge_target =
+	              match edge.native_skolem_macro_edge_contract_target_formula with
+	              | Some target -> Some target
+	              | None -> edge.native_skolem_macro_edge_target
+	            in
+	            match
+	              edge.native_skolem_macro_edge_formula,
+	              edge_source,
+	              edge_target
+	            with
             | Some formula, Some source, Some target ->
                 let tps =
                   match edge.native_skolem_macro_edge_binders with
