@@ -12696,7 +12696,7 @@ let native_core_replace_witness_symbols_in_tm replacements tm =
     match tm with
     | TmH name ->
         begin match List.assoc_opt name replacements with
-        | Some witness -> tmshift 0 depth witness
+        | Some witness -> tmshift 0 depth (replace 0 witness)
         | None -> tm
         end
     | TpAp (body, tp) -> TpAp (replace depth body, tp)
@@ -12707,13 +12707,20 @@ let native_core_replace_witness_symbols_in_tm replacements tm =
     | DB _ | Prim _ -> tm
   in
   replace 0 tm
+  |> native_core_normalize_bool_constants
+  |> tm_beta_eta_norm
 
 let native_core_replace_witness_symbols_in_pf replacements proof =
+  let normalize tm =
+    tm
+    |> native_core_normalize_bool_constants
+    |> tm_beta_eta_norm
+  in
   let rec replace_tm depth tm =
     match tm with
     | TmH name ->
         begin match List.assoc_opt name replacements with
-        | Some witness -> tmshift 0 depth witness
+        | Some witness -> tmshift 0 depth (replace_tm 0 witness)
         | None -> tm
         end
     | TpAp (body, tp) -> TpAp (replace_tm depth body, tp)
@@ -12727,10 +12734,10 @@ let native_core_replace_witness_symbols_in_pf replacements proof =
     match proof with
     | PTpAp (body, tp) -> PTpAp (replace_pf depth body, tp)
     | PTmAp (body, tm) ->
-        PTmAp (replace_pf depth body, replace_tm depth tm)
+        PTmAp (replace_pf depth body, replace_tm depth tm |> normalize)
     | PPfAp (left, right) -> PPfAp (replace_pf depth left, replace_pf depth right)
     | PLam (prop, body) ->
-        PLam (replace_tm depth prop, replace_pf depth body)
+        PLam (replace_tm depth prop |> normalize, replace_pf depth body)
     | TLam (tp, body) -> TLam (tp, replace_pf (depth + 1) body)
     | Hyp _ | Known _ -> proof
   in
@@ -12766,6 +12773,7 @@ let native_core_abstract_shifted_subproof needle proof =
 
 let native_core_skolem_refutation_cps_proof
     ?abstract_result_proof
+    ?(split_replacements=[])
     id variables parent_step_variables result_step_variables source subst result
     result_checked_prop parent_proof result_proof final_proof target_prop =
   let witness_symbols =
@@ -12862,6 +12870,7 @@ let native_core_skolem_refutation_cps_proof
         let result_checked_proof =
           native_core_bind_result_step_variables variables result_step_variables proof
         in
+        let replacements = split_replacements @ replacements in
         PPfAp
           (native_core_replace_witness_symbols_in_pf replacements result_to_target,
            result_checked_proof)
@@ -15077,34 +15086,68 @@ let elaborate_preprocess_refutation_native
       if String.length text <= 500 then text
       else String.sub text 0 500 ^ "..."
     in
+    let short_pf pf =
+      let text = pf_to_str pf in
+      if String.length text <= 500 then text
+      else String.sub text 0 500 ^ "..."
+    in
     let find_bad_application proof =
-      let rec find cxtm cxpf proof =
+      let rec find path cxtm cxpf proof =
         match proof with
         | PPfAp (left, right) ->
+            begin match find (path ^ ".left") cxtm cxpf left with
+            | Some _ as found -> found
+            | None ->
+                begin match find (path ^ ".right") cxtm cxpf right with
+                | Some _ as found -> found
+                | None ->
             begin
               try
                 let left_prop, _ =
                   extr_propofpf proof_delta symbol_table cxtm cxpf left []
                 in
                 match tm_beta_eta_norm left_prop with
-                | Imp (_, _) -> begin match find cxtm cxpf left with
-                    | Some _ as found -> found
-                    | None -> find cxtm cxpf right
+                | Imp (expected, _) ->
+                    begin
+                      try
+                        let right_prop, _ =
+                          extr_propofpf proof_delta symbol_table cxtm cxpf right []
+                        in
+                        if tm_beta_eta_norm expected <> tm_beta_eta_norm right_prop then
+                          Some
+                            (path
+                             ^ ": implication argument mismatch; expected "
+                             ^ short_tm expected
+                             ^ "; actual "
+                             ^ short_tm right_prop
+                             ^ "; left proof "
+                             ^ short_pf left
+                             ^ "; right proof "
+                             ^ short_pf right)
+                        else None
+                      with exn ->
+                        Some
+                          (path
+                           ^ ": could not extract right proposition: "
+                           ^ Printexc.to_string exn)
                     end
                 | prop ->
-                    Some ("left proposition is not implication: " ^ short_tm prop)
+                    Some (path ^ ": left proposition is not implication: " ^ short_tm prop)
               with exn ->
-                Some ("could not extract left proposition: " ^ Printexc.to_string exn)
+                Some (path ^ ": could not extract left proposition: " ^ Printexc.to_string exn)
             end
-        | PTpAp (body, _) | PTmAp (body, _) -> find cxtm cxpf body
-        | PLam (prop, body) -> find cxtm (prop :: cxpf) body
+                end
+            end
+        | PTpAp (body, _) -> find (path ^ ".tp") cxtm cxpf body
+        | PTmAp (body, _) -> find (path ^ ".tm") cxtm cxpf body
+        | PLam (prop, body) -> find (path ^ ".plam") cxtm (prop :: cxpf) body
         | TLam (tp, body) ->
             let cxtm = tp :: cxtm in
             let cxpf = List.map (fun prop -> tmshift 0 1 prop) cxpf in
-            find cxtm cxpf body
+            find (path ^ ".tlam") cxtm cxpf body
         | Hyp _ | Known _ -> None
       in
-      find variable_types closed_source_context proof
+      find "root" variable_types closed_source_context proof
     in
     let debug_failure msg =
       if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
@@ -15766,9 +15809,28 @@ let elaborate_preprocess_refutation_native
             result_step_variables, result_checked_prop, parent_proof,
             result_proof) ->
          try
+           let split_replacements =
+             avatar_definition_table
+             |> Hashtbl.to_seq_values
+             |> List.of_seq
+             |> List.map
+                  (fun (split_name, _component_literals, component_prop, _definition_proof) ->
+                     (split_name,
+                      component_prop
+                      |> native_core_normalize_bool_constants
+                      |> tm_beta_eta_norm))
+             |> List.sort_uniq compare
+           in
+           if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1"
+              && split_replacements <> [] then
+             prerr_endline
+               (id
+                ^ ": native preprocess Skolem CPS inlining AVATAR splits "
+                ^ String.concat ", " (List.map fst split_replacements));
            let candidate =
              native_core_skolem_refutation_cps_proof
                ~abstract_result_proof:abstract_skolem_result_by_prop
+               ~split_replacements
                id variables parent_step_variables result_step_variables
                source_formula subst result result_checked_prop parent_proof
                result_proof current native_core_false
