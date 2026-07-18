@@ -14465,9 +14465,21 @@ let native_core_abstract_shifted_subproof needle proof =
 let native_core_skolem_refutation_cps_proof
     ?abstract_result_proof
     ?result_to_target_body
+    ?result_assumption_prop
+    ?result_assumption_step_variables
     ?(split_replacements=[])
     id variables parent_step_variables result_step_variables source subst result
     result_checked_prop parent_proof result_proof final_proof target_prop =
+  let result_assumption_prop =
+    match result_assumption_prop with
+    | Some prop -> prop
+    | None -> result_checked_prop
+  in
+  let result_assumption_step_variables =
+    match result_assumption_step_variables with
+    | Some step_variables -> step_variables
+    | None -> result_step_variables
+  in
   let witness_symbols =
     subst
     |> List.map
@@ -14539,7 +14551,7 @@ let native_core_skolem_refutation_cps_proof
       parent_proof
       parent_step_variables
   in
-  let result_to_target =
+  let legacy_result_to_target =
     match result_to_target_body with
     | Some body -> PLam (result_checked_prop, body)
     | None ->
@@ -14556,6 +14568,20 @@ let native_core_skolem_refutation_cps_proof
         | None ->
             error
               (id ^ ": native preprocess Skolem CPS could not isolate the Skolem result proof in the refutation")
+  in
+  let result_to_target =
+    if result_assumption_prop = result_checked_prop then
+      legacy_result_to_target
+    else
+      let legacy_result_proof =
+        native_core_bind_result_step_variables
+          variables
+          result_step_variables
+          (Hyp 0)
+      in
+      PLam
+        (result_assumption_prop,
+         PPfAp (pfshift 0 1 legacy_result_to_target, legacy_result_proof))
   in
   let result_to_target =
     native_core_close_pf variables result_to_target
@@ -14795,7 +14821,7 @@ let native_core_skolem_refutation_cps_proof
 	      end
 	    end
 	  in
-	  let result_to_target_builder term_depth proof_depth term_replacements replacements fallback_replacements =
+		  let result_to_target_builder term_depth proof_depth term_replacements replacements fallback_replacements =
 	    let result_prop =
 	      formula_prop_with_replacements
 	        ~close_depth:term_depth
@@ -14804,7 +14830,7 @@ let native_core_skolem_refutation_cps_proof
 	        result
 	    in
 	    let checked_result_prop =
-	      tmshift 0 term_depth result_checked_prop
+	      tmshift 0 term_depth result_assumption_prop
 	      |> native_core_replace_witness_symbols_in_tm
 	           (replacements @ fallback_replacements)
 	      |> native_core_replace_terms_in_tm term_replacements
@@ -14831,7 +14857,7 @@ let native_core_skolem_refutation_cps_proof
 	    let bound_result_proof =
 	      native_core_bind_result_step_variables
 	        variables
-	        result_step_variables
+	        result_assumption_step_variables
 	        (Hyp 0)
 	      |> proof_with_replacements
 	           term_replacements
@@ -16967,14 +16993,36 @@ let native_certificate_source_bindings
     []
     typed_steps
 
-let native_preprocess_step_formula_prop cert variables id formula =
-  let step_variables = native_core_step_variables cert id in
+let native_preprocess_step_formula_prop_with_step_variables variables step_variables formula =
   let prop =
     native_core_close_tm
       (variables @ step_variables)
       (native_core_formula_prop formula)
   in
   List.fold_right (fun (_, tp) prop -> All (tp, prop)) step_variables prop
+
+let native_preprocess_step_formula_prop cert variables id formula =
+  native_preprocess_step_formula_prop_with_step_variables
+    variables
+    (native_core_step_variables cert id)
+    formula
+
+let native_core_skolem_result_formula_step_variables cert id result_step_variables =
+  match native_core_kernel_v1_field cert id "result_formula_free_variable_count" with
+  | None -> result_step_variables
+  | Some _ ->
+      let free_variables =
+        native_core_kernel_v1_typed_variable_fields
+          cert id "result_formula" "free_variable"
+      in
+      result_step_variables
+      |> List.filter
+           (fun (name, tp) ->
+              List.exists
+                (fun variable ->
+                   variable.native_kernel_variable_name = name
+                   && variable.native_kernel_variable_type = tp)
+                free_variables)
 
 let elaborate_core_resolution_refutation_native
     ?(source_map=[])
@@ -18637,10 +18685,19 @@ let elaborate_preprocess_refutation_native
           let result_checked_prop =
             native_preprocess_step_formula_prop cert variables id result
           in
+          let result_assumption_step_variables =
+            native_core_skolem_result_formula_step_variables
+              cert id result_step_variables
+          in
+          let result_assumption_prop =
+            native_preprocess_step_formula_prop_with_step_variables
+              variables result_assumption_step_variables result
+          in
           skolem_cps_entries :=
             (id, source_formula, subst, result, parent_step_variables,
              result_step_variables,
-             result_checked_prop, parent_proof, proof)
+             result_checked_prop, result_assumption_step_variables,
+             result_assumption_prop, parent_proof, proof)
             :: !skolem_cps_entries
       | FormulaCopy (id, parent_id, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
@@ -18909,10 +18966,11 @@ let elaborate_preprocess_refutation_native
   in
   let proof =
     List.fold_left
-      (fun current
-           (id, source_formula, subst, result, parent_step_variables,
-           result_step_variables, result_checked_prop, parent_proof,
-            result_proof) ->
+	      (fun current
+	           (id, source_formula, subst, result, parent_step_variables,
+	           result_step_variables, result_checked_prop,
+	            result_assumption_step_variables, result_assumption_prop,
+	            parent_proof, result_proof) ->
          try
            let introduced_witness_symbols =
              subst
@@ -18957,11 +19015,13 @@ let elaborate_preprocess_refutation_native
            | _ -> ()
            end;
            let candidate =
-             native_core_skolem_refutation_cps_proof
-               ~abstract_result_proof:abstract_skolem_result_by_prop
-               ?result_to_target_body:shadow_result_to_target
-               ~split_replacements
-               id variables parent_step_variables result_step_variables
+	             native_core_skolem_refutation_cps_proof
+	               ~abstract_result_proof:abstract_skolem_result_by_prop
+	               ?result_to_target_body:shadow_result_to_target
+	               ~result_assumption_prop
+	               ~result_assumption_step_variables
+	               ~split_replacements
+	               id variables parent_step_variables result_step_variables
                source_formula subst result result_checked_prop parent_proof
                result_proof current native_core_false
            in
