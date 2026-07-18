@@ -18705,8 +18705,12 @@ let elaborate_preprocess_refutation_native
                 end
             end
     in
+    let shadow_step_variables id =
+      if id = skolem_id then skolem_assumption_step_variables
+      else native_core_step_variables cert id
+    in
     let check_shadow_step_proof id prop proof =
-      let step_variables = native_core_step_variables cert id in
+      let step_variables = shadow_step_variables id in
       let proof = native_core_close_pf (variables @ step_variables) proof in
       native_core_reject_certificate_knowns "preprocess-shadow" id proof;
       let debug_failure msg =
@@ -19201,7 +19205,7 @@ let elaborate_preprocess_refutation_native
                 end
             | _ -> ()
           in
-          let proof =
+          let build_skolem_formula_proof result_step_variables =
             try
               native_core_skolem_formula_proof
                 ~normalize_formula_for_match:normalize_generated_skolems
@@ -19218,6 +19222,9 @@ let elaborate_preprocess_refutation_native
                   id variables parent_step_variables result_step_variables
                   subst source_formula result parent_proof
           in
+          let proof =
+            build_skolem_formula_proof result_step_variables
+          in
           store_formula id result proof;
           let result_checked_prop =
             native_preprocess_step_formula_prop cert variables id result
@@ -19230,11 +19237,26 @@ let elaborate_preprocess_refutation_native
             native_preprocess_step_formula_prop_with_step_variables
               variables result_assumption_step_variables result
           in
+          let result_assumption_proof =
+            if result_assumption_step_variables = result_step_variables then
+              proof
+            else begin
+              if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+                prerr_endline
+                  (id
+                   ^ ": native preprocess Skolem CPS rebuilt result proof with "
+                   ^ string_of_int (List.length result_assumption_step_variables)
+                   ^ " result free variables instead of "
+                   ^ string_of_int (List.length result_step_variables)
+                   ^ " step variables");
+              build_skolem_formula_proof result_assumption_step_variables
+            end
+          in
           skolem_cps_entries :=
             (id, source_formula, subst, result, parent_step_variables,
              result_step_variables,
              result_checked_prop, result_assumption_step_variables,
-             result_assumption_prop, parent_proof, proof)
+             result_assumption_prop, parent_proof, result_assumption_proof)
             :: !skolem_cps_entries
       | FormulaCopy (id, parent_id, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
