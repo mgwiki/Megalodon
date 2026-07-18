@@ -75,6 +75,20 @@ Vampire with the same extra proof-detail options used by Megalodon's live
 `VAMPIRE_PROOF_ARGS` only when intentionally testing another proof-export
 configuration.
 
+For fast focused replay of original Megalodon `aby` targets, use:
+
+```sh
+VAMPIRE=/path/to/vampire \
+tests/vampire_reconstruction/run_native_aby_targets_parallel.sh
+```
+
+This runs the selected `examples/hammer/100thms_12_h.mg` targets in parallel
+with `-vampireabytargetstop`, `--proof megalodon`, strict native checking, a
+10-second Vampire timeout, and `/project/tmp` artifacts. The default target set
+contains the current strict-native pass cases `172:4` and `183:4`; use
+`TARGETS="172:4 183:4 233:4" EXPECT_FAIL_TARGETS="233:4"` to include the
+current Skolem/CPS frontier without making routine checks fail.
+
 For freshly exported TH0 files containing `% megalodon_source_map` comments,
 set `CHECK_SOURCE_MAP=1` to additionally run `-vampirecertv1source` for every
 accepted native certificate. Use `PROBLEM_DIR` or `PROBLEMS_FILE` to select the
