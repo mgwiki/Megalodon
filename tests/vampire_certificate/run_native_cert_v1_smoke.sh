@@ -2641,6 +2641,12 @@ if ! rg -q 'native preprocess Skolem CPS first choice witness: .*certificate-loc
   exit 1
 fi
 
+if ! rg -q 'native preprocess Skolem CPS first choice theorem: .*certificate-local choice theorem vampire_exists_prop_choice' \
+    "$WORK_DIR/native_cert_v1_skolem_cps_guard.err"; then
+  echo "native preprocess checker did not report the first remaining Skolem CPS choice theorem" >&2
+  exit 1
+fi
+
 if ! rg -q 'u30: native preprocess first stored formula proof containing certificate-local choice witness: .*certificate-local choice witness Eps_prop in term' \
     "$WORK_DIR/native_cert_v1_skolem_cps_guard.err"; then
   echo "native preprocess checker did not localize the first stored Skolem choice witness to u30" >&2

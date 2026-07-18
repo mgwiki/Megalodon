@@ -12829,6 +12829,32 @@ let native_core_pf_choice_witness_detail proof =
   in
   pf_detail "root" proof
 
+let native_core_pf_choice_known_detail proof =
+  let choice_knowns =
+    [
+      "Eps_i_ax";
+      "vampire_exists_prop_choice";
+      "vampire_exists_set_prop_choice";
+      "vampire_exists_set_set_choice";
+      "vampire_exists_set_set_prop_choice";
+    ]
+  in
+  let rec pf_detail path = function
+    | Known name when List.mem name choice_knowns ->
+        Some (path ^ ": certificate-local choice theorem " ^ name)
+    | PTpAp (body, _) -> pf_detail (path ^ ".tp") body
+    | PTmAp (body, _) -> pf_detail (path ^ ".proof") body
+    | PPfAp (left, right) ->
+        begin match pf_detail (path ^ ".left") left with
+        | Some _ as found -> found
+        | None -> pf_detail (path ^ ".right") right
+        end
+    | PLam (_, body) -> pf_detail (path ^ ".body") body
+    | TLam (_, body) -> pf_detail (path ^ ".body") body
+    | Hyp _ | Known _ -> None
+  in
+  pf_detail "root" proof
+
 let native_core_abstract_shifted_subproof needle proof =
   let replaced = ref false in
   let rec replace term_depth proof_depth proof =
@@ -15971,6 +15997,12 @@ let elaborate_preprocess_refutation_native
 	               | Some detail ->
 	                   prerr_endline
 	                     (id ^ ": native preprocess Skolem CPS first choice witness: " ^ detail)
+	               | None -> ()
+	               end;
+	               begin match native_core_pf_choice_known_detail candidate with
+	               | Some detail ->
+	                   prerr_endline
+	                     (id ^ ": native preprocess Skolem CPS first choice theorem: " ^ detail)
 	               | None -> ()
 	               end
 	             end;
