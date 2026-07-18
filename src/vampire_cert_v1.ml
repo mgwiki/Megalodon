@@ -4458,6 +4458,13 @@ let validate_kernel_v1_metadata_contracts cert =
         (id ^ ": strict certificate v1 kernel_v1 metadata field "
          ^ key ^ " does not match the certificate term")
   in
+  let require_field_tp id fields key expected =
+    let actual = parse_field id fields key parse_tp in
+    if actual <> expected then
+      error
+        (id ^ ": strict certificate v1 kernel_v1 metadata field "
+         ^ key ^ " does not match the certificate type")
+  in
   let require_field_substitution id fields key expected =
     let actual = parse_field id fields key parse_substitution in
     if actual <> expected then
@@ -4875,6 +4882,113 @@ let validate_kernel_v1_metadata_contracts cert =
                 (id ^ ": strict certificate v1 kernel_v1 metadata field skolem_contract_uses_classical_choice does not match introduced_count")
         | None -> ()
         end;
+        begin match
+          field_value "skolem_contract_parent_step_variable_count" fields,
+          field_value "skolem_contract_parent_instantiation_count" fields
+        with
+        | None, None -> ()
+        | Some _, Some _ ->
+            let variable_count =
+              require_nonnegative_field_int
+                id fields "skolem_contract_parent_step_variable_count"
+            in
+            let instantiation_count =
+              require_nonnegative_field_int
+                id fields "skolem_contract_parent_instantiation_count"
+            in
+            if variable_count <> instantiation_count then
+              error
+                (id ^ ": strict certificate v1 kernel_v1 metadata field skolem_contract_parent_instantiation_count does not match parent_step_variable_count");
+            let global_introduced_count =
+              match field_value "introduced_count" fields with
+              | Some _ -> require_nonnegative_field_int id fields "introduced_count"
+              | None -> 0
+            in
+            for variable_index = 0 to variable_count - 1 do
+              let variable_prefix =
+                "skolem_contract_parent_step_variable_"
+                ^ string_of_int variable_index
+              in
+              let instantiation_prefix =
+                "skolem_contract_parent_instantiation_"
+                ^ string_of_int variable_index
+              in
+              let variable =
+                field_required id fields (variable_prefix ^ "_var")
+              in
+              let variable_tp =
+                parse_field id fields (variable_prefix ^ "_type") parse_tp
+              in
+              let instantiated_variable =
+                field_required id fields (instantiation_prefix ^ "_var")
+              in
+              if instantiated_variable <> variable then
+                error
+                  (id ^ ": strict certificate v1 kernel_v1 metadata field "
+                   ^ instantiation_prefix
+                   ^ "_var does not match "
+                   ^ variable_prefix ^ "_var");
+              require_field_tp
+                id fields (instantiation_prefix ^ "_type") variable_tp;
+              let instantiated_term =
+                parse_field id fields (instantiation_prefix ^ "_term") parse_tm
+              in
+              let role =
+                field_required id fields (instantiation_prefix ^ "_role")
+              in
+              begin match role with
+              | "preserved_variable" ->
+                  if instantiated_term <> TmH variable then
+                    error
+                      (id ^ ": strict certificate v1 kernel_v1 metadata field "
+                       ^ instantiation_prefix
+                       ^ "_term must be the preserved variable")
+              | "skolem_witness" ->
+                  let rec find_witness introduced_index =
+                    if introduced_index >= global_introduced_count then None
+                    else
+                      let global_prefix =
+                        "introduced_" ^ string_of_int introduced_index
+                      in
+                      match
+                        field_value (global_prefix ^ "_replaced_var") fields,
+                        field_value (global_prefix ^ "_witness_term") fields
+                      with
+                      | Some replaced_var, Some witness
+                          when replaced_var = variable ->
+                          Some (parse_tm (parse_sexpr witness))
+                      | _ -> find_witness (introduced_index + 1)
+                  in
+                  begin match find_witness 0 with
+                  | Some witness when witness = instantiated_term -> ()
+                  | Some _ ->
+                      error
+                        (id ^ ": strict certificate v1 kernel_v1 metadata field "
+                         ^ instantiation_prefix
+                         ^ "_term does not match the introduced witness for "
+                         ^ variable)
+                  | None ->
+                      error
+                        (id ^ ": strict certificate v1 kernel_v1 metadata field "
+                         ^ instantiation_prefix
+                         ^ "_role is skolem_witness but no introduced witness replaces "
+                         ^ variable)
+                  end
+              | _ ->
+                  error
+                    (id ^ ": strict certificate v1 kernel_v1 metadata field "
+                     ^ instantiation_prefix
+                     ^ "_role has unsupported parent-instantiation role "
+                     ^ role)
+              end
+            done
+        | Some _, None ->
+            error
+              (id ^ ": strict certificate v1 kernel_v1 metadata field skolem_contract_parent_instantiation_count is missing")
+        | None, Some _ ->
+            error
+              (id ^ ": strict certificate v1 kernel_v1 metadata field skolem_contract_parent_step_variable_count is missing")
+        end;
         begin match field_value "skolem_macro_edge_count" fields with
         | Some edge_count ->
             let expected =
@@ -5016,6 +5130,117 @@ let validate_kernel_v1_metadata_contracts cert =
 	                         ^ prefix
 	                         ^ "_contract_introduced_count references missing global introduced_count")
 	              in
+	              begin match
+	                field_value (prefix ^ "_contract_parent_step_variable_count") fields,
+	                field_value (prefix ^ "_contract_parent_instantiation_count") fields
+	              with
+	              | None, None -> ()
+	              | Some _, Some _ ->
+	                  let variable_count =
+	                    require_nonnegative_field_int
+	                      id fields
+	                      (prefix ^ "_contract_parent_step_variable_count")
+	                  in
+	                  let instantiation_count =
+	                    require_nonnegative_field_int
+	                      id fields
+	                      (prefix ^ "_contract_parent_instantiation_count")
+	                  in
+	                  if variable_count <> instantiation_count then
+	                    error
+	                      (id ^ ": strict certificate v1 kernel_v1 metadata field "
+	                       ^ prefix
+	                       ^ "_contract_parent_instantiation_count does not match parent_step_variable_count");
+	                  for variable_index = 0 to variable_count - 1 do
+	                    let variable_prefix =
+	                      prefix ^ "_contract_parent_step_variable_"
+	                      ^ string_of_int variable_index
+	                    in
+	                    let instantiation_prefix =
+	                      prefix ^ "_contract_parent_instantiation_"
+	                      ^ string_of_int variable_index
+	                    in
+	                    let variable =
+	                      field_required id fields (variable_prefix ^ "_var")
+	                    in
+	                    let variable_tp =
+	                      parse_field id fields (variable_prefix ^ "_type") parse_tp
+	                    in
+	                    let instantiated_variable =
+	                      field_required id fields (instantiation_prefix ^ "_var")
+	                    in
+	                    if instantiated_variable <> variable then
+	                      error
+	                        (id ^ ": strict certificate v1 kernel_v1 metadata field "
+	                         ^ instantiation_prefix
+	                         ^ "_var does not match "
+	                         ^ variable_prefix ^ "_var");
+	                    require_field_tp
+	                      id fields (instantiation_prefix ^ "_type") variable_tp;
+	                    let instantiated_term =
+	                      parse_field
+	                        id fields (instantiation_prefix ^ "_term") parse_tm
+	                    in
+	                    let role =
+	                      field_required id fields (instantiation_prefix ^ "_role")
+	                    in
+	                    begin match role with
+	                    | "preserved_variable" ->
+	                        if instantiated_term <> TmH variable then
+	                          error
+	                            (id ^ ": strict certificate v1 kernel_v1 metadata field "
+	                             ^ instantiation_prefix
+	                             ^ "_term must be the preserved variable")
+	                    | "skolem_witness" ->
+	                        let rec find_witness introduced_index =
+	                          if introduced_index >= global_introduced_count then None
+	                          else
+	                            let global_prefix =
+	                              "introduced_" ^ string_of_int introduced_index
+	                            in
+	                            match
+	                              field_value (global_prefix ^ "_replaced_var") fields,
+	                              field_value (global_prefix ^ "_witness_term") fields
+	                            with
+	                            | Some replaced_var, Some witness
+	                                when replaced_var = variable ->
+	                                Some (parse_tm (parse_sexpr witness))
+	                            | _ -> find_witness (introduced_index + 1)
+	                        in
+	                        begin match find_witness 0 with
+	                        | Some witness when witness = instantiated_term -> ()
+	                        | Some _ ->
+	                            error
+	                              (id ^ ": strict certificate v1 kernel_v1 metadata field "
+	                               ^ instantiation_prefix
+	                               ^ "_term does not match the introduced witness for "
+	                               ^ variable)
+	                        | None ->
+	                            error
+	                              (id ^ ": strict certificate v1 kernel_v1 metadata field "
+	                               ^ instantiation_prefix
+	                               ^ "_role is skolem_witness but no introduced witness replaces "
+	                               ^ variable)
+	                        end
+	                    | _ ->
+	                        error
+	                          (id ^ ": strict certificate v1 kernel_v1 metadata field "
+	                           ^ instantiation_prefix
+	                           ^ "_role has unsupported parent-instantiation role "
+	                           ^ role)
+	                    end
+	                  done
+	              | Some _, None ->
+	                  error
+	                    (id ^ ": strict certificate v1 kernel_v1 metadata field "
+	                     ^ prefix
+	                     ^ "_contract_parent_instantiation_count is missing")
+	              | None, Some _ ->
+	                  error
+	                    (id ^ ": strict certificate v1 kernel_v1 metadata field "
+	                     ^ prefix
+	                     ^ "_contract_parent_step_variable_count is missing")
+	              end;
 	              let contract_source =
 	                match field_value (prefix ^ "_contract_source_formula") fields with
 	                | Some raw_source -> Some (parse_tm (parse_sexpr raw_source))
@@ -8509,6 +8734,97 @@ let native_core_kernel_v1_typed_variable_fields cert id prefix role =
       in
       collect 0 []
 
+let native_core_kernel_v1_skolem_parent_instantiations cert id prefix =
+  match
+    native_core_kernel_v1_int_field
+      cert id (prefix ^ "_contract_parent_instantiation_count")
+  with
+  | None -> []
+  | Some count ->
+      if count < 0 then
+        error
+          (id ^ ": kernel_v1 metadata field " ^ prefix
+           ^ "_contract_parent_instantiation_count is negative");
+      let rec collect index acc =
+        if index >= count then List.rev acc
+        else
+          let field_prefix =
+            prefix ^ "_contract_parent_instantiation_"
+            ^ string_of_int index
+          in
+          let declared_index =
+            match native_core_kernel_v1_int_field cert id (field_prefix ^ "_index") with
+            | Some declared_index -> declared_index
+            | None -> index
+          in
+          if declared_index <> index then
+            error
+              (Printf.sprintf
+                 "%s: kernel_v1 metadata field %s_index is %d but expected %d"
+                 id field_prefix declared_index index);
+          let variable =
+            native_core_kernel_v1_required_field
+              cert id (field_prefix ^ "_var")
+          in
+          let tp =
+            match native_core_kernel_v1_tp_field cert id (field_prefix ^ "_type") with
+            | Some tp -> tp
+            | None ->
+                error
+                  (id ^ ": kernel_v1 metadata requires "
+                   ^ field_prefix ^ "_type")
+          in
+          let term =
+            match native_core_kernel_v1_tm_field cert id (field_prefix ^ "_term") with
+            | Some term -> term
+            | None ->
+                error
+                  (id ^ ": kernel_v1 metadata requires "
+                   ^ field_prefix ^ "_term")
+          in
+          let role =
+            native_core_kernel_v1_required_field
+              cert id (field_prefix ^ "_role")
+          in
+          if role <> "skolem_witness" && role <> "preserved_variable" then
+            error
+              (id ^ ": kernel_v1 metadata field " ^ field_prefix
+               ^ "_role has unsupported parent-instantiation role " ^ role);
+          collect
+            (index + 1)
+            ({ Vampire_kernel_syntax.skolem_parent_inst_index = index;
+               skolem_parent_inst_variable = variable;
+               skolem_parent_inst_type = tp;
+               skolem_parent_inst_term = term;
+               skolem_parent_inst_role = role } :: acc)
+      in
+      collect 0 []
+
+let native_core_validate_skolem_parent_instantiations id label parent_step_variables parent_instantiations =
+  begin match parent_step_variables, parent_instantiations with
+  | [], [] -> ()
+  | _ ->
+      if List.length parent_step_variables <> List.length parent_instantiations then
+        error
+          (Printf.sprintf
+             "%s: typed Skolem %s has %d parent step variables but %d instantiations"
+             id label
+             (List.length parent_step_variables)
+             (List.length parent_instantiations));
+      List.iter2
+        (fun (variable, tp) instantiation ->
+           if instantiation.Vampire_kernel_syntax.skolem_parent_inst_variable <> variable
+              || instantiation.Vampire_kernel_syntax.skolem_parent_inst_type <> tp then
+             error
+               (Printf.sprintf
+                  "%s: typed Skolem %s parent instantiation %d does not match parent step variable %s"
+                  id label
+                  instantiation.Vampire_kernel_syntax.skolem_parent_inst_index
+                  variable))
+        parent_step_variables
+        parent_instantiations
+  end
+
 let native_core_kernel_v1_quantifier_fields cert id prefix =
   match native_core_kernel_v1_int_field cert id (prefix ^ "_quantifier_count") with
   | None -> []
@@ -8638,6 +8954,19 @@ let native_core_kernel_v1_skolem_contract cert id =
                    cert id (prefix ^ "_witness_term");
              })
       in
+      let parent_step_variables =
+        native_core_kernel_v1_typed_variable_fields
+          cert id "skolem_contract" "parent_step_variable"
+        |> List.map
+             (fun variable ->
+                (variable.native_kernel_variable_name,
+                 variable.native_kernel_variable_type))
+      in
+      let parent_instantiations =
+        native_core_kernel_v1_skolem_parent_instantiations cert id "skolem"
+      in
+      native_core_validate_skolem_parent_instantiations
+        id "proof contract" parent_step_variables parent_instantiations;
       Some
         {
           Vampire_kernel_syntax.skolem_source_children = source_children;
@@ -8646,6 +8975,8 @@ let native_core_kernel_v1_skolem_contract cert id =
           skolem_macro_edge_count =
             native_core_kernel_v1_int_field
               cert id "skolem_contract_macro_edge_count";
+          skolem_parent_step_variables = parent_step_variables;
+          skolem_parent_instantiations = parent_instantiations;
         }
 
 let native_core_debug_skolem_contract id = function
@@ -8731,6 +9062,22 @@ let native_core_kernel_v1_skolem_branch_contract cert id index prefix =
                    cert id (introduced_prefix ^ "_witness_term");
              })
       in
+      let parent_step_variables =
+        native_core_kernel_v1_typed_variable_fields
+          cert id (prefix ^ "_contract") "parent_step_variable"
+        |> List.map
+             (fun variable ->
+                (variable.native_kernel_variable_name,
+                 variable.native_kernel_variable_type))
+      in
+      let parent_instantiations =
+        native_core_kernel_v1_skolem_parent_instantiations cert id prefix
+      in
+      native_core_validate_skolem_parent_instantiations
+        id
+        ("branch contract " ^ string_of_int index)
+        parent_step_variables
+        parent_instantiations;
       Some
         {
           Vampire_kernel_syntax.skolem_branch_index = index;
@@ -8749,6 +9096,8 @@ let native_core_kernel_v1_skolem_branch_contract cert id index prefix =
           skolem_branch_target_formula =
             native_core_kernel_v1_tm_field
               cert id (prefix ^ "_contract_target_formula");
+          skolem_branch_parent_step_variables = parent_step_variables;
+          skolem_branch_parent_instantiations = parent_instantiations;
           skolem_branch_introduced_witnesses = introduced_witnesses;
         }
 
@@ -15345,7 +15694,7 @@ let native_core_skolem_refutation_cps_proof
            in
            prerr_endline
              (Printf.sprintf
-                "%s: native preprocess Skolem CPS branch contract #%d unit=%s parent=%s binders=%s witnesses=%s source_exists=%d target_exists=%d source_symbols=%s target_symbols=%s"
+                "%s: native preprocess Skolem CPS branch contract #%d unit=%s parent=%s binders=%s parent_instantiations=%d witnesses=%s source_exists=%d target_exists=%d source_symbols=%s target_symbols=%s"
                 id
                 branch.Vampire_kernel_syntax.skolem_branch_index
                 (match branch.Vampire_kernel_syntax.skolem_branch_unit with
@@ -15357,6 +15706,8 @@ let native_core_skolem_refutation_cps_proof
                 (match branch.Vampire_kernel_syntax.skolem_branch_binder_count with
                  | Some count -> string_of_int count
                  | None -> "?")
+                (List.length
+                   branch.Vampire_kernel_syntax.skolem_branch_parent_instantiations)
                 (witness_set_text (branch_witness_symbols branch))
                 source_exists
                 target_exists
@@ -15444,8 +15795,33 @@ let native_core_skolem_refutation_cps_proof
             | labels -> String.concat " " labels))
   in
   debug_skolem_branch_contracts ();
+  let parent_instantiations =
+    match skolem_proof_object with
+    | Some proof_object ->
+        let contract =
+          proof_object.Vampire_kernel_syntax.skolem_proof_contract
+        in
+        contract.Vampire_kernel_syntax.skolem_parent_instantiations
+    | None -> []
+  in
   let parent_proof =
-    let dummy_step_argument tp =
+    let certificate_step_argument (name, tp) instantiation =
+      if instantiation.Vampire_kernel_syntax.skolem_parent_inst_variable <> name
+         || instantiation.Vampire_kernel_syntax.skolem_parent_inst_type <> tp then
+        error
+          (Printf.sprintf
+             "%s: native preprocess Skolem CPS parent instantiation %d does not match parent step variable %s"
+             id
+             instantiation.Vampire_kernel_syntax.skolem_parent_inst_index
+             name);
+      match tp with
+      | Prop -> native_core_false
+      | _ ->
+          native_core_close_tm variables
+            instantiation.Vampire_kernel_syntax.skolem_parent_inst_term
+          |> tm_beta_eta_norm
+    in
+    let legacy_dummy_step_argument tp =
       match tp with
       | Prop -> native_core_false
       | _ ->
@@ -15453,10 +15829,27 @@ let native_core_skolem_refutation_cps_proof
             (id
              ^ ": native preprocess Skolem CPS cannot open non-prop parent step variable")
     in
-    List.fold_left
-      (fun proof (_, tp) -> PTmAp (proof, dummy_step_argument tp))
-      parent_proof
-      parent_step_variables
+    match parent_step_variables, parent_instantiations with
+    | [], [] -> parent_proof
+    | _, [] ->
+        List.fold_left
+          (fun proof (_, tp) -> PTmAp (proof, legacy_dummy_step_argument tp))
+          parent_proof
+          parent_step_variables
+    | _ ->
+        if List.length parent_step_variables <> List.length parent_instantiations then
+          error
+            (Printf.sprintf
+               "%s: native preprocess Skolem CPS has %d parent step variables but %d parent instantiations"
+               id
+               (List.length parent_step_variables)
+               (List.length parent_instantiations));
+        List.fold_left2
+          (fun proof variable instantiation ->
+             PTmAp (proof, certificate_step_argument variable instantiation))
+          parent_proof
+          parent_step_variables
+          parent_instantiations
   in
   let result_to_target_source_prop, base_result_to_target =
     match result_to_target_body with

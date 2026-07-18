@@ -67,6 +67,12 @@ require_field 'introduced_0_dependency_count=3' 'dependent Skolem dependency cou
 require_field 'introduced_0_dependency_0_var=X2' 'first dependent Skolem variable'
 require_field 'introduced_0_dependency_1_var=X1' 'second dependent Skolem variable'
 require_field 'introduced_0_dependency_2_var=X0' 'third dependent Skolem variable'
+require_field 'skolem_contract_parent_step_variable_count=' 'top-level parent step variable count'
+require_field 'skolem_contract_parent_instantiation_count=' 'top-level parent instantiation count'
+require_field 'skolem_contract_parent_instantiation_[0-9]+_role=preserved_variable' 'preserved parent variable instantiation'
+require_field 'skolem_contract_parent_instantiation_[0-9]+_role=skolem_witness' 'Skolem witness parent instantiation'
+require_field 'skolem_macro_edge_0_contract_parent_step_variable_count=' 'branch parent step variable count'
+require_field 'skolem_macro_edge_0_contract_parent_instantiation_count=' 'branch parent instantiation count'
 
 dummy="$WORK_DIR/dummy.mg"
 : >"$dummy"
