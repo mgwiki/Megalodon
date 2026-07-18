@@ -119,6 +119,13 @@ type native_skolem_macro_edge = {
   native_skolem_macro_edge_formula_children : (string * tm) list;
   native_skolem_macro_edge_source_children : (string * tm) list;
   native_skolem_macro_edge_target_children : (string * tm) list;
+  native_skolem_macro_edge_contract : string option;
+  native_skolem_macro_edge_contract_primitive_rule : string option;
+  native_skolem_macro_edge_contract_parent_index : int option;
+  native_skolem_macro_edge_contract_unit : string option;
+  native_skolem_macro_edge_contract_binder_count : int option;
+  native_skolem_macro_edge_contract_source_formula : tm option;
+  native_skolem_macro_edge_contract_target_formula : tm option;
 }
 
 type step =
@@ -4914,20 +4921,87 @@ let validate_kernel_v1_metadata_contracts cert =
                 id fields (prefix ^ "_source") raw_source
           | None -> ()
           end;
-          begin match field_value (prefix ^ "_target") fields with
-          | Some raw_target ->
-              let target = parse_tm (parse_sexpr raw_target) in
-              require_formula_shape_fields id fields (prefix ^ "_target") target;
-              require_formula_quantifier_fields
-                id fields (prefix ^ "_target") raw_target;
-              require_formula_free_variable_fields
-                id fields (prefix ^ "_target") raw_target;
-              require_formula_child_fields
-                id fields (prefix ^ "_target") raw_target
-          | None -> ()
-          end
-        done
-  in
+	          begin match field_value (prefix ^ "_target") fields with
+	          | Some raw_target ->
+	              let target = parse_tm (parse_sexpr raw_target) in
+	              require_formula_shape_fields id fields (prefix ^ "_target") target;
+	              require_formula_quantifier_fields
+	                id fields (prefix ^ "_target") raw_target;
+	              require_formula_free_variable_fields
+	                id fields (prefix ^ "_target") raw_target;
+	              require_formula_child_fields
+	                id fields (prefix ^ "_target") raw_target
+	          | None -> ()
+	          end;
+	          begin match field_value (prefix ^ "_contract") fields with
+	          | None -> ()
+	          | Some version ->
+	              if version <> "branch_v1" then
+	                error
+	                  (id ^ ": strict certificate v1 kernel_v1 metadata field "
+	                   ^ prefix ^ "_contract has unsupported version " ^ version);
+	              let primitive_rule =
+	                field_required id fields (prefix ^ "_contract_primitive_rule")
+	              in
+	              if primitive_rule <> "skolem_branch" then
+	                error
+	                  (id ^ ": strict certificate v1 kernel_v1 metadata field "
+	                   ^ prefix ^ "_contract_primitive_rule must be skolem_branch");
+	              begin match field_value (prefix ^ "_parent_index") fields with
+	              | Some parent_index ->
+	                  let expected =
+	                    try int_of_string parent_index
+	                    with Failure _ ->
+	                      error
+	                        (id ^ ": strict certificate v1 kernel_v1 metadata field "
+	                         ^ prefix ^ "_parent_index is not an integer")
+	                  in
+	                  require_field_int
+	                    id fields (prefix ^ "_contract_parent_index") expected
+	              | None -> ()
+	              end;
+	              begin match field_value (prefix ^ "_unit") fields with
+	              | Some unit_value ->
+	                  let contract_unit =
+	                    field_required id fields (prefix ^ "_contract_unit")
+	                  in
+	                  if contract_unit <> unit_value then
+	                    error
+	                      (id ^ ": strict certificate v1 kernel_v1 metadata field "
+	                       ^ prefix ^ "_contract_unit does not match "
+	                       ^ prefix ^ "_unit")
+	              | None -> ()
+	              end;
+	              begin match field_value (prefix ^ "_binder_count") fields with
+	              | Some binder_count ->
+	                  let expected =
+	                    try int_of_string binder_count
+	                    with Failure _ ->
+	                      error
+	                        (id ^ ": strict certificate v1 kernel_v1 metadata field "
+	                         ^ prefix ^ "_binder_count is not an integer")
+	                  in
+	                  require_field_int
+	                    id fields (prefix ^ "_contract_binder_count") expected
+	              | None -> ()
+	              end;
+	              begin match field_value (prefix ^ "_source") fields with
+	              | Some raw_source ->
+	                  let source = parse_tm (parse_sexpr raw_source) in
+	                  require_field_tm
+	                    id fields (prefix ^ "_contract_source_formula") source
+	              | None -> ()
+	              end;
+	              begin match field_value (prefix ^ "_target") fields with
+	              | Some raw_target ->
+	                  let target = parse_tm (parse_sexpr raw_target) in
+	                  require_field_tm
+	                    id fields (prefix ^ "_contract_target_formula") target
+	              | None -> ()
+	              end
+	          end
+	        done
+	  in
   let require_field_sat_clause id fields key expected =
     let actual = parse_field id fields key parse_sat_clause in
     if normalize_sat_clause actual <> normalize_sat_clause expected then
@@ -8424,6 +8498,25 @@ let native_core_skolem_macro_edges cert id =
               native_skolem_macro_edge_target_children =
                 native_core_kernel_v1_formula_child_fields
                   cert id (prefix ^ "_target");
+              native_skolem_macro_edge_contract =
+                native_core_kernel_v1_field cert id (prefix ^ "_contract");
+              native_skolem_macro_edge_contract_primitive_rule =
+                native_core_kernel_v1_field
+                  cert id (prefix ^ "_contract_primitive_rule");
+              native_skolem_macro_edge_contract_parent_index =
+                native_core_kernel_v1_int_field
+                  cert id (prefix ^ "_contract_parent_index");
+              native_skolem_macro_edge_contract_unit =
+                native_core_kernel_v1_field cert id (prefix ^ "_contract_unit");
+              native_skolem_macro_edge_contract_binder_count =
+                native_core_kernel_v1_int_field
+                  cert id (prefix ^ "_contract_binder_count");
+              native_skolem_macro_edge_contract_source_formula =
+                native_core_kernel_v1_tm_field
+                  cert id (prefix ^ "_contract_source_formula");
+              native_skolem_macro_edge_contract_target_formula =
+                native_core_kernel_v1_tm_field
+                  cert id (prefix ^ "_contract_target_formula");
             }
           in
           collect (index + 1) (edge :: acc)

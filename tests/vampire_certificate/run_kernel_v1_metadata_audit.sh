@@ -896,11 +896,18 @@ if [[ -s "$WORK_DIR/skolemize.tsv" ]]; then
           unit_field = prefix "_unit="
           formula_field = prefix "_formula="
           binder_count_field = prefix "_binder_count="
-          source_field = prefix "_source="
-          target_field = prefix "_target="
-          if (index($0, parent_index_field) == 0) {
-            print parent_index_field "\t" $0
-          }
+	          source_field = prefix "_source="
+	          target_field = prefix "_target="
+	          contract_field = prefix "_contract=branch_v1"
+	          contract_rule_field = prefix "_contract_primitive_rule=skolem_branch"
+	          contract_parent_index_field = prefix "_contract_parent_index="
+	          contract_unit_field = prefix "_contract_unit="
+	          contract_binder_count_field = prefix "_contract_binder_count="
+	          contract_source_formula_field = prefix "_contract_source_formula="
+	          contract_target_formula_field = prefix "_contract_target_formula="
+	          if (index($0, parent_index_field) == 0) {
+	            print parent_index_field "\t" $0
+	          }
           if (index($0, unit_field) == 0) {
             print unit_field "\t" $0
           }
@@ -938,12 +945,33 @@ if [[ -s "$WORK_DIR/skolemize.tsv" ]]; then
           if (index($0, target_field) == 0) {
             print target_field "\t" $0
           }
-          check_quantifier_fields(prefix "_target", $0)
-          check_typed_variable_fields(prefix "_target", "free_variable", $0)
-          check_child_fields(prefix "_target", $0)
-        }
-      }
-    }
+	          check_quantifier_fields(prefix "_target", $0)
+	          check_typed_variable_fields(prefix "_target", "free_variable", $0)
+	          check_child_fields(prefix "_target", $0)
+	          if (index($0, contract_field) == 0) {
+	            print contract_field "\t" $0
+	          }
+	          if (index($0, contract_rule_field) == 0) {
+	            print contract_rule_field "\t" $0
+	          }
+	          if (index($0, contract_parent_index_field) == 0) {
+	            print contract_parent_index_field "\t" $0
+	          }
+	          if (index($0, contract_unit_field) == 0) {
+	            print contract_unit_field "\t" $0
+	          }
+	          if (index($0, contract_binder_count_field) == 0) {
+	            print contract_binder_count_field "\t" $0
+	          }
+	          if (index($0, contract_source_formula_field) == 0) {
+	            print contract_source_formula_field "\t" $0
+	          }
+	          if (index($0, contract_target_formula_field) == 0) {
+	            print contract_target_formula_field "\t" $0
+	          }
+	        }
+	      }
+	    }
   ' "$WORK_DIR/skolemize.tsv" > "$WORK_DIR/missing_skolemize_macro_edge_fields.tsv"
 
   if [[ -s "$WORK_DIR/missing_skolemize_macro_edge_fields.tsv" ]]; then
