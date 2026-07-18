@@ -1455,6 +1455,51 @@ let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxp
   let proof_expander =
     vampire_expand_returned_proof ?extra_delta cxtm source_map
   in
+  let live_delta = vampire_source_context_delta_with_locals cxtm in
+  let live_symbol_table = Hashtbl.copy sigtmof in
+  let empty_extra_delta = Hashtbl.create 1 in
+  let certificate_delta =
+    match extra_delta with
+    | Some extra_delta -> extra_delta
+    | None -> empty_extra_delta
+  in
+  let live_check expanded =
+    match extra_symbols with
+    | None -> Some expanded
+    | Some extra_symbols ->
+        begin match
+          vampire_certificate_only_symbol_in_proof
+            live_symbol_table
+            certificate_delta
+            extra_symbols
+            expanded
+        with
+        | Some _ -> None
+        | None ->
+            try
+              let (actual, dl) =
+                extr_propofpf live_delta live_symbol_table cx hyps expanded []
+              in
+              begin match
+                vampire_certificate_only_symbol_in_tm
+                  live_symbol_table
+                  extra_symbols
+                  actual
+              with
+              | Some _ -> None
+              | None ->
+                  begin match conv actual expected live_delta dl with
+                  | Some _ ->
+                      begin match check_propofpf sigdelta sigtmof cx hyps expanded expected [] with
+                      | Some _ -> Some expanded
+                      | None -> None
+                      end
+                  | None -> None
+                  end
+              end
+            with _ -> None
+        end
+  in
   let debug = Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" in
   let rec try_variants = function
     | [] -> None
@@ -1462,7 +1507,21 @@ let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxp
         try
           let (actual,dl) = extr_propofpf proof_delta symbol_table cx hyps proof_for_check [] in
           match conv actual expected proof_delta dl with
-          | Some _ -> Some (proof_expander proof_for_check)
+          | Some _ ->
+              let expanded = proof_expander proof_for_check in
+              begin match live_check expanded with
+              | Some _ as result -> result
+              | None ->
+                  if debug then
+                    begin
+                      Printf.printf
+                        "Vampire native proof-of-prop candidate checked only with certificate delta at line %d char %d; rejecting live proof.\n"
+                        !lineno
+                        !charno;
+                      flush stdout
+                    end;
+                  try_variants rest
+              end
           | None ->
               if debug then
                 begin
