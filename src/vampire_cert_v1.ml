@@ -9685,11 +9685,38 @@ let native_core_xm_proof prop =
              (PTmAp (Known native_core_dneg_hash, q),
               PLam (Imp (q, native_core_false), false_proof)))))
 
-let native_core_avatar_definition_proof_from_components cert id split_name component_literals =
+let native_core_avatar_definition_proof_from_components cert variables id split_name component_literals =
   let split_prop = native_core_literal_prop (Pos (TmH split_name)) in
-  let component_prop = native_core_step_clause_prop cert [] id component_literals in
-  let split_to_component = PLam (split_prop, Hyp 0) in
-  let component_to_split = PLam (component_prop, Hyp 0) in
+  let component_prop =
+    native_core_step_clause_prop cert variables id component_literals
+  in
+  let rec instantiate_foralls proof target =
+    match target with
+    | All (tp, body) ->
+        TLam
+          (tp,
+           instantiate_foralls
+             (PTmAp (pftmshift 0 1 proof, DB 0))
+             body)
+    | _ -> proof
+  in
+  let prove_by_conversion target proof =
+    PPfAp
+      (PTmAp (Known native_core_dneg_hash, target),
+       PLam
+         (Imp (target, native_core_false),
+          PPfAp (Hyp 0, pfshift 0 1 proof)))
+  in
+  let split_to_component =
+    PLam
+      (split_prop,
+       instantiate_foralls (Hyp 0) component_prop)
+  in
+  let component_to_split =
+    PLam
+      (component_prop,
+       prove_by_conversion split_prop (Hyp 0))
+  in
   let left_prop = Imp (split_prop, component_prop) in
   let right_prop = Imp (component_prop, split_prop) in
   native_core_and_intro
@@ -9698,7 +9725,7 @@ let native_core_avatar_definition_proof_from_components cert id split_name compo
     split_to_component
     component_to_split
 
-let native_core_avatar_definition_proof cert id split_var split_positive clause =
+let native_core_avatar_definition_proof cert variables id split_var split_positive clause =
   if not split_positive then
     error
       (id ^ ": native preprocess proof-term avatar_definition supports only positive split metadata");
@@ -9708,7 +9735,7 @@ let native_core_avatar_definition_proof cert id split_var split_positive clause 
         (id ^ ": native preprocess proof-term avatar_definition needs exactly one split literal and no local variables")
   | Some (split_name, component_literals) ->
       native_core_avatar_definition_proof_from_components
-        cert id split_name component_literals
+        cert variables id split_name component_literals
 
 let native_core_avatar_split_proof cert id parent_ids result clause_table avatar_definitions =
   let split_literal =
@@ -14503,10 +14530,14 @@ let elaborate_preprocess_refutation_native
       |> native_core_close_tm variables
     in
     check_step_proof id prop proof;
+    let table_proof =
+      native_core_avatar_definition_proof_from_components
+        cert [] id split_name component_literals
+    in
     Hashtbl.replace
       avatar_definition_table
       key
-      (split_name, component_literals, component_prop, proof)
+      (split_name, component_literals, component_prop, table_proof)
   in
   let store_avatar_definition id split_name component_literals proof =
     store_avatar_definition_with_key id id split_name component_literals proof
@@ -14517,7 +14548,7 @@ let elaborate_preprocess_refutation_native
          (fun (id, split_name, component_literals) ->
             let proof =
               native_core_avatar_definition_proof_from_components
-                cert id split_name component_literals
+                cert variables id split_name component_literals
             in
             store_avatar_definition_with_key
               (id ^ "__" ^ split_name)
@@ -14822,7 +14853,7 @@ let elaborate_preprocess_refutation_native
           | Some (split_name, component_literals) ->
               let proof =
                 native_core_avatar_definition_proof
-                  cert id split_var split_positive result
+                  cert variables id split_var split_positive result
               in
               store_avatar_definition
                 id
