@@ -14013,26 +14013,31 @@ let native_core_skolem_refutation_cps_proof
     |> native_core_close_tm ~depth:close_depth variables
     |> tm_beta_eta_norm
   in
-  let formula_prop_with_replacements ?(fallback_replacements=[]) replacements formula =
+  let formula_prop_with_replacements ?close_depth ?(fallback_replacements=[]) replacements formula =
+    let close_depth =
+      match close_depth with
+      | Some close_depth -> close_depth
+      | None -> List.length replacements
+    in
     formula_prop_with_ordered_replacements
-      (List.length replacements)
+      close_depth
       (replacements @ fallback_replacements)
       formula
   in
-  let raw_formula_with_replacements replacements fallback_replacements formula =
+  let raw_formula_with_replacements close_depth replacements fallback_replacements formula =
     formula
     |> native_core_normalize_bool_constants
     |> tm_beta_eta_norm
     |> native_core_replace_witness_symbols_in_tm (replacements @ fallback_replacements)
-    |> native_core_normalize_bool_constants
+    |> native_core_close_tm ~depth:close_depth variables
     |> tm_beta_eta_norm
   in
-  let select_replacements_to_match label replacements fallback_replacements source result =
+  let select_replacements_to_match label close_depth replacements fallback_replacements source result =
     let source_prop =
-      formula_prop_with_replacements ~fallback_replacements replacements source
+      formula_prop_with_replacements ~close_depth ~fallback_replacements replacements source
     in
     let result_prop =
-      formula_prop_with_replacements ~fallback_replacements replacements result
+      formula_prop_with_replacements ~close_depth ~fallback_replacements replacements result
     in
     if source_prop = result_prop then
       Some (replacements, source_prop, result_prop)
@@ -14049,7 +14054,7 @@ let native_core_skolem_refutation_cps_proof
             in
             let candidate_prop =
               formula_prop_with_ordered_replacements
-                (List.length replacements)
+                close_depth
                 (replacements_with_override @ fallback_replacements)
                 result
             in
@@ -14122,6 +14127,11 @@ let native_core_skolem_refutation_cps_proof
 	    proof
 	    |> pftmshift 0 (term_depth - captured_term_depth)
 	    |> pfshift 0 (proof_depth - captured_proof_depth)
+	  in
+	  let shift_captured_tm captured_term_depth term_depth tm =
+	    if term_depth < captured_term_depth then
+	      error (id ^ ": native preprocess Skolem CPS internal proposition depth moved outward");
+	    tmshift 0 (term_depth - captured_term_depth) tm
 	  in
 	  let result_to_target_builder term_depth proof_depth _term_replacements _replacements _fallback_replacements =
 	    result_to_target
@@ -14223,8 +14233,8 @@ let native_core_skolem_refutation_cps_proof
           in
           let captured_term_depth = term_depth in
           let captured_proof_depth = proof_depth in
-          let source_left_prop = formula_prop_with_replacements ~fallback_replacements replacements source_left in
-          let source_right_prop = formula_prop_with_replacements ~fallback_replacements replacements source_right in
+          let source_left_prop = formula_prop_with_replacements ~close_depth:term_depth ~fallback_replacements replacements source_left in
+          let source_right_prop = formula_prop_with_replacements ~close_depth:term_depth ~fallback_replacements replacements source_right in
           let source_left_proof =
             native_core_and_elim_left source_left_prop source_right_prop proof
           in
@@ -14234,6 +14244,13 @@ let native_core_skolem_refutation_cps_proof
           let left_result_to_target_builder term_depth proof_depth term_replacements replacements fallback_replacements =
             let captured_result_left_term_depth = term_depth in
             let captured_result_left_proof_depth = proof_depth + 1 in
+            let captured_result_left_prop =
+              formula_prop_with_replacements
+                ~close_depth:term_depth
+                ~fallback_replacements
+                replacements
+                result_left
+            in
             let result_left_proof = Hyp 0 in
             let right_source_proof =
               shift_captured_pf
@@ -14241,8 +14258,13 @@ let native_core_skolem_refutation_cps_proof
                 term_depth (proof_depth + 1) source_right_proof
             in
             let right_result_to_target_builder term_depth proof_depth term_replacements replacements fallback_replacements =
-              let result_left_prop = formula_prop_with_replacements ~fallback_replacements replacements result_left in
-              let result_right_prop = formula_prop_with_replacements ~fallback_replacements replacements result_right in
+              let result_left_prop =
+                shift_captured_tm
+                  captured_result_left_term_depth
+                  term_depth
+                  captured_result_left_prop
+              in
+              let result_right_prop = formula_prop_with_replacements ~close_depth:term_depth ~fallback_replacements replacements result_right in
               PLam
                 (result_right_prop,
                  let rebuilt =
@@ -14262,7 +14284,7 @@ let native_core_skolem_refutation_cps_proof
                     rebuilt))
             in
             PLam
-              (formula_prop_with_replacements ~fallback_replacements replacements result_left,
+              (formula_prop_with_replacements ~close_depth:term_depth ~fallback_replacements replacements result_left,
                eliminate
                  term_depth
                  (proof_depth + 1)
@@ -14289,8 +14311,8 @@ let native_core_skolem_refutation_cps_proof
 	        else if left_count > 0 then
 	          let captured_term_depth = term_depth in
 	          let captured_proof_depth = proof_depth in
-	          let source_left_prop = formula_prop_with_replacements ~fallback_replacements replacements source_left in
-	          let source_right_prop = formula_prop_with_replacements ~fallback_replacements replacements source_right in
+	          let source_left_prop = formula_prop_with_replacements ~close_depth:term_depth ~fallback_replacements replacements source_left in
+	          let source_right_prop = formula_prop_with_replacements ~close_depth:term_depth ~fallback_replacements replacements source_right in
 	          let source_left_proof =
 	            native_core_and_elim_left source_left_prop source_right_prop proof
 	          in
@@ -14298,8 +14320,8 @@ let native_core_skolem_refutation_cps_proof
 	            native_core_and_elim_right source_left_prop source_right_prop proof
 	          in
 		          let left_result_to_target_builder term_depth proof_depth term_replacements replacements fallback_replacements =
-		            let result_left_prop = formula_prop_with_replacements ~fallback_replacements replacements result_left in
-		            let result_right_prop = formula_prop_with_replacements ~fallback_replacements replacements result_right in
+		            let result_left_prop = formula_prop_with_replacements ~close_depth:term_depth ~fallback_replacements replacements result_left in
+		            let result_right_prop = formula_prop_with_replacements ~close_depth:term_depth ~fallback_replacements replacements result_right in
 		            PLam
 		              (result_left_prop,
 		               let rebuilt =
@@ -14331,8 +14353,8 @@ let native_core_skolem_refutation_cps_proof
 	        else if right_count > 0 then
 	          let captured_term_depth = term_depth in
 	          let captured_proof_depth = proof_depth in
-	          let source_left_prop = formula_prop_with_replacements ~fallback_replacements replacements source_left in
-	          let source_right_prop = formula_prop_with_replacements ~fallback_replacements replacements source_right in
+	          let source_left_prop = formula_prop_with_replacements ~close_depth:term_depth ~fallback_replacements replacements source_left in
+	          let source_right_prop = formula_prop_with_replacements ~close_depth:term_depth ~fallback_replacements replacements source_right in
 	          let source_left_proof =
 	            native_core_and_elim_left source_left_prop source_right_prop proof
 	          in
@@ -14340,8 +14362,8 @@ let native_core_skolem_refutation_cps_proof
 	            native_core_and_elim_right source_left_prop source_right_prop proof
 	          in
 		          let right_result_to_target_builder term_depth proof_depth term_replacements replacements fallback_replacements =
-		            let result_left_prop = formula_prop_with_replacements ~fallback_replacements replacements result_left in
-		            let result_right_prop = formula_prop_with_replacements ~fallback_replacements replacements result_right in
+		            let result_left_prop = formula_prop_with_replacements ~close_depth:term_depth ~fallback_replacements replacements result_left in
+		            let result_right_prop = formula_prop_with_replacements ~close_depth:term_depth ~fallback_replacements replacements result_right in
 		            PLam
 		              (result_right_prop,
 	               let rebuilt =
@@ -14389,16 +14411,16 @@ let native_core_skolem_refutation_cps_proof
         let left_witnesses, right_witnesses =
           split_witnesses left_count [] witnesses
         in
-		        let source_left_prop = formula_prop_with_replacements ~fallback_replacements replacements source_left in
-		        let source_right_prop = formula_prop_with_replacements ~fallback_replacements replacements source_right in
+		        let source_left_prop = formula_prop_with_replacements ~close_depth:term_depth ~fallback_replacements replacements source_left in
+		        let source_right_prop = formula_prop_with_replacements ~close_depth:term_depth ~fallback_replacements replacements source_right in
 		        debug_witness_tm "or source_left_prop" source_left_prop;
 		        debug_witness_tm "or source_right_prop" source_right_prop;
-			        let result_left_prop = formula_prop_with_replacements ~fallback_replacements replacements result_left in
-			        let result_right_prop = formula_prop_with_replacements ~fallback_replacements replacements result_right in
+			        let result_left_prop = formula_prop_with_replacements ~close_depth:term_depth ~fallback_replacements replacements result_left in
+			        let result_right_prop = formula_prop_with_replacements ~close_depth:term_depth ~fallback_replacements replacements result_right in
 		        let branch_target = target_prop in
 	        let rebuild_left_to_target_builder term_depth proof_depth term_replacements replacements fallback_replacements =
-	          let result_left_prop = formula_prop_with_replacements ~fallback_replacements replacements result_left in
-	          let result_right_prop = formula_prop_with_replacements ~fallback_replacements replacements result_right in
+	          let result_left_prop = formula_prop_with_replacements ~close_depth:term_depth ~fallback_replacements replacements result_left in
+	          let result_right_prop = formula_prop_with_replacements ~close_depth:term_depth ~fallback_replacements replacements result_right in
 	          debug_witness_tm "or result_left_prop" result_left_prop;
 	          debug_witness_tm "or result_right_prop" result_right_prop;
 	          PLam
@@ -14416,8 +14438,8 @@ let native_core_skolem_refutation_cps_proof
 	                rebuilt))
 	        in
 	        let rebuild_right_to_target_builder term_depth proof_depth term_replacements replacements fallback_replacements =
-	          let result_left_prop = formula_prop_with_replacements ~fallback_replacements replacements result_left in
-	          let result_right_prop = formula_prop_with_replacements ~fallback_replacements replacements result_right in
+	          let result_left_prop = formula_prop_with_replacements ~close_depth:term_depth ~fallback_replacements replacements result_left in
+	          let result_right_prop = formula_prop_with_replacements ~close_depth:term_depth ~fallback_replacements replacements result_right in
 	          PLam
 	            (result_right_prop,
 	             let rebuilt =
@@ -14457,6 +14479,7 @@ let native_core_skolem_refutation_cps_proof
                begin match
                  select_replacements_to_match
                    "unchanged left disjunction branch"
+                   term_depth
                    replacements fallback_replacements source_left result_left
                with
                | Some (selected_replacements, _, _) ->
@@ -14495,6 +14518,7 @@ let native_core_skolem_refutation_cps_proof
                begin match
                  select_replacements_to_match
                    "unchanged right disjunction branch"
+                   term_depth
                    replacements fallback_replacements source_right result_right
                with
                | Some (selected_replacements, _, _) ->
@@ -14529,8 +14553,8 @@ let native_core_skolem_refutation_cps_proof
         error
           (id ^ ": native preprocess Skolem CPS source has fewer existential binders than substitutions")
 	  and eliminate_base term_depth proof_depth term_replacements replacements fallback_replacements source result proof result_to_target_builder =
-        let source_prop = formula_prop_with_replacements ~fallback_replacements replacements source in
-        let expected_result_prop = formula_prop_with_replacements ~fallback_replacements replacements result in
+        let source_prop = formula_prop_with_replacements ~close_depth:term_depth ~fallback_replacements replacements source in
+        let expected_result_prop = formula_prop_with_replacements ~close_depth:term_depth ~fallback_replacements replacements result in
         let selected_replacements, expected_result_prop =
           if source_prop = expected_result_prop then
             replacements, expected_result_prop
@@ -14547,7 +14571,7 @@ let native_core_skolem_refutation_cps_proof
                   in
                   let candidate_prop =
                     formula_prop_with_ordered_replacements
-                      (List.length replacements)
+                      term_depth
                       (replacements_with_override @ fallback_replacements)
                       result
                   in
@@ -14614,12 +14638,12 @@ let native_core_skolem_refutation_cps_proof
               ("native preprocess Skolem CPS raw result after replacements: "
                ^ short_tm
                    (raw_formula_with_replacements
-                      replacements fallback_replacements result));
+                      term_depth replacements fallback_replacements result));
             prerr_endline
               ("native preprocess Skolem CPS raw source after replacements: "
                ^ short_tm
                    (raw_formula_with_replacements
-                      replacements fallback_replacements source));
+                      term_depth replacements fallback_replacements source));
             let rec first_tm_difference path left right =
               if left = right then None
               else
@@ -16989,6 +17013,32 @@ let elaborate_preprocess_refutation_native
       if String.length text <= 500 then text
       else String.sub text 0 500 ^ "..."
     in
+    let first_tm_difference left right =
+      let rec find path left right =
+        if left = right then None
+        else
+          match left, right with
+          | TpAp (left_body, left_tp), TpAp (right_body, right_tp) ->
+              if left_tp <> right_tp then Some (path ^ ".type", left, right)
+              else find (path ^ ".tpap") left_body right_body
+          | Ap (left_fun, left_arg), Ap (right_fun, right_arg) ->
+              begin match find (path ^ ".fun") left_fun right_fun with
+              | Some _ as found -> found
+              | None -> find (path ^ ".arg") left_arg right_arg
+              end
+          | Lam (left_tp, left_body), Lam (right_tp, right_body)
+          | All (left_tp, left_body), All (right_tp, right_body) ->
+              if left_tp <> right_tp then Some (path ^ ".binder-type", left, right)
+              else find (path ^ ".body") left_body right_body
+          | Imp (left_a, left_b), Imp (right_a, right_b) ->
+              begin match find (path ^ ".left") left_a right_a with
+              | Some _ as found -> found
+              | None -> find (path ^ ".right") left_b right_b
+              end
+          | _ -> Some (path, left, right)
+      in
+      find "root" left right
+    in
     let find_bad_application proof =
       let rec find path cxtm cxpf proof =
         match proof with
@@ -17012,12 +17062,26 @@ let elaborate_preprocess_refutation_native
                           extr_propofpf proof_delta symbol_table cxtm cxpf right []
                         in
                         if tm_beta_eta_norm expected <> tm_beta_eta_norm right_prop then
+                          let expected = tm_beta_eta_norm expected in
+                          let right_prop = tm_beta_eta_norm right_prop in
+                          let diff =
+                            match first_tm_difference expected right_prop with
+                            | None -> ""
+                            | Some (diff_path, diff_expected, diff_actual) ->
+                                "; first diff "
+                                ^ diff_path
+                                ^ "; diff expected "
+                                ^ short_tm diff_expected
+                                ^ "; diff actual "
+                                ^ short_tm diff_actual
+                          in
                           Some
                             (path
                              ^ ": implication argument mismatch; expected "
                              ^ short_tm expected
                              ^ "; actual "
                              ^ short_tm right_prop
+                             ^ diff
                              ^ "; left proof "
                              ^ short_pf left
                              ^ "; right proof "
