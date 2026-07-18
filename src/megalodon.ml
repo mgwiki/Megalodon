@@ -4907,6 +4907,16 @@ let _ =
             compactproofs := true;
             terseproofs := false
           end
+        else if Sys.argv.(!j) = "-compactpresentations" then
+          begin
+            if !j < i-2 then
+              begin
+                incr j;
+                ignore(Syntax.load_compact_presentations_file Sys.argv.(!j))
+              end
+            else
+              raise (Failure("Expected -compactpresentations <filename>"))
+          end
         else if Sys.argv.(!j) = "-html" then
           begin
 	    if !j < i-2 then
@@ -5319,6 +5329,7 @@ let _ =
 	      raise (Failure("Expected -v <verbositynumber>"))
 	  end
 	else if !includingsigfile then
+          let _ = Syntax.scan_compact_presentations_file Sys.argv.(!j) in
 	  let c = open_in (Sys.argv.(!j)) in
           begin
             match !sexprallsubgoals with
@@ -5340,6 +5351,7 @@ let _ =
       done;
       includingsigfile := false;
       let checkfile () =
+        let _ = Syntax.scan_compact_presentations_file Sys.argv.(i-1) in
 	let c = open_in (Sys.argv.(i-1)) in
         begin
           match !sexprallsubgoals with
@@ -5544,6 +5556,7 @@ let _ =
 	match !solvesproblemfile with
 	| None -> checkfile ()
 	| Some probf ->
+            let _ = Syntax.scan_compact_presentations_file Sys.argv.(i-1) in
 	    let p = open_in probf in
 	    let c = open_in (Sys.argv.(i-1)) in
 	    mgchecksolves p c;

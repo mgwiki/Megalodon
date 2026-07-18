@@ -16,6 +16,13 @@ val pfgtmroot : (string,string) Hashtbl.t;;
 val pfgobjid : (string,string) Hashtbl.t;;
 val pfgpropid : (string,string) Hashtbl.t;;
 
+val clear_compact_presentations : unit -> unit
+val load_compact_presentations_file : string -> int
+val scan_compact_presentations_file : string -> int
+val compact_presentation_count : unit -> int
+val compact_presentation_duplicate_count : unit -> int
+val compact_presentation_conflict_count : unit -> int
+
 type pfgthy = HF | Egal | Mizar | HOAS | SetMM;;
 val pfgtheory : pfgthy ref
 

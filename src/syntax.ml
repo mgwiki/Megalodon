@@ -13,6 +13,225 @@ let pfgtmroot : (string,string) Hashtbl.t = Hashtbl.create 100;;
 let pfgobjid : (string,string) Hashtbl.t = Hashtbl.create 100;;
 let pfgpropid : (string,string) Hashtbl.t = Hashtbl.create 100;;
 
+(** Compact HTML presentation metadata read from source comments such as
+    //GOD1:18373 group_identity : "the neutral element of the group #1" | $e_{#1}$
+
+    These comments are intentionally scanned before lexing: the ordinary
+    Megalodon lexer treats them as comments and discards them.  The table is
+    presentation-only and is consulted solely by the compact HTML renderer. *)
+type compact_presentation = {
+  compact_presentation_description : string;
+  compact_presentation_tex : string;
+  compact_presentation_origin : string;
+  compact_presentation_line : int;
+  compact_presentation_priority : int;
+}
+
+let compact_presentations : (string,compact_presentation) Hashtbl.t =
+  Hashtbl.create 1009
+
+let compact_presentation_scanned_files : (string,int) Hashtbl.t =
+  Hashtbl.create 31
+
+let compact_presentation_exact_duplicates = ref 0
+let compact_presentation_conflicts = ref 0
+
+let clear_compact_presentations () =
+  Hashtbl.clear compact_presentations;
+  Hashtbl.clear compact_presentation_scanned_files;
+  compact_presentation_exact_duplicates := 0;
+  compact_presentation_conflicts := 0
+
+let compact_presentation_count () = Hashtbl.length compact_presentations
+
+let compact_presentation_duplicate_count () =
+  !compact_presentation_exact_duplicates
+
+let compact_presentation_conflict_count () =
+  !compact_presentation_conflicts
+
+let compact_string_trim = String.trim
+
+let compact_find_substring_from s sub start =
+  let n = String.length s in
+  let m = String.length sub in
+  let rec seek i =
+    if i + m > n then None
+    else if String.sub s i m = sub then Some i
+    else seek (i+1)
+  in
+  if m = 0 then Some start else seek start
+
+let compact_last_space_before s stop =
+  let rec seek i =
+    if i < 0 then None
+    else
+      match s.[i] with
+      | ' ' | '\t' -> Some i
+      | _ -> seek (i-1)
+  in
+  seek (stop-1)
+
+let compact_valid_presentation_name x =
+  let n = String.length x in
+  let initial = function
+    | 'A'..'Z' | 'a'..'z' | '_' -> true
+    | _ -> false
+  in
+  let rest = function
+    | 'A'..'Z' | 'a'..'z' | '0'..'9' | '_' | '\'' -> true
+    | _ -> false
+  in
+  if n = 0 || not (initial x.[0]) then false
+  else
+    let rec all i =
+      i >= n || (rest x.[i] && all (i+1))
+    in
+    all 1
+
+let compact_find_unescaped_quote s start =
+  let n = String.length s in
+  let rec seek i escaped =
+    if i >= n then None
+    else if escaped then seek (i+1) false
+    else
+      match s.[i] with
+      | '\\' -> seek (i+1) true
+      | '"' -> Some i
+      | _ -> seek (i+1) false
+  in
+  seek start false
+
+let compact_unescape_description s =
+  let b = Buffer.create (String.length s) in
+  let n = String.length s in
+  let rec loop i =
+    if i < n then
+      if s.[i] = '\\' && i+1 < n then
+        begin
+          match s.[i+1] with
+          | '\\' | '"' as c -> Buffer.add_char b c; loop (i+2)
+          | _ -> Buffer.add_char b '\\'; loop (i+1)
+        end
+      else (Buffer.add_char b s.[i]; loop (i+1))
+  in
+  loop 0;
+  Buffer.contents b
+
+let compact_parse_presentation_line priority origin line_no line =
+  let line = compact_string_trim line in
+  let n = String.length line in
+  if n < 4 || String.sub line 0 2 <> "//" then None
+  else
+    match compact_find_substring_from line " : \"" 2 with
+    | None -> None
+    | Some sep ->
+        let left = compact_string_trim (String.sub line 2 (sep-2)) in
+        let name =
+          match compact_last_space_before left (String.length left) with
+          | None -> left
+          | Some i ->
+              compact_string_trim
+                (String.sub left (i+1) (String.length left-i-1))
+        in
+        if not (compact_valid_presentation_name name) then None
+        else
+          let desc_start = sep + 4 in
+          begin match compact_find_unescaped_quote line desc_start with
+          | None -> None
+          | Some desc_stop ->
+              let after = desc_stop + 1 in
+              begin match compact_find_substring_from line "| $" after with
+              | None -> None
+              | Some bar ->
+                  let tex_start = bar + 3 in
+                  if tex_start >= n then None
+                  else
+                    let rec last_nonspace i =
+                      if i < tex_start then None
+                      else
+                        match line.[i] with
+                        | ' ' | '\t' | '\r' -> last_nonspace (i-1)
+                        | _ -> Some i
+                    in
+                    begin match last_nonspace (n-1) with
+                    | Some tex_stop when line.[tex_stop] = '$' ->
+                        let description =
+                          compact_unescape_description
+                            (String.sub line desc_start (desc_stop-desc_start))
+                        in
+                        let tex =
+                          String.sub line tex_start (tex_stop-tex_start)
+                        in
+                        Some(name,
+                          { compact_presentation_description = description;
+                            compact_presentation_tex = tex;
+                            compact_presentation_origin = origin;
+                            compact_presentation_line = line_no;
+                            compact_presentation_priority = priority })
+                    | _ -> None
+                    end
+              end
+          end
+
+let add_compact_presentation name p =
+  try
+    let q = Hashtbl.find compact_presentations name in
+    if q.compact_presentation_description = p.compact_presentation_description
+       && q.compact_presentation_tex = p.compact_presentation_tex
+    then incr compact_presentation_exact_duplicates
+    else
+      begin
+        incr compact_presentation_conflicts;
+        if p.compact_presentation_priority >= q.compact_presentation_priority then
+          Hashtbl.replace compact_presentations name p
+      end
+  with Not_found -> Hashtbl.add compact_presentations name p
+
+let compact_presentation_scan_key fn =
+  if Filename.is_relative fn then Filename.concat (Sys.getcwd ()) fn else fn
+
+let load_compact_presentations_file_with_priority priority fn =
+  let scan_key = compact_presentation_scan_key fn in
+  let previous_priority =
+    try Some(Hashtbl.find compact_presentation_scanned_files scan_key)
+    with Not_found -> None
+  in
+  match previous_priority with
+  | Some old_priority when old_priority >= priority -> 0
+  | _ ->
+      begin
+        let ch = open_in fn in
+        Hashtbl.replace compact_presentation_scanned_files scan_key priority;
+        let added = ref 0 in
+        let line_no = ref 0 in
+        try
+          while true do
+            let line = input_line ch in
+            incr line_no;
+            match compact_parse_presentation_line priority fn !line_no line with
+            | None -> ()
+            | Some(name,p) ->
+                let before = Hashtbl.length compact_presentations in
+                add_compact_presentation name p;
+                if Hashtbl.length compact_presentations > before then incr added
+          done;
+          !added
+        with
+        | End_of_file -> close_in ch; !added
+        | e -> close_in_noerr ch; raise e
+      end
+
+let scan_compact_presentations_file fn =
+  load_compact_presentations_file_with_priority 0 fn
+
+let load_compact_presentations_file fn =
+  load_compact_presentations_file_with_priority 1 fn
+
+let find_compact_presentation name =
+  try Some(Hashtbl.find compact_presentations name)
+  with Not_found -> None
+
 let notationhrefcntr = ref 0;;
 let postinfixnotationhrefstack : (string,string list) Hashtbl.t = Hashtbl.create 100;;
 let prefixnotationhrefstack : (string,string list) Hashtbl.t = Hashtbl.create 100;;
@@ -6684,130 +6903,321 @@ let compact_output_fact_list_html cx ch xl stmh sknh =
 let compact_output_small_term_html cx ch a stmh sknh =
   output_ltree_html cx ch a stmh sknh
 
+let compact_html_escape_text x =
+  let b = Buffer.create (String.length x + 16) in
+  String.iter
+    (function
+      | '&' -> Buffer.add_string b "&amp;"
+      | '<' -> Buffer.add_string b "&lt;"
+      | '>' -> Buffer.add_string b "&gt;"
+      | '\'' -> Buffer.add_string b "&#39;"
+      | '"' -> Buffer.add_string b "&quot;"
+      | c -> Buffer.add_char b c)
+    x;
+  Buffer.contents b
+
+let compact_tex_escape_text x =
+  let b = Buffer.create (String.length x + 16) in
+  String.iter
+    (function
+      | '\\' -> Buffer.add_string b "\\textbackslash{}"
+      | '{' -> Buffer.add_string b "\\{"
+      | '}' -> Buffer.add_string b "\\}"
+      | '#' -> Buffer.add_string b "\\#"
+      | '$' -> Buffer.add_string b "\\$"
+      | '%' -> Buffer.add_string b "\\%"
+      | '&' -> Buffer.add_string b "\\&"
+      | '_' -> Buffer.add_string b "\\_"
+      | '^' -> Buffer.add_string b "\\^{}"
+      | '~' -> Buffer.add_string b "\\~{}"
+      | c -> Buffer.add_char b c)
+    x;
+  Buffer.contents b
+
+let compact_tex_name x =
+  let n = String.length x in
+  let short =
+    if n = 0 || n > 3 then false
+    else
+      let rec loop i =
+        i >= n
+        ||
+        match x.[i] with
+        | 'A'..'Z' | 'a'..'z' | '0'..'9' -> loop (i+1)
+        | _ -> false
+      in
+      loop 0
+  in
+  if short then compact_tex_escape_text x
+  else "\\mathsf{" ^ compact_tex_escape_text x ^ "}"
+
+let compact_template_arguments tex =
+  let n = String.length tex in
+  let acc = ref [] in
+  let rec digits j value seen =
+    if j < n then
+      match tex.[j] with
+      | '0'..'9' as c -> digits (j+1) (10 * value + Char.code c - Char.code '0') true
+      | _ -> (j,value,seen)
+    else (j,value,seen)
+  in
+  let rec loop i =
+    if i >= n then ()
+    else if tex.[i] = '#' then
+      let (j,k,seen) = digits (i+1) 0 false in
+      begin
+        if seen && k > 0 && not (List.mem k !acc) then acc := k::!acc;
+        loop (if j = i+1 then i+1 else j)
+      end
+    else loop (i+1)
+  in
+  loop 0;
+  List.rev !acc
+
+let compact_template_usable tex argc =
+  List.for_all (fun k -> k <= argc) (compact_template_arguments tex)
+
+let compact_substitute_template tex args =
+  let n = String.length tex in
+  let b = Buffer.create (n + 64) in
+  let rec digits j value seen =
+    if j < n then
+      match tex.[j] with
+      | '0'..'9' as c -> digits (j+1) (10 * value + Char.code c - Char.code '0') true
+      | _ -> (j,value,seen)
+    else (j,value,seen)
+  in
+  let rec loop i =
+    if i >= n then Some(Buffer.contents b)
+    else if tex.[i] = '#' then
+      let (j,k,seen) = digits (i+1) 0 false in
+      if seen && k > 0 then
+        begin
+          try
+            Buffer.add_string b (List.nth args (k-1));
+            loop j
+          with Failure _ -> None
+        end
+      else
+        begin
+          Buffer.add_char b '#';
+          loop (i+1)
+        end
+    else
+      begin
+        Buffer.add_char b tex.[i];
+        loop (i+1)
+      end
+  in
+  loop 0
+
+let compact_presentation_from_rendered_args names args =
+  let argc = List.length args in
+  let rec find = function
+    | [] -> None
+    | name::rest ->
+        begin match find_compact_presentation name with
+        | Some p when compact_template_usable p.compact_presentation_tex argc ->
+            begin match compact_substitute_template p.compact_presentation_tex args with
+            | Some tex -> Some(p,tex)
+            | None -> find rest
+            end
+        | _ -> find rest
+        end
+  in
+  find names
+
+let compact_infix_presentation_names = function
+  | InfNam "=" -> ["="; "eq"]
+  | InfNam x -> [x]
+  | InfSet InfMem -> ["In"]
+  | InfSet InfSubq -> ["Subq"]
+
+let compact_tex_join sep xl = String.concat sep xl
+
+let compact_tex_infix_name = function
+  | "=" -> "="
+  | "and" -> "\\land"
+  | "or" -> "\\lor"
+  | "iff" -> "\\leftrightarrow"
+  | "neq" -> "\\neq"
+  | x -> "\\mathbin{" ^ compact_tex_name x ^ "}"
+
+let rec compact_ltree_tex depth a =
+  if depth <= 0 then "\\cdots"
+  else
+    let a = compact_strip_parens a in
+    match a with
+    | NaL x ->
+        begin match compact_presentation_from_rendered_args [x] [] with
+        | Some(_,tex) -> tex
+        | None -> compact_tex_name x
+        end
+    | NuL(_,x,_,_) -> compact_tex_escape_text x
+    | ByteL n -> "\\operatorname{byte}(" ^ string_of_int n ^ ")"
+    | StringL x | QStringL x -> "\\text{" ^ compact_tex_escape_text x ^ "}"
+    | ImplopL _ ->
+        begin match compact_application_head a with
+        | Some(x,args) ->
+            let argtex = List.map (compact_ltree_tex (depth-1)) args in
+            begin match compact_presentation_from_rendered_args [x] argtex with
+            | Some(_,tex) -> tex
+            | None ->
+                compact_tex_name x ^ "\\left(" ^ compact_tex_join "," argtex ^ "\\right)"
+            end
+        | None -> "\\cdots"
+        end
+    | InfoL(op,l,r) ->
+        let argtex =
+          [compact_ltree_tex (depth-1) l; compact_ltree_tex (depth-1) r]
+        in
+        begin match
+          compact_presentation_from_rendered_args
+            (compact_infix_presentation_names op) argtex
+        with
+        | Some(_,tex) -> tex
+        | None ->
+            begin match op with
+            | InfSet InfMem -> List.nth argtex 0 ^ "\\in " ^ List.nth argtex 1
+            | InfSet InfSubq -> List.nth argtex 0 ^ "\\subseteq " ^ List.nth argtex 1
+            | InfNam name ->
+                List.nth argtex 0 ^ " " ^ compact_tex_infix_name name ^ " "
+                ^ List.nth argtex 1
+            end
+        end
+    | PreoL(x,b) ->
+        let argtex = [compact_ltree_tex (depth-1) b] in
+        begin match compact_presentation_from_rendered_args [x] argtex with
+        | Some(_,tex) -> tex
+        | None -> compact_tex_name x ^ " " ^ List.hd argtex
+        end
+    | PostoL(x,b) ->
+        let argtex = [compact_ltree_tex (depth-1) b] in
+        begin match compact_presentation_from_rendered_args [x] argtex with
+        | Some(_,tex) -> tex
+        | None -> List.hd argtex ^ " " ^ compact_tex_name x
+        end
+    | BiL(x,_,vll,b) ->
+        let q =
+          if x = "forall" then "\\forall"
+          else if x = "exists" then "\\exists"
+          else compact_tex_name x
+        in
+        let groups =
+          List.map
+            (fun (xl,o) ->
+              let names = compact_tex_join "," (List.map compact_tex_name xl) in
+              match o with
+              | None -> names
+              | Some(AscTp,t) -> names ^ ":" ^ compact_ltree_tex (depth-1) t
+              | Some(AscSet,t) -> names ^ "\\in " ^ compact_ltree_tex (depth-1) t
+              | Some(AscSubeq,t) -> names ^ "\\subseteq " ^ compact_ltree_tex (depth-1) t)
+            vll
+        in
+        q ^ " " ^ compact_tex_join "," groups ^ ",\\;" ^ compact_ltree_tex (depth-1) b
+    | SepL(x,InfMem,a,b) ->
+        "\\left\\{" ^ compact_tex_name x ^ "\\in " ^ compact_ltree_tex (depth-1) a
+        ^ "\\mid " ^ compact_ltree_tex (depth-1) b ^ "\\right\\}"
+    | SepL(x,InfSubq,a,b) ->
+        "\\left\\{" ^ compact_tex_name x ^ "\\subseteq " ^ compact_ltree_tex (depth-1) a
+        ^ "\\mid " ^ compact_ltree_tex (depth-1) b ^ "\\right\\}"
+    | RepL(x,_,a,b) ->
+        "\\left\\{" ^ compact_ltree_tex (depth-1) a ^ "\\mid " ^ compact_tex_name x
+        ^ "\\in " ^ compact_ltree_tex (depth-1) b ^ "\\right\\}"
+    | SepRepL(x,_,a,b,c) ->
+        "\\left\\{" ^ compact_ltree_tex (depth-1) a ^ "\\mid " ^ compact_tex_name x
+        ^ "\\in " ^ compact_ltree_tex (depth-1) b ^ ",\\;"
+        ^ compact_ltree_tex (depth-1) c ^ "\\right\\}"
+    | SetEnumL al ->
+        "\\left\\{" ^ compact_tex_join "," (List.map (compact_ltree_tex (depth-1)) al)
+        ^ "\\right\\}"
+    | MTupleL(a,al) | ParenL(a,al) ->
+        "\\left(" ^ compact_tex_join "," (List.map (compact_ltree_tex (depth-1)) (a::al))
+        ^ "\\right)"
+    | IfThenElseL(a,b,c) ->
+        "\\operatorname{if}\\;" ^ compact_ltree_tex (depth-1) a
+        ^ "\\;\\operatorname{then}\\;" ^ compact_ltree_tex (depth-1) b
+        ^ "\\;\\operatorname{else}\\;" ^ compact_ltree_tex (depth-1) c
+    | LeL(x,_,a,b) ->
+        "\\operatorname{let}\\;" ^ compact_tex_name x ^ "="
+        ^ compact_ltree_tex (depth-1) a ^ "\\;\\operatorname{in}\\;"
+        ^ compact_ltree_tex (depth-1) b
+    | LeML(x,xl,a,b) ->
+        "\\operatorname{let}\\;" ^ compact_tex_name x ^ "(" ^
+        compact_tex_join "," (List.map compact_tex_name xl) ^ ")="
+        ^ compact_ltree_tex (depth-1) a ^ "\\;\\operatorname{in}\\;"
+        ^ compact_ltree_tex (depth-1) b
+
+let compact_presentation_for_named_args names args =
+  compact_presentation_from_rendered_args
+    names (List.map (compact_ltree_tex 5) args)
+
+let compact_presentation_for_application a =
+  match compact_application_head a with
+  | Some(x,args) -> compact_presentation_for_named_args [x] args
+  | None -> None
+
+let compact_presentation_for_ltree a =
+  match compact_strip_parens a with
+  | InfoL(op,l,r) ->
+      compact_presentation_for_named_args
+        (compact_infix_presentation_names op) [l;r]
+  | PreoL(x,b) | PostoL(x,b) ->
+      compact_presentation_for_named_args [x] [b]
+  | b -> compact_presentation_for_application b
+
+let compact_output_presentation_html ch p tex =
+  Printf.fprintf ch
+    "<span class='compactpresentation compactpresentationtex' title='%s' data-presentation-source='%s:%d'>\\(%s\\)</span>"
+    (compact_html_escape_text p.compact_presentation_description)
+    (compact_html_escape_text p.compact_presentation_origin)
+    p.compact_presentation_line
+    (compact_html_escape_text tex)
+
 let rec compact_output_object_html depth cx ch a stmh sknh =
   let a = compact_strip_parens a in
   if depth <= 0 then
     output_string ch "&hellip;"
   else
-    match a with
-    | NaL _ | NuL _ | ByteL _ | StringL _ | QStringL _ ->
-        compact_output_small_term_html cx ch a stmh sknh
-    | SepL(x,InfMem,e,InfoL(InfSet InfMem,NaL y,f)) when x = y ->
-        compact_output_object_html (depth-1) cx ch e stmh sknh;
-        output_string ch " &#x2229; ";
-        compact_output_object_html (depth-1) cx ch f stmh sknh
-    | InfoL(InfSet InfMem,l,r) ->
-        compact_output_object_html (depth-1) cx ch l stmh sknh;
-        output_string ch " &#x2208; ";
-        compact_output_object_html (depth-1) cx ch r stmh sknh
-    | InfoL(InfSet InfSubq,l,r) ->
-        compact_output_object_html (depth-1) cx ch l stmh sknh;
-        output_string ch " &#x2286; ";
-        compact_output_object_html (depth-1) cx ch r stmh sknh
-    | InfoL(InfNam op,l,r) when op = "=" ->
-        compact_output_object_html (depth-1) cx ch l stmh sknh;
-        output_string ch " = ";
-        compact_output_object_html (depth-1) cx ch r stmh sknh
-    | _ ->
-        begin match compact_application_head a with
-        | Some("opposite_ring_multiplication",[m]) ->
-            compact_output_object_html (depth-1) cx ch m stmh sknh;
-            output_string ch "<sup>op</sup>"
-        | Some("module_homomorphism_image",[_;f]) ->
-            output_string ch "im(";
-            compact_output_object_html (depth-1) cx ch f stmh sknh;
-            output_char ch ')'
-        | Some("module_homomorphism_kernel",args) ->
-            output_string ch "ker(";
-            begin match compact_last_opt args with
-            | Some f -> compact_output_object_html depth cx ch f stmh sknh
-            | None -> output_string ch "&hellip;"
-            end;
-            output_char ch ')'
-        | Some("module_product_projection",[i]) ->
-            output_string ch "&#x03c0;<sub>";
-            compact_output_object_html (depth-1) cx ch i stmh sknh;
-            output_string ch "</sub>"
-        | Some("module_product_projection",[i;u]) ->
-            output_string ch "&#x03c0;<sub>";
-            compact_output_object_html (depth-1) cx ch i stmh sknh;
-            output_string ch "</sub>(";
-            compact_output_object_html (depth-1) cx ch u stmh sknh;
-            output_char ch ')'
-        | Some("module_zero",m::_) ->
-            output_string ch "0<sub>";
-            compact_output_object_html (depth-1) cx ch m stmh sknh;
-            output_string ch "</sub>"
-        | Some("module_negation",[_;_;x]) ->
-            output_string ch "&#x2212;";
-            compact_output_object_html (depth-1) cx ch x stmh sknh
-        | Some("submodule_sum",args) ->
-            begin match List.rev args with
-            | f::e::_ ->
-                compact_output_object_html (depth-1) cx ch e stmh sknh;
-                output_string ch " + ";
-                compact_output_object_html (depth-1) cx ch f stmh sknh
-            | _ -> output_string ch "submodule_sum&hellip;"
-            end
-        | Some("submodule_family_sum_map",[_;_;n]) ->
-            output_string ch "&#x03a3;<sub>";
-            compact_output_object_html (depth-1) cx ch n stmh sknh;
-            output_string ch "</sub>"
-        | Some("submodule_family_sum_map",[_;_;n;u]) ->
-            output_string ch "&#x03a3;<sub>";
-            compact_output_object_html (depth-1) cx ch n stmh sknh;
-            output_string ch "</sub>(";
-            compact_output_object_html (depth-1) cx ch u stmh sknh;
-            output_char ch ')'
-        | Some("indexed_module_product",[_;fam]) ->
-            begin match compact_two_family fam with
-            | Some(e,f) ->
-                compact_output_object_html (depth-1) cx ch e stmh sknh;
-                output_string ch " &#xd7; ";
-                compact_output_object_html (depth-1) cx ch f stmh sknh
-            | None -> output_string ch "&#x220f;&hellip;"
-            end
-        | Some("indexed_module_product_addition",[_;_]) ->
-            output_string ch "+<sub>&#xd7;</sub>"
-        | Some("indexed_module_product_addition",[_;_;u;v]) ->
-            compact_output_object_html (depth-1) cx ch u stmh sknh;
-            output_string ch " +<sub>&#xd7;</sub> ";
-            compact_output_object_html (depth-1) cx ch v stmh sknh
-        | Some("indexed_module_product_left_scalar",[_;_]) ->
-            output_string ch "&#x22c5;<sub>&#xd7;</sub>"
-        | Some("indexed_module_product_left_scalar",[_;_;scalar;u]) ->
-            compact_output_object_html (depth-1) cx ch scalar stmh sknh;
-            output_string ch " &#x22c5;<sub>&#xd7;</sub> ";
-            compact_output_object_html (depth-1) cx ch u stmh sknh
-        | Some("submodule_family_sum",args) ->
-            begin match compact_last_opt args with
-            | Some fam ->
-                begin match compact_two_family fam with
-                | Some(e,f) ->
-                    output_string ch "&#x03a3;(";
-                    compact_output_object_html (depth-1) cx ch e stmh sknh;
-                    output_string ch ", ";
-                    compact_output_object_html (depth-1) cx ch f stmh sknh;
-                    output_char ch ')'
-                | None -> output_string ch "&#x2211;&hellip;"
-                end
-            | None -> output_string ch "&#x2211;&hellip;"
-            end
-        | Some(x,args) when compact_ltree_size a > 10 ->
-            compact_output_name_term_html cx ch x stmh sknh;
-            begin match compact_last_opt args with
-            | Some z when compact_ltree_size z <= 5 ->
-                output_string ch "(&hellip;, ";
-                compact_output_object_html (depth-1) cx ch z stmh sknh;
-                output_char ch ')'
-            | _ -> output_string ch "&hellip;"
-            end
+    match compact_presentation_for_ltree a with
+    | Some(p,tex) -> compact_output_presentation_html ch p tex
+    | None ->
+        match a with
+        | NaL _ | NuL _ | ByteL _ | StringL _ | QStringL _ ->
+            compact_output_small_term_html cx ch a stmh sknh
+        | SepL(x,InfMem,e,InfoL(InfSet InfMem,NaL y,f)) when x = y ->
+            compact_output_object_html (depth-1) cx ch e stmh sknh;
+            output_string ch " &#x2229; ";
+            compact_output_object_html (depth-1) cx ch f stmh sknh
+        | InfoL(InfSet InfMem,l,r) ->
+            compact_output_object_html (depth-1) cx ch l stmh sknh;
+            output_string ch " &#x2208; ";
+            compact_output_object_html (depth-1) cx ch r stmh sknh
+        | InfoL(InfSet InfSubq,l,r) ->
+            compact_output_object_html (depth-1) cx ch l stmh sknh;
+            output_string ch " &#x2286; ";
+            compact_output_object_html (depth-1) cx ch r stmh sknh
+        | InfoL(InfNam op,l,r) when op = "=" ->
+            compact_output_object_html (depth-1) cx ch l stmh sknh;
+            output_string ch " = ";
+            compact_output_object_html (depth-1) cx ch r stmh sknh
         | _ ->
-            if compact_ltree_size a <= 14 then
-              compact_output_small_term_html cx ch a stmh sknh
-            else
-              output_string ch "&hellip;"
-        end
+            begin match compact_application_head a with
+            | Some(x,args) when compact_ltree_size a > 10 ->
+                compact_output_name_term_html cx ch x stmh sknh;
+                begin match compact_last_opt args with
+                | Some z when compact_ltree_size z <= 5 ->
+                    output_string ch "(&hellip;, ";
+                    compact_output_object_html (depth-1) cx ch z stmh sknh;
+                    output_char ch ')'
+                | _ -> output_string ch "&hellip;"
+                end
+            | _ ->
+                if compact_ltree_size a <= 14 then
+                  compact_output_small_term_html cx ch a stmh sknh
+                else
+                  output_string ch "&hellip;"
+            end
 
 let compact_output_binder_preview_html cx ch x vll body stmh sknh =
   let q =
@@ -6841,83 +7251,31 @@ let compact_output_binder_preview_html cx ch x vll body stmh sknh =
 
 let rec compact_output_goal_preview_html e ch a stmh sknh =
   let cx = e.pfti_context in
-  if compact_ltree_size a <= 18 then
-    output_ltree_html cx ch a stmh sknh
-  else
-    match compact_strip_parens a with
-    | BiL(x,_,vll,b) ->
-        compact_output_binder_preview_html cx ch x vll b stmh sknh
-    | InfoL(InfNam op,l,r) when op = "and" || op = "iff" ->
-        compact_output_goal_preview_html e ch l stmh sknh;
-        output_char ch ' ';
-        compact_output_name_term_html cx ch op stmh sknh;
-        output_char ch ' ';
-        compact_output_goal_preview_html e ch r stmh sknh
-    | InfoL(InfNam op,l,r) when op = "=" ->
-        compact_output_object_html 3 cx ch l stmh sknh;
-        output_char ch ' ';
-        compact_output_name_term_html cx ch op stmh sknh;
-        output_char ch ' ';
-        compact_output_object_html 3 cx ch r stmh sknh
-    | InfoL(InfSet _,_,_) as b ->
-        compact_output_object_html 3 cx ch b stmh sknh
-    | b ->
-        begin match compact_application_head b with
-        | Some("left_module",args) ->
-            output_string ch "module(";
-            begin match compact_nth_opt args 3 with
-            | Some m -> compact_output_object_html 2 cx ch m stmh sknh
-            | None -> output_string ch "&hellip;"
-            end;
-            output_char ch ')'
-        | Some("group",m::_) ->
-            output_string ch "group(";
-            compact_output_object_html 2 cx ch m stmh sknh;
-            output_char ch ')'
-        | Some("submodule",args) ->
-            begin match compact_last_opt args,compact_nth_opt args 3 with
-            | Some s,Some m ->
-                compact_output_object_html 2 cx ch s stmh sknh;
-                output_string ch " &#x2264; ";
-                compact_output_object_html 2 cx ch m stmh sknh
-            | _ -> output_string ch "submodule&hellip;"
-            end
-        | Some("module_homomorphism",args) ->
-            begin match compact_last_opt args,compact_nth_opt args 3,compact_nth_opt args 6 with
-            | Some f,Some x,Some y ->
-                compact_output_object_html 2 cx ch f stmh sknh;
-                output_string ch ": ";
-                compact_output_object_html 2 cx ch x stmh sknh;
-                output_string ch " &#x2192;<sub>lin</sub> ";
-                compact_output_object_html 2 cx ch y stmh sknh
-            | _ -> output_string ch "homomorphism&hellip;"
-            end
-        | Some("right_module_homomorphism",args) ->
-            begin match compact_last_opt args,compact_nth_opt args 3,compact_nth_opt args 6 with
-            | Some f,Some x,Some y ->
-                compact_output_object_html 2 cx ch f stmh sknh;
-                output_string ch ": ";
-                compact_output_object_html 2 cx ch x stmh sknh;
-                output_string ch " &#x2192;<sub>R-lin</sub> ";
-                compact_output_object_html 2 cx ch y stmh sknh
-            | _ -> output_string ch "right homomorphism&hellip;"
-            end
-        | Some(("isomorphic_modules" | "module_isomorphism"),args) ->
-            begin match compact_nth_opt args 3,compact_nth_opt args 6 with
-            | Some x,Some y ->
-                compact_output_object_html 2 cx ch x stmh sknh;
-                output_string ch " &#x2245; ";
-                compact_output_object_html 2 cx ch y stmh sknh
-            | _ -> output_string ch "isomorphism&hellip;"
-            end
-        | Some("bij",[x;y;f]) ->
-            compact_output_object_html 2 cx ch f stmh sknh;
-            output_string ch ": ";
-            compact_output_object_html 2 cx ch x stmh sknh;
-            output_string ch " &#x2243; ";
-            compact_output_object_html 2 cx ch y stmh sknh
-        | _ -> compact_output_object_html 3 cx ch b stmh sknh
-        end
+  let a0 = compact_strip_parens a in
+  match compact_presentation_for_ltree a0 with
+  | Some(p,tex) -> compact_output_presentation_html ch p tex
+  | None ->
+      if compact_ltree_size a <= 18 then
+        output_ltree_html cx ch a stmh sknh
+      else
+        match a0 with
+        | BiL(x,_,vll,b) ->
+            compact_output_binder_preview_html cx ch x vll b stmh sknh
+        | InfoL(InfNam op,l,r) when op = "and" || op = "iff" ->
+            compact_output_goal_preview_html e ch l stmh sknh;
+            output_char ch ' ';
+            compact_output_name_term_html cx ch op stmh sknh;
+            output_char ch ' ';
+            compact_output_goal_preview_html e ch r stmh sknh
+        | InfoL(InfNam op,l,r) when op = "=" ->
+            compact_output_object_html 3 cx ch l stmh sknh;
+            output_char ch ' ';
+            compact_output_name_term_html cx ch op stmh sknh;
+            output_char ch ' ';
+            compact_output_object_html 3 cx ch r stmh sknh
+        | InfoL(InfSet _,_,_) as b ->
+            compact_output_object_html 3 cx ch b stmh sknh
+        | b -> compact_output_object_html 4 cx ch b stmh sknh
 
 type compact_terse_expansion =
   | CompactAliasFact of string
