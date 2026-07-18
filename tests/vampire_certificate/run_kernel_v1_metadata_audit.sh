@@ -754,6 +754,15 @@ if [[ -s "$WORK_DIR/skolemize.tsv" ]]; then
     'result_formula_quantifier_count=' \
     'result_formula_free_variable_count=' \
     'skolem_macro_edge_count=' \
+    'skolem_contract=choice_macro_v1' \
+    'skolem_contract_primitive_rule=skolem_formula' \
+    'skolem_contract_source_unit=' \
+    'skolem_contract_source_formula=' \
+    'skolem_contract_result_formula=' \
+    'skolem_contract_proof_parent_count=' \
+    'skolem_contract_introduced_count=' \
+    'skolem_contract_macro_edge_count=' \
+    'skolem_contract_uses_classical_choice=' \
     'introduced_count=' \
     'introduced_0_symbol='; do
     awk -v pat="$pattern" 'index($0, pat) == 0 {print pat "\t" $0}' \

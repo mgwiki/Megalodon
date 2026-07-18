@@ -4789,6 +4789,83 @@ let validate_kernel_v1_metadata_contracts cert =
                   ^ "_formula does not match raw formula child"))
           expected
   in
+  let validate_skolem_proof_contract id fields =
+    match field_value "skolem_contract" fields with
+    | None -> ()
+    | Some version ->
+        if version <> "choice_macro_v1" then
+          error
+            (id ^ ": strict certificate v1 kernel_v1 metadata field skolem_contract has unsupported version "
+             ^ version);
+        let primitive_rule =
+          field_required id fields "skolem_contract_primitive_rule"
+        in
+        if primitive_rule <> "skolem_formula" then
+          error
+            (id ^ ": strict certificate v1 kernel_v1 metadata field skolem_contract_primitive_rule must be skolem_formula");
+        begin match field_value "source_unit" fields with
+        | Some source_unit ->
+            let contract_source_unit =
+              field_required id fields "skolem_contract_source_unit"
+            in
+            if contract_source_unit <> source_unit then
+              error
+                (id ^ ": strict certificate v1 kernel_v1 metadata field skolem_contract_source_unit does not match source_unit")
+        | None -> ()
+        end;
+        begin match field_value "source_formula" fields with
+        | Some raw_source ->
+            let source = parse_tm (parse_sexpr raw_source) in
+            require_field_tm id fields "skolem_contract_source_formula" source
+        | None -> ()
+        end;
+        begin match field_value "result_formula" fields with
+        | Some raw_result ->
+            let result = parse_tm (parse_sexpr raw_result) in
+            require_field_tm id fields "skolem_contract_result_formula" result
+        | None -> ()
+        end;
+        begin match field_value "proof_parent_count" fields with
+        | Some proof_parent_count ->
+            let expected =
+              try int_of_string proof_parent_count
+              with Failure _ ->
+                error
+                  (id ^ ": strict certificate v1 kernel_v1 metadata field proof_parent_count is not an integer")
+            in
+            require_field_int id fields "skolem_contract_proof_parent_count" expected
+        | None -> ()
+        end;
+        begin match field_value "introduced_count" fields with
+        | Some introduced_count ->
+            let expected =
+              try int_of_string introduced_count
+              with Failure _ ->
+                error
+                  (id ^ ": strict certificate v1 kernel_v1 metadata field introduced_count is not an integer")
+            in
+            require_field_int id fields "skolem_contract_introduced_count" expected;
+            let choice =
+              field_required id fields "skolem_contract_uses_classical_choice"
+            in
+            let expected_choice = if expected > 0 then "1" else "0" in
+            if choice <> expected_choice then
+              error
+                (id ^ ": strict certificate v1 kernel_v1 metadata field skolem_contract_uses_classical_choice does not match introduced_count")
+        | None -> ()
+        end;
+        begin match field_value "skolem_macro_edge_count" fields with
+        | Some edge_count ->
+            let expected =
+              try int_of_string edge_count
+              with Failure _ ->
+                error
+                  (id ^ ": strict certificate v1 kernel_v1 metadata field skolem_macro_edge_count is not an integer")
+            in
+            require_field_int id fields "skolem_contract_macro_edge_count" expected
+        | None -> ()
+        end
+  in
   let validate_skolem_macro_edge_shape_metadata id fields =
     begin match field_value "source_formula" fields with
     | Some raw_source ->
@@ -4806,6 +4883,7 @@ let validate_kernel_v1_metadata_contracts cert =
           id fields "result_formula" raw_result
     | None -> ()
     end;
+    validate_skolem_proof_contract id fields;
     match field_value "skolem_macro_edge_count" fields with
     | None -> ()
     | Some _ ->
@@ -14844,18 +14922,18 @@ let native_core_skolem_refutation_cps_proof
 	             ^ detail)
 	      | None -> ()
 	  in
-	  let shift_captured_pf captured_term_depth captured_proof_depth term_depth proof_depth proof =
-	    if term_depth < captured_term_depth || proof_depth < captured_proof_depth then
-	      error (id ^ ": native preprocess Skolem CPS internal continuation depth moved outward");
-	    proof
-	    |> pftmshift 0 (term_depth - captured_term_depth)
-	    |> pfshift 0 (proof_depth - captured_proof_depth)
-	  in
-	  let shift_captured_tm captured_term_depth term_depth tm =
-	    if term_depth < captured_term_depth then
-	      error (id ^ ": native preprocess Skolem CPS internal proposition depth moved outward");
-	    tmshift 0 (term_depth - captured_term_depth) tm
-	  in
+		  let shift_captured_pf captured_term_depth captured_proof_depth term_depth proof_depth proof =
+		    if term_depth < captured_term_depth || proof_depth < captured_proof_depth then
+		      error (id ^ ": native preprocess Skolem CPS internal continuation depth moved outward");
+		    proof
+		    |> pftmshift 0 (term_depth - captured_term_depth)
+		    |> pfshift 0 (proof_depth - captured_proof_depth)
+		  in
+		  let shift_captured_tm captured_term_depth term_depth tm =
+		    if term_depth < captured_term_depth then
+		      error (id ^ ": native preprocess Skolem CPS internal proposition depth moved outward");
+		    tmshift 0 (term_depth - captured_term_depth) tm
+		  in
 	  let short_tm_debug tm =
 	    let text = tm_to_str tm in
 	    if String.length text <= 220 then text
@@ -14925,8 +15003,8 @@ let native_core_skolem_refutation_cps_proof
 	        end
 	    | _ -> None
 	  in
-	  let debug_conjunction_contract label term_depth proof_depth expected rebuilt =
-	    if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
+		  let debug_conjunction_contract label term_depth proof_depth expected rebuilt =
+		    if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
 	      if expected = rebuilt then
 	        prerr_endline
 	          (id
@@ -14961,10 +15039,10 @@ let native_core_skolem_refutation_cps_proof
 	               ^ label
 	               ^ " could not decompose conjunction contract")
 	        end
-	      end
-	    end
-	  in
-		  let result_to_target_builder term_depth proof_depth term_replacements replacements fallback_replacements =
+		      end
+		    end
+		  in
+			  let result_to_target_builder term_depth proof_depth term_replacements replacements fallback_replacements =
 	    let result_prop =
 	      formula_prop_with_replacements
 	        ~close_depth:term_depth
@@ -15199,13 +15277,13 @@ let native_core_skolem_refutation_cps_proof
                 replacements
                 result_right
             in
-            debug_prop_pair
-              "and-left-count unchanged-right"
-              term_depth
-              proof_depth
-              source_right_prop
-              captured_result_right_prop;
-		          let left_result_to_target_builder term_depth proof_depth term_replacements replacements fallback_replacements =
+	            debug_prop_pair
+	              "and-left-count unchanged-right"
+	              term_depth
+	              proof_depth
+	              source_right_prop
+	              captured_result_right_prop;
+			          let left_result_to_target_builder term_depth proof_depth term_replacements replacements fallback_replacements =
 		            let result_left_prop = formula_prop_with_replacements ~close_depth:term_depth ~fallback_replacements replacements result_left in
 		            let result_right_prop =
                   shift_captured_tm
@@ -15228,12 +15306,12 @@ let native_core_skolem_refutation_cps_proof
 	                   (native_core_and result_left_prop result_right_prop |> tm_beta_eta_norm);
 	                 native_core_and_intro
 	                   result_left_prop
-	                   result_right_prop
-	                   (Hyp 0)
-	                   (shift_captured_pf
-	                      captured_term_depth captured_proof_depth
-	                      term_depth (proof_depth + 1) source_right_proof)
-	               in
+		                   result_right_prop
+		                   (Hyp 0)
+		                   (shift_captured_pf
+		                      captured_term_depth captured_proof_depth
+		                      term_depth (proof_depth + 1) source_right_proof)
+		               in
 		               PPfAp
 		                 (result_to_target_builder
 		                    term_depth (proof_depth + 1)
@@ -15269,13 +15347,13 @@ let native_core_skolem_refutation_cps_proof
                 replacements
                 result_left
             in
-            debug_prop_pair
-              "and-right-count unchanged-left"
-              term_depth
-              proof_depth
-              source_left_prop
-              captured_result_left_prop;
-		          let right_result_to_target_builder term_depth proof_depth term_replacements replacements fallback_replacements =
+	            debug_prop_pair
+	              "and-right-count unchanged-left"
+	              term_depth
+	              proof_depth
+	              source_left_prop
+	              captured_result_left_prop;
+			          let right_result_to_target_builder term_depth proof_depth term_replacements replacements fallback_replacements =
 		            let result_left_prop =
                   shift_captured_tm
                     captured_term_depth
@@ -15296,13 +15374,13 @@ let native_core_skolem_refutation_cps_proof
 	                      replacements
 	                      result)
 	                   (native_core_and result_left_prop result_right_prop |> tm_beta_eta_norm);
-	                 native_core_and_intro
-	                   result_left_prop
-	                   result_right_prop
-	                   (shift_captured_pf
-	                      captured_term_depth captured_proof_depth
-	                      term_depth (proof_depth + 1) source_left_proof)
-	                   (Hyp 0)
+		                 native_core_and_intro
+		                   result_left_prop
+		                   result_right_prop
+		                   (shift_captured_pf
+		                      captured_term_depth captured_proof_depth
+		                      term_depth (proof_depth + 1) source_left_proof)
+		                   (Hyp 0)
 	               in
 		               PPfAp
 		                 (result_to_target_builder
