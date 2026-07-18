@@ -2635,6 +2635,12 @@ if ! rg -q 'native preprocess Skolem CPS candidate still contains certificate-lo
   exit 1
 fi
 
+if ! rg -q 'native preprocess Skolem CPS first choice witness: .*certificate-local choice witness Eps_prop in term' \
+    "$WORK_DIR/native_cert_v1_skolem_cps_guard.err"; then
+  echo "native preprocess checker did not report the first remaining Skolem CPS choice witness" >&2
+  exit 1
+fi
+
 if rg -q 'native preprocess Skolem CPS discharged certificate-local witnesses|admit|-allowincompleteqed' \
     "$WORK_DIR/native_cert_v1_skolem_cps_guard.out" \
     "$WORK_DIR/native_cert_v1_skolem_cps_guard.err"; then

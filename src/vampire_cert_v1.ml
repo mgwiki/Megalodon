@@ -12773,6 +12773,62 @@ let native_core_pf_contains_choice_witness proof =
     ]
     proof
 
+let native_core_pf_choice_witness_detail proof =
+  let choice_symbols =
+    [
+      "Eps_i";
+      "Eps_prop";
+      "Eps_set_prop";
+      "Eps_set_set";
+      "Eps_set_set_prop";
+    ]
+  in
+  let rec tm_detail path enclosing = function
+    | TmH name when List.mem name choice_symbols ->
+        Some
+          (path
+           ^ ": certificate-local choice witness "
+           ^ name
+           ^ " in term "
+           ^ tm_to_str enclosing)
+    | TmH _ | DB _ | Prim _ -> None
+    | TpAp (body, _) -> tm_detail (path ^ ".tp") enclosing body
+    | Ap (left, right) ->
+        begin match tm_detail (path ^ ".left") enclosing left with
+        | Some _ as found -> found
+        | None -> tm_detail (path ^ ".right") enclosing right
+        end
+    | Lam (_, body) | All (_, body) ->
+        tm_detail (path ^ ".body") enclosing body
+    | Imp (left, right) ->
+        begin match tm_detail (path ^ ".left") enclosing left with
+        | Some _ as found -> found
+        | None -> tm_detail (path ^ ".right") enclosing right
+        end
+  in
+  let tm_detail path tm = tm_detail path tm tm in
+  let rec pf_detail path = function
+    | PTpAp (body, _) -> pf_detail (path ^ ".tp") body
+    | PTmAp (body, tm) ->
+        begin match pf_detail (path ^ ".proof") body with
+        | Some _ as found -> found
+        | None -> tm_detail (path ^ ".term") tm
+        end
+    | PPfAp (left, right) ->
+        begin match pf_detail (path ^ ".left") left with
+        | Some _ as found -> found
+        | None -> pf_detail (path ^ ".right") right
+        end
+    | PLam (prop, body) ->
+        begin match tm_detail (path ^ ".prop") prop with
+        | Some _ as found -> found
+        | None -> pf_detail (path ^ ".body") body
+        end
+    | TLam (_, body) -> pf_detail (path ^ ".body") body
+    | Hyp _ | Known _ -> None
+  in
+  pf_detail "root" proof
+
 let native_core_abstract_shifted_subproof needle proof =
   let replaced = ref false in
   let rec replace term_depth proof_depth proof =
@@ -15871,12 +15927,19 @@ let elaborate_preprocess_refutation_native
                prerr_endline
                  (id ^ ": native preprocess Skolem CPS discharged certificate-local witnesses");
              candidate
-           end else if native_core_pf_contains_choice_witness candidate then begin
-             if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
-               prerr_endline
-                 (id ^ ": native preprocess Skolem CPS candidate still contains certificate-local choice witnesses; keeping original refutation");
-             current
-           end else begin
+	           end else if native_core_pf_contains_choice_witness candidate then begin
+	             if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
+	               prerr_endline
+	                 (id ^ ": native preprocess Skolem CPS candidate still contains certificate-local choice witnesses; keeping original refutation");
+	               begin match native_core_pf_choice_witness_detail candidate with
+	               | Some detail ->
+	                   prerr_endline
+	                     (id ^ ": native preprocess Skolem CPS first choice witness: " ^ detail)
+	               | None -> ()
+	               end
+	             end;
+	             current
+	           end else begin
              if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
                prerr_endline
                  (id ^ ": native preprocess Skolem CPS candidate did not check; keeping original refutation");
