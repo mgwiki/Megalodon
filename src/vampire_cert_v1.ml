@@ -92,6 +92,32 @@ type skolem_introduction = {
   skolem_intro_declaration : string option;
 }
 
+type native_kernel_typed_variable = {
+  native_kernel_variable_name : string;
+  native_kernel_variable_type : tp;
+}
+
+type native_kernel_quantifier = {
+  native_kernel_quantifier_kind : string;
+  native_kernel_quantifier_variable : native_kernel_typed_variable;
+}
+
+type native_skolem_macro_edge = {
+  native_skolem_macro_edge_index : int;
+  native_skolem_macro_edge_parent_index : int option;
+  native_skolem_macro_edge_unit : string option;
+  native_skolem_macro_edge_binders : native_kernel_typed_variable list;
+  native_skolem_macro_edge_formula : tm option;
+  native_skolem_macro_edge_source : tm option;
+  native_skolem_macro_edge_target : tm option;
+  native_skolem_macro_edge_formula_quantifiers : native_kernel_quantifier list;
+  native_skolem_macro_edge_source_quantifiers : native_kernel_quantifier list;
+  native_skolem_macro_edge_target_quantifiers : native_kernel_quantifier list;
+  native_skolem_macro_edge_formula_free_variables : native_kernel_typed_variable list;
+  native_skolem_macro_edge_source_free_variables : native_kernel_typed_variable list;
+  native_skolem_macro_edge_target_free_variables : native_kernel_typed_variable list;
+}
+
 type step =
   | Input of string * source * clause
   | FormulaInput of string * source * literal
@@ -8031,6 +8057,158 @@ let native_core_metadata_step_extra_field cert id kind key =
   in
   find_extra cert.metadata.step_extras
 
+let native_core_kernel_v1_field cert id key =
+  native_core_metadata_step_extra_field cert id "kernel_v1" key
+
+let native_core_kernel_v1_int_field cert id key =
+  match native_core_kernel_v1_field cert id key with
+  | None -> None
+  | Some value ->
+      begin try Some (int_of_string value)
+      with Failure _ ->
+        error
+          (id ^ ": kernel_v1 metadata field " ^ key ^ " is not an integer")
+      end
+
+let native_core_kernel_v1_required_field cert id key =
+  match native_core_kernel_v1_field cert id key with
+  | Some value -> value
+  | None -> error (id ^ ": kernel_v1 metadata requires " ^ key)
+
+let native_core_kernel_v1_tm_field cert id key =
+  native_core_kernel_v1_field cert id key
+  |> Option.map (fun value -> parse_tm (parse_sexpr value))
+
+let native_core_kernel_v1_tp_field cert id key =
+  native_core_kernel_v1_field cert id key
+  |> Option.map (fun value -> parse_tp (parse_sexpr value))
+
+let native_core_kernel_v1_typed_variable_fields cert id prefix role =
+  match native_core_kernel_v1_int_field cert id (prefix ^ "_" ^ role ^ "_count") with
+  | None -> []
+  | Some count ->
+      if count < 0 then
+        error
+          (id ^ ": kernel_v1 metadata field " ^ prefix ^ "_" ^ role
+           ^ "_count is negative");
+      let rec collect index acc =
+        if index >= count then List.rev acc
+        else
+          let field_prefix =
+            prefix ^ "_" ^ role ^ "_" ^ string_of_int index
+          in
+          let name =
+            native_core_kernel_v1_required_field
+              cert id (field_prefix ^ "_var")
+          in
+          let tp =
+            match native_core_kernel_v1_tp_field cert id (field_prefix ^ "_type") with
+            | Some tp -> tp
+            | None ->
+                error
+                  (id ^ ": kernel_v1 metadata requires "
+                   ^ field_prefix ^ "_type")
+          in
+          collect
+            (index + 1)
+            ({ native_kernel_variable_name = name;
+               native_kernel_variable_type = tp } :: acc)
+      in
+      collect 0 []
+
+let native_core_kernel_v1_quantifier_fields cert id prefix =
+  match native_core_kernel_v1_int_field cert id (prefix ^ "_quantifier_count") with
+  | None -> []
+  | Some count ->
+      if count < 0 then
+        error
+          (id ^ ": kernel_v1 metadata field " ^ prefix
+           ^ "_quantifier_count is negative");
+      let rec collect index acc =
+        if index >= count then List.rev acc
+        else
+          let field_prefix =
+            prefix ^ "_quantifier_" ^ string_of_int index
+          in
+          let kind =
+            native_core_kernel_v1_required_field
+              cert id (field_prefix ^ "_kind")
+          in
+          let name =
+            native_core_kernel_v1_required_field
+              cert id (field_prefix ^ "_var")
+          in
+          let tp =
+            match native_core_kernel_v1_tp_field cert id (field_prefix ^ "_type") with
+            | Some tp -> tp
+            | None ->
+                error
+                  (id ^ ": kernel_v1 metadata requires "
+                   ^ field_prefix ^ "_type")
+          in
+          collect
+            (index + 1)
+            ({ native_kernel_quantifier_kind = kind;
+               native_kernel_quantifier_variable =
+                 { native_kernel_variable_name = name;
+                   native_kernel_variable_type = tp } } :: acc)
+      in
+      collect 0 []
+
+let native_core_skolem_macro_edges cert id =
+  match native_core_kernel_v1_int_field cert id "skolem_macro_edge_count" with
+  | None -> []
+  | Some count ->
+      if count < 0 then
+        error (id ^ ": kernel_v1 metadata field skolem_macro_edge_count is negative");
+      let rec collect index acc =
+        if index >= count then List.rev acc
+        else
+          let prefix = "skolem_macro_edge_" ^ string_of_int index in
+          let edge =
+            {
+              native_skolem_macro_edge_index = index;
+              native_skolem_macro_edge_parent_index =
+                native_core_kernel_v1_int_field
+                  cert id (prefix ^ "_parent_index");
+              native_skolem_macro_edge_unit =
+                native_core_kernel_v1_field cert id (prefix ^ "_unit");
+              native_skolem_macro_edge_binders =
+                native_core_kernel_v1_typed_variable_fields
+                  cert id prefix "binder";
+              native_skolem_macro_edge_formula =
+                native_core_kernel_v1_tm_field
+                  cert id (prefix ^ "_formula");
+              native_skolem_macro_edge_source =
+                native_core_kernel_v1_tm_field
+                  cert id (prefix ^ "_source");
+              native_skolem_macro_edge_target =
+                native_core_kernel_v1_tm_field
+                  cert id (prefix ^ "_target");
+              native_skolem_macro_edge_formula_quantifiers =
+                native_core_kernel_v1_quantifier_fields
+                  cert id (prefix ^ "_formula");
+              native_skolem_macro_edge_source_quantifiers =
+                native_core_kernel_v1_quantifier_fields
+                  cert id (prefix ^ "_source");
+              native_skolem_macro_edge_target_quantifiers =
+                native_core_kernel_v1_quantifier_fields
+                  cert id (prefix ^ "_target");
+              native_skolem_macro_edge_formula_free_variables =
+                native_core_kernel_v1_typed_variable_fields
+                  cert id (prefix ^ "_formula") "free_variable";
+              native_skolem_macro_edge_source_free_variables =
+                native_core_kernel_v1_typed_variable_fields
+                  cert id (prefix ^ "_source") "free_variable";
+              native_skolem_macro_edge_target_free_variables =
+                native_core_kernel_v1_typed_variable_fields
+                  cert id (prefix ^ "_target") "free_variable";
+            }
+          in
+          collect (index + 1) (edge :: acc)
+      in
+      collect 0 []
+
 let native_core_symbol_table cert =
   let symbols = Hashtbl.create 257 in
   let add name arity typ = Hashtbl.replace symbols name (arity, typ) in
@@ -13167,74 +13345,39 @@ let native_core_skolem_target_witness id source target =
         (id ^ ": native core proof-term skolemization result does not match source body")
 
 let native_core_skolem_parent_helper_formulas cert id =
-  let parse_field key =
-    native_core_metadata_step_extra_field cert id "kernel_v1" key
-    |> Option.map (fun value -> parse_tm (parse_sexpr value))
-  in
   let rec quantified_implication_prefix tps = function
     | All (tp, body) -> quantified_implication_prefix (tps @ [tp]) body
     | Imp _ -> Some tps
     | _ -> None
   in
-  let explicit_binder_types prefix =
-    match native_core_metadata_step_extra_field cert id "kernel_v1" (prefix ^ "_binder_count") with
-    | Some value ->
-        let count =
-          try int_of_string value
-          with Failure _ -> 0
-        in
-        let rec collect index acc =
-          if index >= count then List.rev acc
-          else
-            let key = prefix ^ "_binder_" ^ string_of_int index ^ "_type" in
-            let acc =
-              match native_core_metadata_step_extra_field cert id "kernel_v1" key with
-              | Some value -> parse_tp (parse_sexpr value) :: acc
-              | None -> acc
-            in
-            collect (index + 1) acc
-        in
-        collect 0 []
-    | None -> []
-  in
   let wrap_quantifiers tps body =
     List.fold_right (fun tp acc -> All (tp, acc)) tps body
   in
   let explicit_macro_edges =
-    match native_core_metadata_step_extra_field cert id "kernel_v1" "skolem_macro_edge_count" with
-    | Some value ->
-        let count =
-          try int_of_string value
-          with Failure _ -> 0
-        in
-        let rec collect index acc =
-          if index >= count then List.rev acc
-          else
-            let prefix = "skolem_macro_edge_" ^ string_of_int index in
-            let acc =
-              match
-                parse_field (prefix ^ "_formula"),
-                parse_field (prefix ^ "_source"),
-                parse_field (prefix ^ "_target")
-              with
-              | Some formula, Some source, Some target ->
-                  let tps =
-                    match explicit_binder_types prefix with
-                    | [] ->
-                        begin match quantified_implication_prefix [] formula with
-                        | Some tps -> tps
-                        | None -> []
-                        end
-                    | tps -> tps
-                  in
-                  wrap_quantifiers tps (Imp (source, target)) :: acc
-              | _, Some source, Some target -> Imp (source, target) :: acc
-              | _ -> acc
-            in
-            collect (index + 1) acc
-        in
-        collect 0 []
-    | None -> []
+    native_core_skolem_macro_edges cert id
+    |> List.filter_map
+         (fun edge ->
+            match
+              edge.native_skolem_macro_edge_formula,
+              edge.native_skolem_macro_edge_source,
+              edge.native_skolem_macro_edge_target
+            with
+            | Some formula, Some source, Some target ->
+                let tps =
+                  match edge.native_skolem_macro_edge_binders with
+                  | [] ->
+                      begin match quantified_implication_prefix [] formula with
+                      | Some tps -> tps
+                      | None -> []
+                      end
+                  | binders ->
+                      List.map
+                        (fun binder -> binder.native_kernel_variable_type)
+                        binders
+                in
+                Some (wrap_quantifiers tps (Imp (source, target)))
+            | _, Some source, Some target -> Some (Imp (source, target))
+            | _ -> None)
   in
   if explicit_macro_edges <> [] then explicit_macro_edges
   else
@@ -13268,35 +13411,20 @@ let native_core_skolem_parent_helper_formulas cert id =
 
 let native_core_skolem_source_existential_names cert id =
   let metadata_names () =
-    match
-      native_core_metadata_step_extra_field
-        cert id "kernel_v1" "source_formula_quantifier_count"
-    with
+    match native_core_kernel_v1_field cert id "source_formula_quantifier_count" with
     | None -> None
-    | Some value ->
-        let count =
-          try int_of_string value
-          with Failure _ -> 0
-        in
-        let rec collect index acc =
-          if index >= count then List.rev acc
-          else
-            let prefix =
-              "source_formula_quantifier_" ^ string_of_int index
-            in
-            let acc =
-              match
-                native_core_metadata_step_extra_field
-                  cert id "kernel_v1" (prefix ^ "_kind"),
-                native_core_metadata_step_extra_field
-                  cert id "kernel_v1" (prefix ^ "_var")
-              with
-              | Some "exists", Some name -> name :: acc
-              | _ -> acc
-            in
-            collect (index + 1) acc
-        in
-        Some (collect 0 [])
+    | Some _ ->
+        Some
+          (native_core_kernel_v1_quantifier_fields cert id "source_formula"
+           |> List.filter_map
+                (fun quantifier ->
+                   if quantifier.native_kernel_quantifier_kind = "exists" then
+                     let variable =
+                       quantifier.native_kernel_quantifier_variable
+                     in
+                     Some variable.native_kernel_variable_name
+                   else
+                     None))
   in
   let rec collect = function
     | List [Atom "AP"; List [Atom "TMH"; exists_head];
