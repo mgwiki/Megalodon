@@ -13222,6 +13222,7 @@ let native_core_skolem_refutation_cps_proof
   let formula_prop_with_replacements replacements formula =
     native_core_formula_prop formula
     |> native_core_replace_witness_symbols_in_tm replacements
+    |> native_core_close_tm ~depth:(List.length replacements) variables
     |> tm_beta_eta_norm
   in
   let proof_with_replacements term_replacements replacements proof =
@@ -13246,6 +13247,7 @@ let native_core_skolem_refutation_cps_proof
         let body_prop =
           native_core_formula_prop body
           |> native_core_replace_witness_symbols_in_tm replacements_under_binder
+          |> native_core_close_tm ~depth:(List.length replacements_under_binder) variables
           |> native_core_normalize_bool_constants
           |> tm_beta_eta_norm
         in
