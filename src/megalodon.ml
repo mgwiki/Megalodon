@@ -2793,7 +2793,7 @@ let run_vampire_aby_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) ?(proof_command_l
            check_vampire_aby_native_certificate ?claimtm ~cxtm ~cxpf ~proof_command_label content out proof_file
          in
          if !verbosity > 2 then
-           Printf.printf "Vampire certified %s at line %d char %d (%s)\n" proof_command_label !lineno !charno digest;
+           Printf.printf "Vampire produced %s proof payload at line %d char %d (%s)\n" proof_command_label !lineno !charno digest;
          flush stdout;
          reconstructed
        end
@@ -8048,6 +8048,15 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                               "Native reconstruction produced a local proof term that does not close the final theorem at line %d char %d"
                               !lineno
                               !charno));
+                    if !verbosity > 2 then
+                      begin
+                        Printf.printf
+                          "Vampire certified %s at line %d char %d.\n"
+                          (if certified_vampire_tac then "vampire" else "aby")
+                          !lineno
+                          !charno;
+                        flush stdout
+                      end;
                     prooffun := (fun dl -> currprooffun ((endpos,d)::dl));
                     pfstate := pfstr;
                     if certified_vampire_tac && !verbosity > 2 then
