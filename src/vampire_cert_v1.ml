@@ -12743,6 +12743,36 @@ let native_core_replace_witness_symbols_in_pf replacements proof =
   in
   replace_pf 0 proof
 
+let native_core_pf_contains_term_symbol names proof =
+  let rec tm_contains = function
+    | TmH name -> List.mem name names
+    | TpAp (body, _) -> tm_contains body
+    | Ap (left, right) | Imp (left, right) ->
+        tm_contains left || tm_contains right
+    | Lam (_, body) | All (_, body) -> tm_contains body
+    | DB _ | Prim _ -> false
+  in
+  let rec pf_contains = function
+    | PTpAp (body, _) -> pf_contains body
+    | PTmAp (body, tm) -> pf_contains body || tm_contains tm
+    | PPfAp (left, right) -> pf_contains left || pf_contains right
+    | PLam (prop, body) -> tm_contains prop || pf_contains body
+    | TLam (_, body) -> pf_contains body
+    | Hyp _ | Known _ -> false
+  in
+  pf_contains proof
+
+let native_core_pf_contains_choice_witness proof =
+  native_core_pf_contains_term_symbol
+    [
+      "Eps_i";
+      "Eps_prop";
+      "Eps_set_prop";
+      "Eps_set_set";
+      "Eps_set_set_prop";
+    ]
+    proof
+
 let native_core_abstract_shifted_subproof needle proof =
   let replaced = ref false in
   let rec replace term_depth proof_depth proof =
@@ -15835,11 +15865,17 @@ let elaborate_preprocess_refutation_native
                source_formula subst result result_checked_prop parent_proof
                result_proof current native_core_false
            in
-           if final_refutation_proof_checks candidate then begin
+           if final_refutation_proof_checks candidate
+              && not (native_core_pf_contains_choice_witness candidate) then begin
              if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
                prerr_endline
                  (id ^ ": native preprocess Skolem CPS discharged certificate-local witnesses");
              candidate
+           end else if native_core_pf_contains_choice_witness candidate then begin
+             if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+               prerr_endline
+                 (id ^ ": native preprocess Skolem CPS candidate still contains certificate-local choice witnesses; keeping original refutation");
+             current
            end else begin
              if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
                prerr_endline
