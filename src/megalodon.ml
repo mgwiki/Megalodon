@@ -1311,6 +1311,19 @@ let vampire_iff_intro_proof left right left_to_right right_to_left =
                 (PPfAp (Hyp 0, shifted_forward_proof),
                  shifted_backward_proof)))
 
+let vampire_expanded_equality_proof tp left right eq_proof =
+  let predicate_sort = Ar (tp, Ar (tp, Prop)) in
+  let premise =
+    Ap (Ap (DB 0, tmshift 0 1 left), tmshift 0 1 right)
+  in
+  TLam
+    (predicate_sort,
+     PLam
+       (premise,
+        PPfAp
+          (PTmAp (pfshift 0 1 (pftmshift 0 1 eq_proof), DB 0),
+           Hyp 0)))
+
 let vampire_loaded_prop_ext_expander ?delta proof =
   match Hashtbl.find_opt sigknh "prop_ext" with
   | None -> proof
@@ -1328,25 +1341,30 @@ let vampire_loaded_prop_ext_expander ?delta proof =
             when h = prop_ext_hash || h = Vampire_cert_v1.native_core_prop_ext_hash ->
             let left_to_right = expand left_to_right in
             let right_to_left = expand right_to_left in
-            begin match Hashtbl.find_opt sigknh "prop_ext_2" with
-            | Some prop_ext_2_hash when known_available prop_ext_2_hash ->
-                PPfAp
-                  (PPfAp
-                     (PTmAp (PTmAp (Known prop_ext_2_hash, left), right),
-                      left_to_right),
-                   right_to_left)
-            | Some _ | None ->
-                let iff_proof =
-                  vampire_iff_intro_proof
-                    left
-                    right
-                    left_to_right
-                    right_to_left
-                in
-                PPfAp
-                  (PTmAp (PTmAp (Known prop_ext_hash, left), right),
-                   iff_proof)
-            end
+            let eq_proof =
+              match Hashtbl.find_opt sigknh "prop_ext_2" with
+              | Some prop_ext_2_hash when known_available prop_ext_2_hash ->
+                  PPfAp
+                    (PPfAp
+                       (PTmAp (PTmAp (Known prop_ext_2_hash, left), right),
+                        left_to_right),
+                     right_to_left)
+              | Some _ | None ->
+                  let iff_proof =
+                    vampire_iff_intro_proof
+                      left
+                      right
+                      left_to_right
+                      right_to_left
+                  in
+                  PPfAp
+                    (PTmAp (PTmAp (Known prop_ext_hash, left), right),
+                     iff_proof)
+            in
+            if h = Vampire_cert_v1.native_core_prop_ext_hash then
+              vampire_expanded_equality_proof Prop left right eq_proof
+            else
+              eq_proof
         | PTpAp (body, tp) -> PTpAp (expand body, tp)
         | PTmAp (body, tm) -> PTmAp (expand body, tm)
         | PPfAp (left, right) -> PPfAp (expand left, expand right)
@@ -1508,12 +1526,21 @@ let vampire_live_basis_expander proof =
 
 let vampire_prop_ext_variants ?delta proof =
   let directional = vampire_directional_prop_ext_expander proof in
-  [
-    directional;
-    vampire_loaded_prop_ext_expander ?delta directional;
-    vampire_loaded_prop_ext_expander ?delta proof;
-    proof;
-  ]
+  let rec add_unique seen acc = function
+    | [] -> List.rev acc
+    | proof :: rest ->
+        if List.exists ((=) proof) seen then add_unique seen acc rest
+        else add_unique (proof :: seen) (proof :: acc) rest
+  in
+  add_unique
+    []
+    []
+    [
+      vampire_loaded_prop_ext_expander ?delta directional;
+      vampire_loaded_prop_ext_expander ?delta proof;
+      directional;
+      proof;
+    ]
 
 let vampire_expanded_prop_ext_variants ?delta proof_expander proof =
   vampire_prop_ext_variants ?delta (vampire_live_basis_expander (proof_expander proof))

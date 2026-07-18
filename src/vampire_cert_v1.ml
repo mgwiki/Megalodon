@@ -9104,7 +9104,7 @@ let native_core_definition_input_proof sgdelta id variables result_step_variable
         (id ^ ": native preprocess proof-term definition_input expects a singleton positive equality")
 
 let native_core_prop_ext_hash =
-  "d8c32d0ac70c5760222c9adf1a3ca90f3cb6b5182b0f70a5d82cb9000abc77ef"
+  "23ea4ad0d25e31cb704cd6f5752b77c544628e235c5c99d36647ab24d0d261c9"
 
 let native_core_dneg_hash =
   "e4b03c310442ae760be9945e176494db51515dfb952ee60fbd42e05527752af0"
@@ -13022,6 +13022,54 @@ let native_core_pf_contains_term_symbol names proof =
   in
   pf_contains proof
 
+let native_core_pf_term_symbol_detail names proof =
+  let rec tm_detail path enclosing = function
+    | TmH name when List.mem name names ->
+        Some
+          (path
+           ^ ": introduced term symbol "
+           ^ name
+           ^ " in term "
+           ^ tm_to_str (TmH name)
+           ^ "; enclosing term "
+           ^ tm_to_str enclosing)
+    | TpAp (body, _) -> tm_detail (path ^ ".tp") enclosing body
+    | Ap (left, right) ->
+        begin match tm_detail (path ^ ".left") enclosing left with
+        | Some _ as found -> found
+        | None -> tm_detail (path ^ ".right") enclosing right
+        end
+    | Lam (_, body) -> tm_detail (path ^ ".body") body body
+    | Imp (left, right) ->
+        begin match tm_detail (path ^ ".left") enclosing left with
+        | Some _ as found -> found
+        | None -> tm_detail (path ^ ".right") enclosing right
+        end
+    | All (_, body) -> tm_detail (path ^ ".body") body body
+    | DB _ | TmH _ | Prim _ -> None
+  in
+  let rec pf_detail path = function
+    | PTpAp (body, _) -> pf_detail (path ^ ".tp") body
+    | PTmAp (body, tm) ->
+        begin match pf_detail (path ^ ".proof") body with
+        | Some _ as found -> found
+        | None -> tm_detail (path ^ ".term") tm tm
+        end
+    | PPfAp (left, right) ->
+        begin match pf_detail (path ^ ".left") left with
+        | Some _ as found -> found
+        | None -> pf_detail (path ^ ".right") right
+        end
+    | PLam (prop, body) ->
+        begin match tm_detail (path ^ ".prop") prop prop with
+        | Some _ as found -> found
+        | None -> pf_detail (path ^ ".body") body
+        end
+    | TLam (_, body) -> pf_detail (path ^ ".body") body
+    | Hyp _ | Known _ -> None
+  in
+  pf_detail "root" proof
+
 let native_core_pf_contains_choice_witness proof =
   native_core_pf_contains_term_symbol
     [
@@ -13158,6 +13206,29 @@ let native_core_skolem_refutation_cps_proof
                error
                  (id ^ ": native preprocess Skolem CPS currently supports only nullary introduced witnesses"))
   in
+  let rec source_exists_types = function
+    | Ap (TmH "vampire_exists_prop", Lam (tp, body)) ->
+        tp :: source_exists_types body
+    | Ap (Ap (TmH "vampire_and", left), right)
+    | Ap (Ap (TmH "vampire_or", left), right)
+    | Imp (left, right) ->
+        source_exists_types left @ source_exists_types right
+    | All (_, body)
+    | Lam (_, body)
+    | TpAp (body, _)
+    | Ap (TmH "vampire_exists_prop", body)
+    | Ap (TmH "vLAM", body) ->
+        source_exists_types body
+    | Ap (left, right) ->
+        source_exists_types left @ source_exists_types right
+    | _ -> []
+  in
+  let witness_infos =
+    try List.map2 (fun symbol tp -> (symbol, tp)) witness_symbols (source_exists_types source)
+    with Invalid_argument _ ->
+      error
+        (id ^ ": native preprocess Skolem CPS witness type count does not match substitution count")
+  in
   let parent_proof = native_core_close_pf variables parent_proof in
   let result_proof = native_core_close_pf variables result_proof in
   let final_proof = native_core_close_pf variables final_proof in
@@ -13225,18 +13296,55 @@ let native_core_skolem_refutation_cps_proof
     |> native_core_close_tm ~depth:(List.length replacements) variables
     |> tm_beta_eta_norm
   in
-  let proof_with_replacements term_replacements replacements proof =
+  let proof_with_replacements term_replacements replacements fallback_replacements proof =
+    let all_replacements = replacements @ fallback_replacements in
+    let covered_witness_symbols = List.map fst all_replacements in
+    let active_split_replacements =
+      split_replacements
+      |> List.filter
+           (fun (_name, replacement) ->
+              let replacement =
+                native_core_replace_witness_symbols_in_tm all_replacements replacement
+              in
+              not
+                (List.exists
+                   (fun symbol ->
+                      not (List.mem symbol covered_witness_symbols)
+                      && tm_contains_symbol symbol replacement)
+                   witness_symbols))
+    in
     native_core_replace_witness_symbols_in_pf
-      (split_replacements @ replacements)
+      (active_split_replacements @ replacements @ fallback_replacements)
       proof
     |> native_core_replace_terms_in_pf term_replacements
   in
-  let rec eliminate term_replacements replacements witnesses source result proof result_to_target =
+  let rec eliminate term_replacements replacements fallback_replacements witnesses source result proof result_to_target =
     match source, result, witnesses with
     | Ap (TmH "vampire_exists_prop", Lam (tp, body)), _, witness :: rest ->
         let replacements_under_binder =
           (witness, DB 0)
           :: List.map (fun (name, tm) -> (name, tmshift 0 1 tm)) replacements
+        in
+        let fallback_replacements_under_binder =
+          let shifted =
+            List.map
+              (fun (name, tm) -> (name, tmshift 0 1 tm))
+              fallback_replacements
+          in
+          let covered =
+            List.map fst replacements_under_binder
+            @ List.map fst shifted
+          in
+          let sibling_fallbacks =
+            witness_infos
+            |> List.filter_map
+                 (fun (symbol, symbol_tp) ->
+                    if symbol_tp = tp && not (List.mem symbol covered) then
+                      Some (symbol, DB 0)
+                    else
+                      None)
+          in
+          sibling_fallbacks @ shifted
         in
         let term_replacements_under_binder =
           List.map
@@ -13267,6 +13375,7 @@ let native_core_skolem_refutation_cps_proof
                 eliminate
                   term_replacements_under_binder
                   replacements_under_binder
+                  fallback_replacements_under_binder
                   rest
                   body
                   result
@@ -13304,12 +13413,13 @@ let native_core_skolem_refutation_cps_proof
                    (pfshift 0 1 source_right_proof)
                in
                PPfAp
-                 (pfshift 0 1 (proof_with_replacements term_replacements replacements result_to_target),
+                 (pfshift 0 1 result_to_target,
                   rebuilt))
           in
           eliminate
             term_replacements
             replacements
+            fallback_replacements
             witnesses
             source_left
             result_left
@@ -13337,19 +13447,20 @@ let native_core_skolem_refutation_cps_proof
                    (Hyp 0)
                in
                PPfAp
-                 (pfshift 0 1 (proof_with_replacements term_replacements replacements result_to_target),
+                 (pfshift 0 1 result_to_target,
                   rebuilt))
           in
           eliminate
             term_replacements
             replacements
+            fallback_replacements
             witnesses
             source_right
             result_right
             source_right_proof
             right_result_to_target
         else
-          eliminate_base term_replacements replacements source result proof result_to_target
+          eliminate_base term_replacements replacements fallback_replacements source result proof result_to_target
     | Ap (Ap (TmH "vampire_or", source_left), source_right),
       Ap (Ap (TmH "vampire_or", result_left), result_right),
       _ ->
@@ -13382,7 +13493,7 @@ let native_core_skolem_refutation_cps_proof
                  (Hyp 0)
              in
              PPfAp
-               (pfshift 0 1 (proof_with_replacements term_replacements replacements result_to_target),
+               (pfshift 0 1 result_to_target,
                 rebuilt))
         in
         let rebuild_right_to_target =
@@ -13395,7 +13506,7 @@ let native_core_skolem_refutation_cps_proof
                  (Hyp 0)
              in
              PPfAp
-               (pfshift 0 1 (proof_with_replacements term_replacements replacements result_to_target),
+               (pfshift 0 1 result_to_target,
                 rebuilt))
         in
         let left_branch =
@@ -13405,6 +13516,7 @@ let native_core_skolem_refutation_cps_proof
                eliminate
                  term_replacements
                  replacements
+                 fallback_replacements
                  left_witnesses
                  source_left
                  result_left
@@ -13423,6 +13535,7 @@ let native_core_skolem_refutation_cps_proof
                eliminate
                  term_replacements
                  replacements
+                 fallback_replacements
                  right_witnesses
                  source_right
                  result_right
@@ -13438,11 +13551,11 @@ let native_core_skolem_refutation_cps_proof
           (PPfAp (PTmAp (proof, branch_target), left_branch),
            right_branch)
     | _, _, [] ->
-        eliminate_base term_replacements replacements source result proof result_to_target
+        eliminate_base term_replacements replacements fallback_replacements source result proof result_to_target
     | _ ->
         error
           (id ^ ": native preprocess Skolem CPS source has fewer existential binders than substitutions")
-  and eliminate_base term_replacements replacements source result proof result_to_target =
+  and eliminate_base term_replacements replacements fallback_replacements source result proof result_to_target =
         let source_prop = formula_prop_with_replacements replacements source in
         let expected_result_prop = formula_prop_with_replacements replacements result in
         if source_prop <> expected_result_prop then begin
@@ -13455,12 +13568,29 @@ let native_core_skolem_refutation_cps_proof
         end;
         let result_checked_proof =
           native_core_bind_result_step_variables variables result_step_variables proof
+          |> proof_with_replacements term_replacements replacements fallback_replacements
         in
+        let result_to_target_proof =
+          proof_with_replacements term_replacements replacements fallback_replacements result_to_target
+        in
+        if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
+          begin match native_core_pf_term_symbol_detail witness_symbols result_to_target_proof with
+          | Some detail ->
+              prerr_endline
+                (id ^ ": native preprocess Skolem CPS base result_to_target still contains introduced symbol: " ^ detail)
+          | None -> ()
+          end;
+          begin match native_core_pf_term_symbol_detail witness_symbols result_checked_proof with
+          | Some detail ->
+              prerr_endline
+                (id ^ ": native preprocess Skolem CPS base result proof still contains introduced symbol: " ^ detail)
+          | None -> ()
+          end
+        end;
         PPfAp
-          (proof_with_replacements term_replacements replacements result_to_target,
-           result_checked_proof)
+          (result_to_target_proof, result_checked_proof)
   in
-  eliminate [] [] witness_symbols source result parent_proof result_to_target
+  eliminate [] [] [] witness_symbols source result parent_proof result_to_target
 
 let native_core_truth_conflict_false_proof id literal proof =
   let is_true = function
@@ -16709,9 +16839,17 @@ let elaborate_preprocess_refutation_native
     List.fold_left
       (fun current
            (id, source_formula, subst, result, parent_step_variables,
-            result_step_variables, result_checked_prop, parent_proof,
+           result_step_variables, result_checked_prop, parent_proof,
             result_proof) ->
          try
+           let introduced_witness_symbols =
+             subst
+             |> List.map
+                  (function
+                    | _, TmH symbol -> symbol
+                    | _ -> "")
+             |> List.filter (fun symbol -> symbol <> "")
+           in
            let split_replacements =
              avatar_definition_table
              |> Hashtbl.to_seq_values
@@ -16763,6 +16901,18 @@ let elaborate_preprocess_refutation_native
                | Some detail ->
                    prerr_endline
                      (id ^ ": native preprocess Skolem CPS first choice theorem: " ^ detail)
+               | None -> ()
+               end
+             end;
+             current
+           end else if native_core_pf_contains_term_symbol introduced_witness_symbols candidate then begin
+             if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
+               prerr_endline
+                 (id ^ ": native preprocess Skolem CPS candidate still contains introduced Skolem symbols; keeping original refutation");
+               begin match native_core_pf_term_symbol_detail introduced_witness_symbols candidate with
+               | Some detail ->
+                   prerr_endline
+                     (id ^ ": native preprocess Skolem CPS first introduced symbol: " ^ detail)
                | None -> ()
                end
              end;
