@@ -2629,21 +2629,15 @@ if ! rg -q 'Vampire certificate v1 native preprocess proof term checked 38 steps
   exit 1
 fi
 
-if ! rg -q 'native preprocess Skolem CPS candidate still contains certificate-local choice witnesses; keeping original refutation' \
+if ! rg -q 'u30: native preprocess Skolem CPS using shadow replay continuation' \
     "$WORK_DIR/native_cert_v1_skolem_cps_guard.err"; then
-  echo "native preprocess checker did not report the incomplete Skolem CPS witness discharge" >&2
+  echo "native preprocess checker did not use the Skolem shadow replay continuation" >&2
   exit 1
 fi
 
-if ! rg -q 'native preprocess Skolem CPS first choice witness: .*certificate-local choice witness Eps_prop in term' \
+if ! rg -q 'u30: native preprocess Skolem CPS discharged certificate-local witnesses' \
     "$WORK_DIR/native_cert_v1_skolem_cps_guard.err"; then
-  echo "native preprocess checker did not report the first remaining Skolem CPS choice witness" >&2
-  exit 1
-fi
-
-if ! rg -q 'native preprocess Skolem CPS first choice theorem: .*certificate-local choice theorem vampire_exists_prop_choice' \
-    "$WORK_DIR/native_cert_v1_skolem_cps_guard.err"; then
-  echo "native preprocess checker did not report the first remaining Skolem CPS choice theorem" >&2
+  echo "native preprocess checker did not discharge certificate-local witnesses with the Skolem shadow replay" >&2
   exit 1
 fi
 
@@ -2659,28 +2653,10 @@ if ! rg -q 'u30: native preprocess Skolem shadow replay reached empty clause' \
   exit 1
 fi
 
-if ! rg -q 'u52: native preprocess Skolem shadow first stored clause choice witness: .*certificate-local choice witness Eps_prop in term' \
-    "$WORK_DIR/native_cert_v1_skolem_cps_guard.err"; then
-  echo "native preprocess checker did not localize the first shadow choice witness to the quantified AVATAR split" >&2
-  exit 1
-fi
-
-if ! rg -q 'u52: native preprocess Skolem shadow first stored clause choice theorem: .*certificate-local choice theorem vampire_exists_prop_choice' \
-    "$WORK_DIR/native_cert_v1_skolem_cps_guard.err"; then
-  echo "native preprocess checker did not localize the first shadow choice theorem to the quantified AVATAR split" >&2
-  exit 1
-fi
-
-if ! rg -q 'u30: native preprocess Skolem CPS using shadow replay continuation' \
-    "$WORK_DIR/native_cert_v1_skolem_cps_guard.err"; then
-  echo "native preprocess checker did not use the Skolem shadow replay continuation" >&2
-  exit 1
-fi
-
-if rg -q 'native preprocess Skolem CPS discharged certificate-local witnesses|admit|-allowincompleteqed' \
+if rg -q 'native preprocess Skolem CPS candidate still contains certificate-local choice witnesses|native preprocess Skolem CPS first choice witness|native preprocess Skolem CPS first choice theorem|u52: native preprocess Skolem shadow first stored clause choice|admit|-allowincompleteqed' \
     "$WORK_DIR/native_cert_v1_skolem_cps_guard.out" \
     "$WORK_DIR/native_cert_v1_skolem_cps_guard.err"; then
-  echo "native preprocess checker falsely reported Skolem CPS witness discharge or used an admission marker" >&2
+  echo "native preprocess checker failed to discharge the Skolem CPS witness cleanly or used an admission marker" >&2
   exit 1
 fi
 
