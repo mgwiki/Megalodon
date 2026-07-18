@@ -14385,9 +14385,21 @@ let native_core_skolem_refutation_cps_proof
 	          let source_right_proof =
 	            native_core_and_elim_right source_left_prop source_right_prop proof
 	          in
+            let captured_result_right_prop =
+              formula_prop_with_replacements
+                ~close_depth:term_depth
+                ~fallback_replacements
+                replacements
+                result_right
+            in
 		          let left_result_to_target_builder term_depth proof_depth term_replacements replacements fallback_replacements =
 		            let result_left_prop = formula_prop_with_replacements ~close_depth:term_depth ~fallback_replacements replacements result_left in
-		            let result_right_prop = formula_prop_with_replacements ~close_depth:term_depth ~fallback_replacements replacements result_right in
+		            let result_right_prop =
+                  shift_captured_tm
+                    captured_term_depth
+                    term_depth
+                    captured_result_right_prop
+                in
 		            PLam
 		              (result_left_prop,
 		               let rebuilt =
@@ -14427,8 +14439,20 @@ let native_core_skolem_refutation_cps_proof
 	          let source_right_proof =
 	            native_core_and_elim_right source_left_prop source_right_prop proof
 	          in
+            let captured_result_left_prop =
+              formula_prop_with_replacements
+                ~close_depth:term_depth
+                ~fallback_replacements
+                replacements
+                result_left
+            in
 		          let right_result_to_target_builder term_depth proof_depth term_replacements replacements fallback_replacements =
-		            let result_left_prop = formula_prop_with_replacements ~close_depth:term_depth ~fallback_replacements replacements result_left in
+		            let result_left_prop =
+                  shift_captured_tm
+                    captured_term_depth
+                    term_depth
+                    captured_result_left_prop
+                in
 		            let result_right_prop = formula_prop_with_replacements ~close_depth:term_depth ~fallback_replacements replacements result_right in
 		            PLam
 		              (result_right_prop,
