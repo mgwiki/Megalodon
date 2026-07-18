@@ -15398,7 +15398,7 @@ let native_core_skolem_refutation_cps_proof
             | (name, tm) :: rest ->
                 (name, tm) :: keep_first (name :: seen) rest
           in
-          keep_first [] (sibling_fallbacks @ shifted)
+          keep_first [] (shifted @ sibling_fallbacks)
         in
         let term_replacements_under_binder =
           List.map
