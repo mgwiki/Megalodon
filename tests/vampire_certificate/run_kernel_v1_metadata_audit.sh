@@ -748,6 +748,7 @@ if [[ -s "$WORK_DIR/skolemize.tsv" ]]; then
     'proof_parent_count=' \
     'source_formula=' \
     'result_formula=' \
+    'skolem_macro_edge_count=' \
     'introduced_count=' \
     'introduced_0_symbol='; do
     awk -v pat="$pattern" 'index($0, pat) == 0 {print pat "\t" $0}' \
@@ -795,6 +796,44 @@ if [[ -s "$WORK_DIR/skolemize.tsv" ]]; then
     echo "kernel_v1 metadata audit found skolemization maps with missing indexed fields" >&2
     sed -n '1,40p' "$WORK_DIR/missing_skolemize_map_fields.tsv" >&2
     exit 1
+  fi
+
+  awk '
+    {
+      if (match($0, /skolem_macro_edge_count=([0-9]+)/, edge_count_match)) {
+        edge_count = edge_count_match[1] + 0
+        for (edge_index = 0; edge_index < edge_count; ++edge_index) {
+          prefix = "skolem_macro_edge_" edge_index
+          parent_index_field = prefix "_parent_index="
+          unit_field = prefix "_unit="
+          formula_field = prefix "_formula="
+          if (index($0, parent_index_field) == 0) {
+            print parent_index_field "\t" $0
+          }
+          if (index($0, unit_field) == 0) {
+            print unit_field "\t" $0
+          }
+          if (index($0, formula_field) == 0) {
+            print formula_field "\t" $0
+          }
+        }
+      }
+    }
+  ' "$WORK_DIR/skolemize.tsv" > "$WORK_DIR/missing_skolemize_macro_edge_fields.tsv"
+
+  if [[ -s "$WORK_DIR/missing_skolemize_macro_edge_fields.tsv" ]]; then
+    echo "kernel_v1 metadata audit found skolemization macro edges with missing indexed fields" >&2
+    sed -n '1,40p' "$WORK_DIR/missing_skolemize_macro_edge_fields.tsv" >&2
+    exit 1
+  fi
+
+  if grep -Eq 'skolem_macro_edge_count=[1-9]' "$WORK_DIR/skolemize.tsv"; then
+    if ! grep -Eq 'skolem_macro_edge_[0-9]+_source=' "$WORK_DIR/skolemize.tsv" \
+       || ! grep -Eq 'skolem_macro_edge_[0-9]+_target=' "$WORK_DIR/skolemize.tsv"; then
+      echo "kernel_v1 metadata audit found Skolem macro edges but no decomposed source/target fields" >&2
+      sed -n '1,40p' "$WORK_DIR/skolemize.tsv" >&2
+      exit 1
+    fi
   fi
 fi
 
