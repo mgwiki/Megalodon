@@ -12942,6 +12942,50 @@ let native_core_skolem_parent_helper_formulas cert id =
   in
   collect 1 []
 
+let native_core_skolem_source_existential_names cert id =
+  let rec collect = function
+    | List [Atom "AP"; List [Atom "TMH"; exists_head];
+            List [Atom binder; name; _tp; body]]
+        when atom exists_head = "vampire_exists_prop"
+             && (binder = "LAMV" || binder = "VLAMV") ->
+        atom name :: collect body
+    | List items ->
+        List.concat_map collect items
+    | Atom _ | Str _ -> []
+  in
+  match native_core_metadata_step_extra_field cert id "kernel_v1" "source_formula" with
+  | Some value ->
+      collect (parse_sexpr value)
+  | None -> []
+
+let native_core_reorder_skolem_substitution_by_source cert id subst =
+  let names = native_core_skolem_source_existential_names cert id in
+  if names = [] then subst
+  else
+    let selected =
+      names
+      |> List.filter_map
+           (fun name ->
+              match List.assoc_opt name subst with
+              | Some witness -> Some (name, witness)
+              | None -> None)
+    in
+    let selected_names = List.map fst selected in
+    let rest =
+      subst
+      |> List.filter (fun (name, _) -> not (List.mem name selected_names))
+    in
+    let reordered = selected @ rest in
+    if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1"
+       && reordered <> subst then
+      prerr_endline
+        (id
+         ^ ": native core skolem reordered substitution by source binders "
+         ^ String.concat "," (List.map fst subst)
+         ^ " -> "
+         ^ String.concat "," (List.map fst reordered));
+    reordered
+
 let rec native_core_direct_skolem_formula_proof
     ?(helper_formulas=[])
     ?(normalize_formula_for_match=(fun _ tm -> tm))
@@ -16564,6 +16608,9 @@ let elaborate_core_resolution_refutation_native
             | Some source -> source
             | None -> parent_formula
           in
+          let subst =
+            native_core_reorder_skolem_substitution_by_source cert id subst
+          in
           let parent_step_variables = native_core_step_variables cert parent_id in
           let result_step_variables = native_core_step_variables cert id in
           let helper_formulas =
@@ -17808,6 +17855,9 @@ let elaborate_preprocess_refutation_native
             match source with
             | Some source -> source
             | None -> parent_formula
+          in
+          let subst =
+            native_core_reorder_skolem_substitution_by_source cert id subst
           in
           let parent_step_variables = native_core_step_variables cert parent_id in
           let result_step_variables = native_core_step_variables cert id in
