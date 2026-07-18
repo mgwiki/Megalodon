@@ -944,7 +944,11 @@ let vampire_expand_returned_proof ?extra_delta cxtm source_map proof =
   match extra_delta with
   | None -> base_expander proof
   | Some extra_delta ->
-      let merged_delta = Hashtbl.copy (Vampire_cert_v1.approved_native_sgdelta ()) in
+      let merged_delta = Hashtbl.create 17 in
+      Hashtbl.iter
+        (fun h v ->
+           if not (Hashtbl.mem sigdelta h) then Hashtbl.replace merged_delta h v)
+        (Vampire_cert_v1.approved_native_sgdelta ());
       Hashtbl.iter
         (fun h v -> Hashtbl.replace merged_delta h v)
         extra_delta;
