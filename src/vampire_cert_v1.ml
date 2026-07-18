@@ -18272,6 +18272,9 @@ let elaborate_preprocess_refutation_native
                source_formula subst result result_checked_prop parent_proof
                result_proof current native_core_false
            in
+           let fail_fast_skolem_cps () =
+             Sys.getenv_opt "MEGALODON_CERT_FAIL_FAST_SKOLEM_CPS" = Some "1"
+           in
            if native_core_pf_contains_choice_witness candidate then begin
              if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
                prerr_endline
@@ -18289,6 +18292,10 @@ let elaborate_preprocess_refutation_native
                | None -> ()
                end
              end;
+             if fail_fast_skolem_cps () then
+               error
+                 (id
+                  ^ ": native preprocess Skolem CPS candidate still contains certificate-local choice witnesses");
              current
            end else if native_core_pf_contains_term_symbol introduced_witness_symbols candidate then begin
              if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
@@ -18301,6 +18308,10 @@ let elaborate_preprocess_refutation_native
                | None -> ()
                end
              end;
+             if fail_fast_skolem_cps () then
+               error
+                 (id
+                  ^ ": native preprocess Skolem CPS candidate still contains introduced Skolem symbols");
              current
            end else if final_refutation_proof_checks candidate then begin
              if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
@@ -18310,10 +18321,17 @@ let elaborate_preprocess_refutation_native
            end else begin
              if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
                prerr_endline
-                 (id ^ ": native preprocess Skolem CPS candidate did not check; keeping original refutation");
+                 (id
+                  ^ ": native preprocess Skolem CPS candidate did not check"
+                  ^ (if fail_fast_skolem_cps () then "; failing fast" else "; keeping original refutation"));
+             if fail_fast_skolem_cps () then
+               error
+                 (id ^ ": native preprocess Skolem CPS candidate did not check");
              current
            end
          with (Error _ | Failure _) as exn ->
+           if Sys.getenv_opt "MEGALODON_CERT_FAIL_FAST_SKOLEM_CPS" = Some "1" then
+             raise exn;
            if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
              prerr_endline
                (id ^ ": native preprocess Skolem CPS skipped: " ^ Printexc.to_string exn);
