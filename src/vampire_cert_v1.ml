@@ -5770,11 +5770,11 @@ let validate_kernel_v1_metadata_contracts cert =
                  if introduced_count < 0 then
                    error
                      (id ^ ": strict certificate v1 kernel_v1 skolemize introduced_count must be non-negative");
-                 if proof_parent_count <> introduced_count + 1 then
+                 if introduced_count > 0 && proof_parent_count < 2 then
                    error
                      (Printf.sprintf
-                        "%s: strict certificate v1 kernel_v1 skolemize proof_parent_count expected introduced_count + 1 (%d) but got %d"
-                        id (introduced_count + 1) proof_parent_count);
+                        "%s: strict certificate v1 kernel_v1 skolemize proof_parent_count expected a source parent and at least one skolem proof parent but got %d"
+                        id proof_parent_count);
                  let rec skolem_parent_body = function
                    | All (_, body) -> skolem_parent_body body
                    | body -> body
