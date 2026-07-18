@@ -7,6 +7,7 @@ export TMPDIR
 WORK_DIR=${WORK_DIR:-"$(mktemp -d "$TMPDIR/kernel_v1_metadata_audit.XXXXXX")"}
 MIN_KERNEL_V1=${MIN_KERNEL_V1:-1}
 MIN_REWRITE_POSITION=${MIN_REWRITE_POSITION:-1}
+MIN_SKOLEM_MACRO_EDGE_CHILD=${MIN_SKOLEM_MACRO_EDGE_CHILD:-0}
 REQUIRE_SUBSTITUTE_METADATA=${REQUIRE_SUBSTITUTE_METADATA:-0}
 
 mkdir -p "$WORK_DIR"
@@ -851,6 +852,28 @@ if [[ -s "$WORK_DIR/skolemize.tsv" ]]; then
         }
       }
     }
+    function check_child_fields(cprefix, line,    count_field, count_pattern, count_match, count, child_index, child_prefix, role_field, formula_field) {
+      count_field = cprefix "_child_count="
+      if (index(line, count_field) == 0) {
+        print count_field "\t" line
+      } else {
+        count_pattern = cprefix "_child_count=([0-9]+)"
+        if (match(line, count_pattern, count_match)) {
+          count = count_match[1] + 0
+          for (child_index = 0; child_index < count; ++child_index) {
+            child_prefix = cprefix "_child_" child_index
+            role_field = child_prefix "_role="
+            formula_field = child_prefix "_formula="
+            if (index(line, role_field) == 0) {
+              print role_field "\t" line
+            }
+            if (index(line, formula_field) == 0) {
+              print formula_field "\t" line
+            }
+          }
+        }
+      }
+    }
     {
       check_quantifier_fields("source_formula", $0)
       check_quantifier_fields("result_formula", $0)
@@ -877,6 +900,7 @@ if [[ -s "$WORK_DIR/skolemize.tsv" ]]; then
           }
           check_quantifier_fields(prefix "_formula", $0)
           check_typed_variable_fields(prefix "_formula", "free_variable", $0)
+          check_child_fields(prefix "_formula", $0)
           if (index($0, binder_count_field) == 0) {
             print binder_count_field "\t" $0
           } else {
@@ -901,11 +925,13 @@ if [[ -s "$WORK_DIR/skolemize.tsv" ]]; then
           }
           check_quantifier_fields(prefix "_source", $0)
           check_typed_variable_fields(prefix "_source", "free_variable", $0)
+          check_child_fields(prefix "_source", $0)
           if (index($0, target_field) == 0) {
             print target_field "\t" $0
           }
           check_quantifier_fields(prefix "_target", $0)
           check_typed_variable_fields(prefix "_target", "free_variable", $0)
+          check_child_fields(prefix "_target", $0)
         }
       }
     }
@@ -914,6 +940,12 @@ if [[ -s "$WORK_DIR/skolemize.tsv" ]]; then
   if [[ -s "$WORK_DIR/missing_skolemize_macro_edge_fields.tsv" ]]; then
     echo "kernel_v1 metadata audit found skolemization macro edges with missing indexed fields" >&2
     sed -n '1,40p' "$WORK_DIR/missing_skolemize_macro_edge_fields.tsv" >&2
+    exit 1
+  fi
+
+  skolem_child_count=$(awk '{n += gsub(/skolem_macro_edge_[0-9][0-9]*_(formula|source|target)_child_count=/, "&")} END {print n + 0}' "$WORK_DIR/skolemize.tsv")
+  if (( skolem_child_count < MIN_SKOLEM_MACRO_EDGE_CHILD )); then
+    echo "kernel_v1 metadata audit found $skolem_child_count Skolem macro-edge child-count fields, below MIN_SKOLEM_MACRO_EDGE_CHILD=$MIN_SKOLEM_MACRO_EDGE_CHILD" >&2
     exit 1
   fi
 

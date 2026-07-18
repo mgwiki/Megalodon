@@ -116,6 +116,9 @@ type native_skolem_macro_edge = {
   native_skolem_macro_edge_formula_free_variables : native_kernel_typed_variable list;
   native_skolem_macro_edge_source_free_variables : native_kernel_typed_variable list;
   native_skolem_macro_edge_target_free_variables : native_kernel_typed_variable list;
+  native_skolem_macro_edge_formula_children : (string * tm) list;
+  native_skolem_macro_edge_source_children : (string * tm) list;
+  native_skolem_macro_edge_target_children : (string * tm) list;
 }
 
 type step =
@@ -4689,6 +4692,103 @@ let validate_kernel_v1_metadata_contracts cert =
              ^ " but got "
              ^ String.concat "," actual)
   in
+  let immediate_formula_children_of_sexpr sexpr =
+    let binary_app head left right =
+      match head with
+      | "vampire_and" | "vampire_or" ->
+          let rec flatten = function
+            | List [Atom "AP";
+                    List [Atom "AP"; List [Atom "TMH"; nested_head]; nested_left];
+                    nested_right]
+                when atom nested_head = head ->
+                flatten nested_left @ flatten nested_right
+            | child -> [child]
+          in
+          flatten left @ flatten right
+          |> List.mapi
+               (fun index child -> ("arg_" ^ string_of_int index, child))
+      | _ -> []
+    in
+    match sexpr with
+    | List [Atom "AP"; List [Atom "AP"; List [Atom "TMH"; head]; left]; right] ->
+        binary_app (atom head) left right
+    | List [Atom "IMP"; left; right] ->
+        [("left", left); ("right", right)]
+    | List [Atom ("NOT" | "TMNOT"); body] ->
+        [("body", body)]
+    | List [Atom "ALLV"; _name; _tp; body] ->
+        let rec strip_forall_group = function
+          | List [Atom "ALLV"; _name; _tp; body] -> strip_forall_group body
+          | body -> body
+        in
+        [("body", strip_forall_group body)]
+    | List [Atom "LAMV"; _name; _tp; body] ->
+        let rec strip_lamv_group = function
+          | List [Atom "LAMV"; _name; _tp; body] -> strip_lamv_group body
+          | body -> body
+        in
+        [("body", strip_lamv_group body)]
+    | List [Atom "VLAMV"; _name; _tp; body] ->
+        let rec strip_vlamv_group = function
+          | List [Atom "VLAMV"; _name; _tp; body] -> strip_vlamv_group body
+          | body -> body
+        in
+        [("body", strip_vlamv_group body)]
+    | List [Atom "LAM"; _tp; body] ->
+        [("body", body)]
+    | List [Atom "AP"; List [Atom "TMH"; exists_head];
+            List [Atom binder; _name; _tp; body]]
+        when atom exists_head = "vampire_exists_prop"
+             && (binder = "LAMV" || binder = "VLAMV") ->
+        let rec strip_exists_group = function
+          | List [Atom "AP"; List [Atom "TMH"; nested_exists_head];
+                  List [Atom nested_binder; _name; _tp; body]]
+              when atom nested_exists_head = "vampire_exists_prop"
+                   && nested_binder = binder ->
+              strip_exists_group body
+          | body -> body
+        in
+        [("body", strip_exists_group body)]
+    | List [Atom "AP"; List [Atom "TMH"; exists_head];
+            List [Atom "LAM"; _tp; body]]
+        when atom exists_head = "vampire_exists_prop" ->
+        [("body", body)]
+    | _ -> []
+  in
+  let require_formula_child_fields id fields prefix raw_formula =
+    match field_value (prefix ^ "_child_count") fields with
+    | None -> ()
+    | Some _ ->
+        let expected =
+          immediate_formula_children_of_sexpr (parse_sexpr raw_formula)
+        in
+        require_field_int
+          id fields (prefix ^ "_child_count")
+          (List.length expected);
+        List.iteri
+          (fun index (role, child) ->
+             let field_prefix =
+               prefix ^ "_child_" ^ string_of_int index
+             in
+             let actual_role =
+               field_required id fields (field_prefix ^ "_role")
+             in
+             if actual_role <> role then
+               error
+                 (Printf.sprintf
+                    "%s: strict certificate v1 kernel_v1 metadata field %s_role expected %s but raw formula has %s"
+                    id field_prefix actual_role role);
+             let actual_child =
+               parse_field id fields (field_prefix ^ "_formula") parse_tm
+             in
+             let expected_child = parse_tm child in
+             if actual_child <> expected_child then
+               error
+                 (id ^ ": strict certificate v1 kernel_v1 metadata field "
+                  ^ field_prefix
+                  ^ "_formula does not match raw formula child"))
+          expected
+  in
   let validate_skolem_macro_edge_shape_metadata id fields =
     begin match field_value "source_formula" fields with
     | Some raw_source ->
@@ -4719,6 +4819,8 @@ let validate_kernel_v1_metadata_contracts cert =
               require_formula_quantifier_fields
                 id fields (prefix ^ "_formula") raw_formula;
               require_formula_free_variable_fields
+                id fields (prefix ^ "_formula") raw_formula;
+              require_formula_child_fields
                 id fields (prefix ^ "_formula") raw_formula
           | None -> ()
           end;
@@ -4729,6 +4831,8 @@ let validate_kernel_v1_metadata_contracts cert =
               require_formula_quantifier_fields
                 id fields (prefix ^ "_source") raw_source;
               require_formula_free_variable_fields
+                id fields (prefix ^ "_source") raw_source;
+              require_formula_child_fields
                 id fields (prefix ^ "_source") raw_source
           | None -> ()
           end;
@@ -4739,6 +4843,8 @@ let validate_kernel_v1_metadata_contracts cert =
               require_formula_quantifier_fields
                 id fields (prefix ^ "_target") raw_target;
               require_formula_free_variable_fields
+                id fields (prefix ^ "_target") raw_target;
+              require_formula_child_fields
                 id fields (prefix ^ "_target") raw_target
           | None -> ()
           end
@@ -8155,6 +8261,34 @@ let native_core_kernel_v1_quantifier_fields cert id prefix =
       in
       collect 0 []
 
+let native_core_kernel_v1_formula_child_fields cert id prefix =
+  match native_core_kernel_v1_int_field cert id (prefix ^ "_child_count") with
+  | None -> []
+  | Some count ->
+      if count < 0 then
+        error (id ^ ": kernel_v1 metadata field " ^ prefix ^ "_child_count is negative");
+      let rec collect index acc =
+        if index >= count then List.rev acc
+        else
+          let field_prefix =
+            prefix ^ "_child_" ^ string_of_int index
+          in
+          let role =
+            native_core_kernel_v1_required_field
+              cert id (field_prefix ^ "_role")
+          in
+          let formula =
+            match native_core_kernel_v1_tm_field cert id (field_prefix ^ "_formula") with
+            | Some formula -> formula
+            | None ->
+                error
+                  (id ^ ": kernel_v1 metadata requires "
+                   ^ field_prefix ^ "_formula")
+          in
+          collect (index + 1) ((role, formula) :: acc)
+      in
+      collect 0 []
+
 let native_core_skolem_macro_edges cert id =
   match native_core_kernel_v1_int_field cert id "skolem_macro_edge_count" with
   | None -> []
@@ -8203,6 +8337,15 @@ let native_core_skolem_macro_edges cert id =
               native_skolem_macro_edge_target_free_variables =
                 native_core_kernel_v1_typed_variable_fields
                   cert id (prefix ^ "_target") "free_variable";
+              native_skolem_macro_edge_formula_children =
+                native_core_kernel_v1_formula_child_fields
+                  cert id (prefix ^ "_formula");
+              native_skolem_macro_edge_source_children =
+                native_core_kernel_v1_formula_child_fields
+                  cert id (prefix ^ "_source");
+              native_skolem_macro_edge_target_children =
+                native_core_kernel_v1_formula_child_fields
+                  cert id (prefix ^ "_target");
             }
           in
           collect (index + 1) (edge :: acc)
