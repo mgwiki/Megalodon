@@ -4585,21 +4585,41 @@ let validate_kernel_v1_metadata_contracts cert =
              in
              if actual_tp <> tp then
                error
-                 (id ^ ": strict certificate v1 kernel_v1 metadata field "
-                  ^ field_prefix ^ "_type does not match the raw formula binder type"))
+                  (id ^ ": strict certificate v1 kernel_v1 metadata field "
+                   ^ field_prefix ^ "_type does not match the raw formula binder type"))
           quantified_variables
+  in
+  let require_typed_variable_fields id fields prefix role =
+    match field_value (prefix ^ "_" ^ role ^ "_count") fields with
+    | None -> ()
+    | Some _ ->
+        let count =
+          require_nonnegative_field_int
+            id fields (prefix ^ "_" ^ role ^ "_count")
+        in
+        for index = 0 to count - 1 do
+          let field_prefix =
+            prefix ^ "_" ^ role ^ "_" ^ string_of_int index
+          in
+          ignore (field_required id fields (field_prefix ^ "_var") : string);
+          ignore (parse_field id fields (field_prefix ^ "_type") parse_tp : tp)
+        done
   in
   let validate_skolem_macro_edge_shape_metadata id fields =
     begin match field_value "source_formula" fields with
     | Some raw_source ->
         require_formula_quantifier_fields
-          id fields "source_formula" raw_source
+          id fields "source_formula" raw_source;
+        require_typed_variable_fields
+          id fields "source_formula" "free_variable"
     | None -> ()
     end;
     begin match field_value "result_formula" fields with
     | Some raw_result ->
         require_formula_quantifier_fields
-          id fields "result_formula" raw_result
+          id fields "result_formula" raw_result;
+        require_typed_variable_fields
+          id fields "result_formula" "free_variable"
     | None -> ()
     end;
     match field_value "skolem_macro_edge_count" fields with

@@ -748,8 +748,10 @@ if [[ -s "$WORK_DIR/skolemize.tsv" ]]; then
     'proof_parent_count=' \
     'source_formula=' \
     'source_formula_quantifier_count=' \
+    'source_formula_free_variable_count=' \
     'result_formula=' \
     'result_formula_quantifier_count=' \
+    'result_formula_free_variable_count=' \
     'skolem_macro_edge_count=' \
     'introduced_count=' \
     'introduced_0_symbol='; do
@@ -827,9 +829,33 @@ if [[ -s "$WORK_DIR/skolemize.tsv" ]]; then
         }
       }
     }
+    function check_typed_variable_fields(vprefix, role, line,    count_field, count_pattern, count_match, count, variable_index, variable_prefix, var_field, type_field) {
+      count_field = vprefix "_" role "_count="
+      if (index(line, count_field) == 0) {
+        print count_field "\t" line
+      } else {
+        count_pattern = vprefix "_" role "_count=([0-9]+)"
+        if (match(line, count_pattern, count_match)) {
+          count = count_match[1] + 0
+          for (variable_index = 0; variable_index < count; ++variable_index) {
+            variable_prefix = vprefix "_" role "_" variable_index
+            var_field = variable_prefix "_var="
+            type_field = variable_prefix "_type="
+            if (index(line, var_field) == 0) {
+              print var_field "\t" line
+            }
+            if (index(line, type_field) == 0) {
+              print type_field "\t" line
+            }
+          }
+        }
+      }
+    }
     {
       check_quantifier_fields("source_formula", $0)
       check_quantifier_fields("result_formula", $0)
+      check_typed_variable_fields("source_formula", "free_variable", $0)
+      check_typed_variable_fields("result_formula", "free_variable", $0)
       if (match($0, /skolem_macro_edge_count=([0-9]+)/, edge_count_match)) {
         edge_count = edge_count_match[1] + 0
         for (edge_index = 0; edge_index < edge_count; ++edge_index) {
