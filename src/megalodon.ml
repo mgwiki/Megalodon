@@ -884,6 +884,7 @@ let vampire_source_map_expander cxtm source_map =
          entry.Vampire_cert_v1.source_map_source_name)
     source_map;
   let rec expand_tm depth = function
+    | TmH ("vampire_false" | "f__false") -> TmH (!fal)
     | TmH name ->
         begin match Hashtbl.find_opt aliases name with
         | Some hash -> TmH hash
@@ -905,6 +906,96 @@ let vampire_source_map_expander cxtm source_map =
     | Hyp _ | Known _ as proof -> proof
   in
   fun proof -> (vampire_local_definition_expander cxtm) (expand_pf 0 proof)
+
+let vampire_extra_delta_expander extra_delta proof =
+  let rec expand_tm depth tm =
+    let expanded =
+      match tm with
+      | TmH name ->
+          begin match Hashtbl.find_opt extra_delta name with
+          | Some (_, body) -> tmshift 0 depth body
+          | None -> TmH name
+          end
+      | TpAp (body, tp) -> TpAp (expand_tm depth body, tp)
+      | Ap (left, right) -> Ap (expand_tm depth left, expand_tm depth right)
+      | Lam (tp, body) -> Lam (tp, expand_tm (depth + 1) body)
+      | Imp (left, right) -> Imp (expand_tm depth left, expand_tm depth right)
+      | All (tp, body) -> All (tp, expand_tm (depth + 1) body)
+      | DB _ | Prim _ as tm -> tm
+    in
+    tm_beta_eta_norm expanded
+  in
+  let rec expand_pf depth = function
+    | PTpAp (proof, tp) -> PTpAp (expand_pf depth proof, tp)
+    | PTmAp (proof, tm) -> PTmAp (expand_pf depth proof, expand_tm depth tm)
+    | PPfAp (left, right) -> PPfAp (expand_pf depth left, expand_pf depth right)
+    | PLam (prop, proof) -> PLam (expand_tm depth prop, expand_pf depth proof)
+    | TLam (tp, proof) -> TLam (tp, expand_pf (depth + 1) proof)
+    | Hyp _ | Known _ as proof -> proof
+  in
+  expand_pf 0 proof
+
+let vampire_expand_returned_proof ?extra_delta cxtm source_map proof =
+  let base_expander =
+    match source_map with
+    | None -> vampire_local_definition_expander cxtm
+    | Some source_map -> vampire_source_map_expander cxtm source_map
+  in
+  match extra_delta with
+  | None -> base_expander proof
+  | Some extra_delta ->
+      let merged_delta = Hashtbl.copy (Vampire_cert_v1.approved_native_sgdelta ()) in
+      Hashtbl.iter
+        (fun h v -> Hashtbl.replace merged_delta h v)
+        extra_delta;
+      base_expander (vampire_extra_delta_expander merged_delta proof)
+
+let vampire_certificate_only_symbol_in_tm live_symbols extra_symbols tm =
+  let rec tm_symbol = function
+    | TmH name when Hashtbl.mem extra_symbols name && not (Hashtbl.mem live_symbols name) ->
+        Some name
+    | TmH _ | DB _ | Prim _ -> None
+    | TpAp (body, _) -> tm_symbol body
+    | Ap (left, right) ->
+        begin match tm_symbol left with
+        | Some _ as result -> result
+        | None -> tm_symbol right
+        end
+    | Lam (_, body) | All (_, body) -> tm_symbol body
+    | Imp (left, right) ->
+        begin match tm_symbol left with
+        | Some _ as result -> result
+        | None -> tm_symbol right
+        end
+  in
+  tm_symbol tm
+
+let vampire_certificate_only_symbol_in_proof live_symbols extra_delta extra_symbols proof =
+  let tm_symbol = vampire_certificate_only_symbol_in_tm live_symbols extra_symbols in
+  let rec pf_symbol = function
+    | Hyp _ -> None
+    | Known name when Hashtbl.mem extra_delta name && not (Hashtbl.mem sigdelta name) ->
+        Some name
+    | Known _ -> None
+    | PTpAp (body, _) -> pf_symbol body
+    | PTmAp (body, tm) ->
+        begin match pf_symbol body with
+        | Some _ as result -> result
+        | None -> tm_symbol tm
+        end
+    | PPfAp (left, right) ->
+        begin match pf_symbol left with
+        | Some _ as result -> result
+        | None -> pf_symbol right
+        end
+    | PLam (prop, body) ->
+        begin match tm_symbol prop with
+        | Some _ as result -> result
+        | None -> pf_symbol body
+        end
+    | TLam (_, body) -> pf_symbol body
+  in
+  pf_symbol proof
 
 let vampire_source_context_local_definition_names cxtm =
   List.filter_map
@@ -1209,9 +1300,63 @@ let vampire_check_current_goal_proof ?source_map ?extra_delta ?extra_symbols cla
         extra_symbols
   end;
   let proof_expander =
-    match source_map with
-    | None -> vampire_local_definition_expander cxtm
-    | Some source_map -> vampire_source_map_expander cxtm source_map
+    vampire_expand_returned_proof ?extra_delta cxtm source_map
+  in
+  let live_delta = vampire_source_context_delta_with_locals cxtm in
+  let live_symbol_table = Hashtbl.copy sigtmof in
+  let empty_extra_delta = Hashtbl.create 1 in
+  let certificate_delta =
+    match extra_delta with
+    | Some extra_delta -> extra_delta
+    | None -> empty_extra_delta
+  in
+  let live_check proof =
+    try
+      begin match extra_symbols with
+      | Some extra_symbols ->
+          begin match
+            vampire_certificate_only_symbol_in_proof
+              live_symbol_table
+              certificate_delta
+              extra_symbols
+              proof
+          with
+          | Some _ -> None
+          | None ->
+              let (actual, dl) =
+                extr_propofpf live_delta live_symbol_table cx hyps proof []
+              in
+              begin match
+                vampire_certificate_only_symbol_in_tm
+                  live_symbol_table
+                  extra_symbols
+                  actual
+              with
+              | Some _ -> None
+              | None ->
+              begin match conv actual claimtm live_delta dl with
+              | Some _ ->
+                  begin match check_propofpf sigdelta sigtmof cx hyps proof claimtm [] with
+                  | Some _ -> Some proof
+                  | None -> None
+                  end
+              | None -> None
+              end
+              end
+          end
+      | None ->
+          let (actual, dl) =
+            extr_propofpf live_delta live_symbol_table cx hyps proof []
+          in
+          match conv actual claimtm live_delta dl with
+          | Some _ ->
+              begin match check_propofpf sigdelta sigtmof cx hyps proof claimtm [] with
+              | Some _ -> Some proof
+              | None -> None
+              end
+          | None -> None
+      end
+    with _ -> None
   in
   let debug = Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" in
   let rec try_variants = function
@@ -1220,7 +1365,21 @@ let vampire_check_current_goal_proof ?source_map ?extra_delta ?extra_symbols cla
         try
           let (actual,dl) = extr_propofpf proof_delta symbol_table cx hyps proof_for_check [] in
           match conv actual claimtm proof_delta dl with
-          | Some _ -> Some (proof_expander proof_for_check)
+          | Some _ ->
+              let expanded = proof_expander proof_for_check in
+              begin match live_check expanded with
+              | Some _ as result -> result
+              | None ->
+                  if debug then
+                    begin
+                      Printf.printf
+                        "Vampire native certificate current-goal proof candidate checked only with certificate delta at line %d char %d; rejecting live proof.\n"
+                        !lineno
+                        !charno;
+                      flush stdout
+                    end;
+                  try_variants rest
+              end
           | None ->
               if debug then
                 begin
@@ -1294,9 +1453,7 @@ let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxp
         extra_symbols
   end;
   let proof_expander =
-    match source_map with
-    | None -> vampire_local_definition_expander cxtm
-    | Some source_map -> vampire_source_map_expander cxtm source_map
+    vampire_expand_returned_proof ?extra_delta cxtm source_map
   in
   let debug = Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" in
   let rec try_variants = function
@@ -1514,8 +1671,17 @@ let vampire_double_negation_target = function
       Some target
   | _ -> None
 
-let vampire_native_negation_target = function
+let rec vampire_native_negation_target = function
   | All (Prop, Imp (target, DB 0)) -> Some target
+  | All (Prop, Imp (target, false_tm)) when vampire_false_like false_tm -> Some target
+  | Imp (target, false_tm) when vampire_false_like false_tm -> Some target
+  | All (tp, body) ->
+      begin match vampire_native_negation_target body with
+      | Some target ->
+          if free_in_tm_p target 0 then Some (All (tp, target))
+          else Some (tmshift 0 (-1) target)
+      | None -> None
+      end
   | _ -> None
 
 let vampire_native_refutation_target = function
@@ -1564,8 +1730,49 @@ let vampire_xm_native_refutation_elim_to
     | Some _ -> true
     | None -> false
   in
+  let native_negation_from_live_not native_negation =
+    match native_negation with
+    | All (Prop, Imp (native_target, DB 0))
+        when convertible native_target target ->
+        TLam
+          (Prop,
+           PLam
+             (tmshift 0 1 target,
+              false_elim (PPfAp (Hyp 1, Hyp 0)) (DB 0)))
+    | All (Prop, Imp (native_target, false_tm))
+        when convertible native_target target && vampire_false_like false_tm ->
+        TLam
+          (Prop,
+           PLam
+             (tmshift 0 1 target,
+              PPfAp (Hyp 1, Hyp 0)))
+    | Imp (native_target, false_tm)
+        when convertible native_target target && vampire_false_like false_tm ->
+        PLam
+          (target,
+           PPfAp (Hyp 1, Hyp 0))
+    | _ ->
+        TLam
+          (Prop,
+           PLam
+             (tmshift 0 1 target,
+              false_elim (PPfAp (Hyp 1, Hyp 0)) (DB 0)))
+  in
   let refutation_for_target =
     match proposition with
+    | All (Prop, Imp (native_negation, DB 0)) ->
+        begin match vampire_native_negation_target native_negation with
+        | Some native_target when convertible native_target target ->
+            Some (PTmAp (proof, target), native_negation, false)
+        | _ -> None
+        end
+    | All (Prop, Imp (native_negation, false_result))
+        when vampire_false_like false_result ->
+        begin match vampire_native_negation_target native_negation with
+        | Some native_target when convertible native_target target ->
+            Some (PTmAp (proof, vampire_native_core_false_tm), native_negation, true)
+        | _ -> None
+        end
     | All (Prop, body) ->
         let instantiated = tmsubst body 0 target in
         if debug then
@@ -1581,7 +1788,7 @@ let vampire_xm_native_refutation_elim_to
             when convertible result target ->
             begin match vampire_native_negation_target native_negation with
             | Some native_target when convertible native_target target ->
-                Some (PTmAp (proof, target), native_target, false)
+                Some (PTmAp (proof, target), native_negation, false)
             | _ -> None
             end
         | _ ->
@@ -1598,7 +1805,7 @@ let vampire_xm_native_refutation_elim_to
                 when vampire_false_like false_result ->
                 begin match vampire_native_negation_target native_negation with
                 | Some native_target when convertible native_target target ->
-                    Some (PTmAp (proof, vampire_native_core_false_tm), native_target, true)
+                    Some (PTmAp (proof, vampire_native_core_false_tm), native_negation, true)
                 | _ -> None
                 end
             | _ -> None
@@ -1608,20 +1815,25 @@ let vampire_xm_native_refutation_elim_to
         when convertible result target ->
         begin match vampire_native_negation_target native_negation with
         | Some native_target when convertible native_target target ->
-            Some (proof, native_target, false)
+            Some (proof, native_negation, false)
         | _ -> None
         end
     | _ -> None
   in
   match refutation_for_target, Hashtbl.find_opt sigknh "xm" with
-  | Some (refutes_native_negation, _native_target, returns_native_false), Some xm_hash ->
+  | Some (refutes_native_negation, native_negation, returns_native_false), Some xm_hash ->
+      if debug then
+        begin
+          Printf.printf
+            "Vampire native certificate found native refutation for target.\ntarget: %s\nnative negation: %s\nreturns native false: %s\n"
+            (tm_to_str target)
+            (tm_to_str native_negation)
+            (if returns_native_false then "yes" else "no");
+          flush stdout
+        end;
       let live_not_target = Imp (target, TmH (!fal)) in
       let native_negation_from_live_not =
-        TLam
-          (Prop,
-           PLam
-             (tmshift 0 1 target,
-              false_elim (PPfAp (Hyp 1, Hyp 0)) (DB 0)))
+        native_negation_from_live_not native_negation
       in
       let candidate =
         PPfAp
@@ -1834,6 +2046,35 @@ let vampire_candidate_terms_from_props ?extra_symbols cxtm source_map props targ
   |> List.sort (fun left right -> compare (term_size left) (term_size right))
 
 let vampire_reconstruct_current_goal_from_refutation ?source_map ?extra_delta ?extra_symbols claimtm cxtm cxpf proof proposition =
+  let direct_goal =
+    match claimtm with
+    | Imp (assumption, _) ->
+        vampire_check_current_goal_proof
+          ?source_map ?extra_delta ?extra_symbols
+          claimtm cxtm cxpf (PLam (assumption, Hyp 0))
+    | _ -> None
+  in
+  match direct_goal with
+  | Some _ as result -> result
+  | None ->
+  let native_false_goal =
+    if vampire_false_like proposition then
+      match Hashtbl.find_opt sigknh "FalseE" with
+      | Some false_elim_hash ->
+          vampire_check_current_goal_proof
+            ?source_map ?extra_delta ?extra_symbols
+            claimtm cxtm cxpf
+            (PTmAp (PPfAp (Known false_elim_hash, proof), claimtm))
+      | None ->
+          vampire_check_current_goal_proof
+            ?source_map ?extra_delta ?extra_symbols
+            claimtm cxtm cxpf
+            (PTmAp (proof, claimtm))
+    else None
+  in
+  match native_false_goal with
+  | Some _ as result -> result
+  | None ->
   let rec try_proof depth proof proposition =
     match vampire_actual_prop_of_proof ?source_map ?extra_delta ?extra_symbols cxtm cxpf proof with
     | None -> None
@@ -1980,12 +2221,21 @@ let vampire_instantiated_refutation_candidates cxtm proof proposition source_bin
   collect 8 proof proposition source_bindings
 
 let vampire_negated_conjecture_target binding =
+  let rec prenex_negation_target = function
+    | Imp(target,false_tm) when vampire_false_like false_tm -> Some target
+    | All(tp,body) ->
+        begin match prenex_negation_target body with
+        | Some target ->
+            if free_in_tm_p target 0 then Some (All(tp,target))
+            else Some (tmshift 0 (-1) target)
+        | None -> None
+        end
+    | native_negation -> vampire_native_negation_target native_negation
+  in
   if binding.Vampire_cert_v1.core_native_certificate_source_kind = "negated_conjecture"
      || binding.Vampire_cert_v1.core_native_source_map_kind = "negated_conjecture"
      || binding.Vampire_cert_v1.core_native_source_map_kind = "conjecture" then
-    match binding.Vampire_cert_v1.core_native_source_proposition with
-    | Imp(target,false_tm) when vampire_false_like false_tm -> Some target
-    | _ -> None
+    prenex_negation_target binding.Vampire_cert_v1.core_native_source_proposition
   else None
 
 let vampire_reconstruct_final_conjecture_from_native_core source_map source_proofs native_core =
@@ -2324,7 +2574,39 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
                       proposition
                   with
                   | Some _ as result -> result
-                  | None -> try_applied applied_rest
+                  | None ->
+                      begin match vampire_negated_conjecture_target binding with
+                      | Some source_target ->
+                          begin match
+                            vampire_reconstruct_current_goal_from_refutation
+                              ~source_map
+                              ~extra_delta:native_core.Vampire_cert_v1.core_native_delta_table
+                              ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
+                              source_target
+                              cxtm
+                              cxpf
+                              proof
+                              proposition
+                          with
+                          | Some source_target_proof ->
+                              begin match
+                                vampire_reconstruct_goal_from_proved_prop
+                                  ~source_map
+                                  ~extra_delta:native_core.Vampire_cert_v1.core_native_delta_table
+                                  ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
+                                  claimtm
+                                  cxtm
+                                  cxpf
+                                  source_target_proof
+                                  source_target
+                              with
+                              | Some _ as result -> result
+                              | None -> try_applied applied_rest
+                              end
+                          | None -> try_applied applied_rest
+                          end
+                      | None -> try_applied applied_rest
+                      end
                 end
             | _ :: applied_rest -> try_applied applied_rest
           in
@@ -7720,6 +8002,52 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                  | Some(d) ->
                     let currprooffun = !prooffun in
                     let endpos = Some(!lineno,!charno) in
+                    let final_closure_checks =
+                      if pfstr <> [] then true
+                      else
+                        try
+                          let dgpf = currprooffun [(endpos,d)] in
+                          let dgpf = if !optimizepf1 then optimize_pf_1 dgpf else dgpf in
+                          let dgpf =
+                            if !optimizepf2 then
+                              optimize_pf_2
+                                sigdelta
+                                sigtmof
+                                dgpf
+                                !optimizepf2tc
+                                !optimizepf2pc
+                            else dgpf
+                          in
+                          let dgpf = if !normalizepf then normalize_pf dgpf else dgpf in
+                          match
+                            if !doublecheckpf then
+                              check_propofpf sigdelta sigtmof [] [] dgpf gpgtm !deltaset
+                            else
+                              Some(!deltaset)
+                          with
+                          | Some _ -> true
+                          | None -> false
+                        with
+                        | Failure msg ->
+                            if !verbosity > 8 then
+                              begin
+                                Printf.printf
+                                  "Native reconstructed proof term does not close final theorem at line %d char %d: %s.\n"
+                                  !lineno
+                                  !charno
+                                  msg;
+                                flush stdout
+                              end;
+                            false
+                        | _ -> false
+                    in
+                    if not final_closure_checks then
+                      raise
+                        (Failure
+                           (Printf.sprintf
+                              "Native reconstruction produced a local proof term that does not close the final theorem at line %d char %d"
+                              !lineno
+                              !charno));
                     prooffun := (fun dl -> currprooffun ((endpos,d)::dl));
                     pfstate := pfstr;
                     if certified_vampire_tac && !verbosity > 2 then

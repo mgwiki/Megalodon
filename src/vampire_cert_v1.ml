@@ -7644,6 +7644,27 @@ let native_core_step_variables cert id =
               (native_core_ident name,
                native_sort_of_simple_sort (native_core_strip_outer_parens sort)))
 
+let native_core_tm_mentions_variable name tm =
+  let rec mentions = function
+    | TmH raw_name ->
+        begin match native_core_ident_opt raw_name with
+        | Some ident -> ident = name
+        | None -> false
+        end
+    | TpAp (body, _) -> mentions body
+    | Ap (left, right) -> mentions left || mentions right
+    | Lam (_, body) | All (_, body) -> mentions body
+    | Imp (left, right) -> mentions left || mentions right
+    | DB _ | Prim _ -> false
+  in
+  mentions tm
+
+let native_core_step_variables_for_terms cert id terms =
+  native_core_step_variables cert id
+  |> List.filter
+       (fun (name, _) ->
+          List.exists (native_core_tm_mentions_variable name) terms)
+
 let native_core_metadata_step_extra_field cert id kind key =
   let prefix = key ^ "=" in
   let prefix_len = String.length prefix in
@@ -10232,20 +10253,30 @@ let native_core_avatar_split_proof cert id parent_ids result clause_table avatar
       in
       if split_name <> def_split_name then
         error (id ^ ": native preprocess proof-term avatar_split result split does not match definition parent");
-      if not (same_clause_multiset source_clause component_literals) then
-        error (id ^ ": native preprocess proof-term avatar_split source clause does not match component definition");
-      let split_prop = native_core_literal_prop (Pos (TmH split_name)) in
-      let component_to_split =
-        native_core_and_elim_right
-          (Imp (split_prop, definition_component_prop))
-          (Imp (definition_component_prop, split_prop))
-          definition_proof
-      in
-      let component_proof =
-        native_core_prove_clause_to_clause id source_clause component_literals source_proof
-      in
-      let split_proof = PPfAp (component_to_split, component_proof) in
-      native_core_prove_literal_to_clause id result (Pos (TmH split_name)) split_proof
+      begin match
+        split_clause_by_component_definitions
+          source_clause
+          source_proof
+          [(def_split_name, component_literals, definition_component_prop,
+            definition_proof)]
+      with
+      | Some proof -> proof
+      | None ->
+          if not (same_clause_multiset source_clause component_literals) then
+            error (id ^ ": native preprocess proof-term avatar_split source clause does not match component definition");
+          let split_prop = native_core_literal_prop (Pos (TmH split_name)) in
+          let component_to_split =
+            native_core_and_elim_right
+              (Imp (split_prop, definition_component_prop))
+              (Imp (definition_component_prop, split_prop))
+              definition_proof
+          in
+          let component_proof =
+            native_core_prove_clause_to_clause id source_clause component_literals source_proof
+          in
+          let split_proof = PPfAp (component_to_split, component_proof) in
+          native_core_prove_literal_to_clause id result (Pos (TmH split_name)) split_proof
+      end
   | source_id :: definition_ids, _ when native_core_is_split_clause result ->
       let source_clause, source_proof = Hashtbl.find clause_table source_id in
       begin match quantified_two_component_split source_id definition_ids with
@@ -13867,6 +13898,10 @@ let native_core_source_is_set_reflexivity source_map source =
       | None -> false
       end
 
+let native_core_source_is_conjecture = function
+  | SourceConjecture _ | SourceNegatedConjecture _ -> true
+  | _ -> false
+
 let native_core_source_binding source_map id source proposition =
   let source_kind, tptp_name = native_core_source_kind_and_tptp_name source in
   let entry = native_core_source_map_entry source_map source in
@@ -14130,7 +14165,12 @@ let native_certificate_source_bindings
            in
            bindings @ [native_core_source_binding source_map id source proposition]
        | FormulaTermInput (id, source, formula) ->
-           let step_variables = native_core_step_variables cert id in
+           let step_variables =
+             if native_core_source_is_conjecture source then
+               native_core_step_variables_for_terms cert id [formula]
+             else
+               native_core_step_variables cert id
+           in
            let source_variables =
              if source_keeps_local_variables source then source_local_variables source
              else source_variables [formula]
@@ -14197,7 +14237,20 @@ let elaborate_core_resolution_refutation_native
           let proposition = native_core_step_clause_prop cert variables id [literal] in
           add_source_input id source proposition
       | FormulaTermInput (id, source, formula) ->
-          let proposition = native_preprocess_step_formula_prop cert variables id formula in
+          let step_variables =
+            if native_core_source_is_conjecture source then
+              native_core_step_variables_for_terms cert id [formula]
+            else
+              native_core_step_variables cert id
+          in
+          let proposition =
+            native_core_close_tm
+              (variables @ step_variables)
+              (native_core_formula_prop formula)
+          in
+          let proposition =
+            List.fold_right (fun (_, tp) prop -> All (tp, prop)) step_variables proposition
+          in
           add_source_input id source proposition
       | _ -> ())
     typed_steps;
@@ -14219,6 +14272,36 @@ let elaborate_core_resolution_refutation_native
     match find 0 !source_inputs with
     | Some index -> index
     | None -> error (id ^ ": native core proof-term checker lost source hypothesis")
+  in
+  let source_input_proposition id =
+    let rec find = function
+      | [] -> None
+      | (input_id, proposition, _) :: rest ->
+          if input_id = id then Some proposition else find rest
+    in
+    find !source_inputs
+  in
+  let lift_source_input_to_formula_step source_prop target_prop proof =
+    let rec lift source_prop target_prop proof =
+      match source_prop, target_prop with
+      | All (source_tp, source_body), All (target_tp, target_body)
+          when source_tp = target_tp ->
+          TLam
+            (target_tp,
+             lift
+               source_body
+               target_body
+               (PTmAp (pftmshift 0 1 proof, DB 0)))
+      | _, All (tp, body) ->
+          TLam
+            (tp,
+             lift
+               (tmshift 0 1 source_prop)
+               body
+               (pftmshift 0 1 proof))
+      | _ -> proof
+    in
+    lift source_prop target_prop proof
   in
   let variable_types = List.rev (List.map snd variables) in
   let closed_source_context =
@@ -14368,10 +14451,20 @@ let elaborate_core_resolution_refutation_native
           end
       | FormulaTermInput (id, _, formula) ->
           if step_is_used id then begin
+            let target_prop =
+              native_preprocess_step_formula_prop cert variables id formula
+            in
             let proof =
               match native_core_source_proof shifted_source_proofs id with
               | Some proof -> proof
-              | None -> Hyp (source_hyp_index id)
+              | None ->
+                  let source_proof = Hyp (source_hyp_index id) in
+                  begin match source_input_proposition id with
+                  | Some source_prop ->
+                      lift_source_input_to_formula_step
+                        source_prop target_prop source_proof
+                  | None -> source_proof
+                  end
             in
             store_formula id formula proof
           end
@@ -14664,8 +14757,19 @@ let elaborate_preprocess_refutation_native
           in
           add_source_input id source proposition
       | FormulaTermInput (id, source, formula) ->
+          let step_variables =
+            if native_core_source_is_conjecture source then
+              native_core_step_variables_for_terms cert id [formula]
+            else
+              native_core_step_variables cert id
+          in
           let proposition =
-            native_preprocess_step_formula_prop cert variables id formula
+            native_core_close_tm
+              (variables @ step_variables)
+              (native_core_formula_prop formula)
+          in
+          let proposition =
+            List.fold_right (fun (_, tp) prop -> All (tp, prop)) step_variables proposition
           in
           add_source_input id source proposition
       | _ -> ())
@@ -14688,6 +14792,36 @@ let elaborate_preprocess_refutation_native
     match find 0 !source_inputs with
     | Some index -> index
     | None -> error (id ^ ": native preprocess proof-term checker lost source hypothesis")
+  in
+  let source_input_proposition id =
+    let rec find = function
+      | [] -> None
+      | (input_id, proposition, _) :: rest ->
+          if input_id = id then Some proposition else find rest
+    in
+    find !source_inputs
+  in
+  let lift_source_input_to_formula_step source_prop target_prop proof =
+    let rec lift source_prop target_prop proof =
+      match source_prop, target_prop with
+      | All (source_tp, source_body), All (target_tp, target_body)
+          when source_tp = target_tp ->
+          TLam
+            (target_tp,
+             lift
+               source_body
+               target_body
+               (PTmAp (pftmshift 0 1 proof, DB 0)))
+      | _, All (tp, body) ->
+          TLam
+            (tp,
+             lift
+               (tmshift 0 1 source_prop)
+               body
+               (pftmshift 0 1 proof))
+      | _ -> proof
+    in
+    lift source_prop target_prop proof
   in
   let variable_types = List.rev (List.map snd variables) in
   let closed_source_context =
@@ -14915,10 +15049,20 @@ let elaborate_preprocess_refutation_native
           end
       | FormulaTermInput (id, _, formula) ->
           if step_is_used id then begin
+            let target_prop =
+              native_preprocess_step_formula_prop cert variables id formula
+            in
             let proof =
               match native_core_source_proof shifted_source_proofs id with
               | Some proof -> proof
-              | None -> Hyp (source_hyp_index id)
+              | None ->
+                  let source_proof = Hyp (source_hyp_index id) in
+                  begin match source_input_proposition id with
+                  | Some source_prop ->
+                      lift_source_input_to_formula_step
+                        source_prop target_prop source_proof
+                  | None -> source_proof
+                  end
             in
             store_formula id formula proof
           end
