@@ -9139,8 +9139,11 @@ let native_core_skolem_context_for_source cert id source =
   let variable_name index tp =
     match List.nth_opt step_variables index with
     | Some (name, declared_tp) when declared_tp = tp -> name
-    | Some (name, _) -> name
-    | None -> "__skolem_context_" ^ string_of_int index
+    | _ ->
+        begin match List.find_opt (fun (_, declared_tp) -> declared_tp = tp) step_variables with
+        | Some (name, _) -> name
+        | None -> "__skolem_context_" ^ string_of_int index
+        end
   in
   let rec find all_index context = function
     | Ap (TmH "vampire_exists_prop", Lam (tp, body)) ->
@@ -9248,8 +9251,11 @@ let native_core_certificate_sgdelta cert symbol_table =
     let variable_name index tp =
       match List.nth_opt step_variables index with
       | Some (name, declared_tp) when declared_tp = tp -> name
-      | Some (name, _) -> name
-      | None -> "__skolem_context_" ^ string_of_int index
+      | _ ->
+          begin match List.find_opt (fun (_, declared_tp) -> declared_tp = tp) step_variables with
+          | Some (name, _) -> name
+          | None -> "__skolem_context_" ^ string_of_int index
+          end
     in
     let dependency_arg_name = function
       | TmH raw_name -> native_core_ident_opt raw_name
@@ -9530,7 +9536,7 @@ let native_core_certificate_sgdelta cert symbol_table =
     avatar_definitions;
   sgdelta, definitions
 
-let native_core_expand_generated_skolems_tm cert definitions input =
+let native_core_expand_generated_skolems_tm ?(ambient_shift=0) cert definitions input =
   let generated = native_core_generated_skolem_symbols cert in
   let is_generated h = List.mem h generated in
   let rec leading_lam_count count = function
@@ -9545,14 +9551,14 @@ let native_core_expand_generated_skolems_tm cert definitions input =
         | body -> apply_definition (Ap (body, arg)) rest
         end
   in
-  let rec tm input =
+  let rec tm depth input =
     let mapped =
       match input with
-      | TpAp (m, a) -> TpAp (tm m, a)
-      | Ap (m, n) -> Ap (tm m, tm n)
-      | Lam (a, body) -> Lam (a, tm body)
-      | Imp (m, n) -> Imp (tm m, tm n)
-      | All (a, body) -> All (a, tm body)
+      | TpAp (m, a) -> TpAp (tm depth m, a)
+      | Ap (m, n) -> Ap (tm depth m, tm depth n)
+      | Lam (a, body) -> Lam (a, tm (depth + 1) body)
+      | Imp (m, n) -> Imp (tm depth m, tm depth n)
+      | All (a, body) -> All (a, tm (depth + 1) body)
       | DB _ | TmH _ | Prim _ -> input
     in
     let head, args = native_core_flatten_value_application mapped in
@@ -9561,13 +9567,13 @@ let native_core_expand_generated_skolems_tm cert definitions input =
         begin match Hashtbl.find_opt definitions h with
         | Some (0, body) ->
             if List.length args < leading_lam_count 0 body then mapped
-            else tm (apply_definition body args)
+            else tm depth (apply_definition (tmshift 0 (ambient_shift + depth) body) args)
         | _ ->
             mapped
         end
     | _ -> mapped
   in
-  tm input
+  tm 0 input
 
 let native_core_expand_generated_skolems_step cert definitions step =
   let tm = native_core_expand_generated_skolems_tm cert definitions in
@@ -11664,7 +11670,7 @@ let native_core_eq_symmetry_proof id literal proof =
       end
 
 let native_core_formula_orientation_proof
-    ?(normalize_formula_for_match=(fun tm -> tm))
+    ?(normalize_formula_for_match=(fun _ tm -> tm))
     ?(definition_symbols=[])
     ?(parent_variable_map=[])
     id variables parent_step_variables result_step_variables source target proof =
@@ -11738,19 +11744,19 @@ let native_core_formula_orientation_proof
   let target = native_core_close_tm (variables @ result_step_variables) target in
   let rec convert direction source target proof =
     let source_prop =
-      normalize_formula_for_match source
+      normalize_formula_for_match result_variable_count source
       |> native_core_formula_prop
       |> native_core_normalize_bool_constants
     in
     let target_prop =
-      normalize_formula_for_match target
+      normalize_formula_for_match result_variable_count target
       |> native_core_formula_prop
       |> native_core_normalize_bool_constants
     in
     if source_prop = target_prop then proof
     else begin
       let target_for_match =
-        normalize_formula_for_match target
+        normalize_formula_for_match result_variable_count target
         |> native_core_normalize_bool_constants
       in
       match direction, native_core_equality_sides target_for_match with
@@ -11978,11 +11984,11 @@ let native_core_formula_orientation_proof
           begin match direction with
           | `Forward ->
               let source_for_match =
-                normalize_formula_for_match source
+                normalize_formula_for_match result_variable_count source
                 |> native_core_normalize_bool_constants
               in
               let target_for_match =
-                normalize_formula_for_match target
+                normalize_formula_for_match result_variable_count target
                 |> native_core_normalize_bool_constants
               in
               begin match native_core_swapped_eq_literal (Pos source_for_match) with
@@ -12015,11 +12021,11 @@ let native_core_formula_orientation_proof
               end
           | `Backward ->
               let source_for_match =
-                normalize_formula_for_match source
+                normalize_formula_for_match result_variable_count source
                 |> native_core_normalize_bool_constants
               in
               let target_for_match =
-                normalize_formula_for_match target
+                normalize_formula_for_match result_variable_count target
                 |> native_core_normalize_bool_constants
               in
               begin match native_core_swapped_eq_literal (Pos target_for_match) with
@@ -12338,7 +12344,8 @@ let native_core_skolem_target_witness id source target =
         (id ^ ": native core proof-term skolemization result does not match source body")
 
 let native_core_direct_skolem_formula_proof
-    ?(normalize_formula_for_match=(fun tm -> tm))
+    ?(normalize_formula_for_match=(fun _ tm -> tm))
+    ?(ambient_shift=0)
     id substitution source target proof =
   let rec contains_named name = function
     | TmH candidate -> candidate = name
@@ -12425,11 +12432,12 @@ let native_core_direct_skolem_formula_proof
     rewrite_witnesses replacements 0 target
   in
   native_core_formula_orientation_proof
-    ~normalize_formula_for_match
+    ~normalize_formula_for_match:(fun count tm ->
+      normalize_formula_for_match (ambient_shift + count) tm)
     id [] [] [] orientation_source orientation_target choice_proof
 
 let native_core_skolem_formula_proof
-    ?(normalize_formula_for_match=(fun tm -> tm))
+    ?(normalize_formula_for_match=(fun _ tm -> tm))
     id variables parent_step_variables result_step_variables substitution source target proof =
   let source = native_core_close_tm (variables @ result_step_variables) source in
   let target = native_core_close_tm (variables @ result_step_variables) target in
@@ -12562,6 +12570,7 @@ let native_core_skolem_formula_proof
           in
           native_core_direct_skolem_formula_proof
             ~normalize_formula_for_match
+            ~ambient_shift:result_variable_count
             id closed_substitution source target proof
       | _ ->
           error
@@ -14035,8 +14044,8 @@ let elaborate_core_resolution_refutation_native
   in
   let proof_delta = native_core_close_delta_table variables proof_delta in
   let definition_delta = native_core_close_delta_table variables raw_definition_delta in
-  let normalize_generated_skolems =
-    native_core_expand_generated_skolems_tm cert definition_delta
+  let normalize_generated_skolems ambient_shift =
+    native_core_expand_generated_skolems_tm ~ambient_shift cert definition_delta
   in
   let proof_delta = native_core_merge_external_delta proof_delta external_delta_table in
   let check_step_proof id clause proof =
@@ -14493,8 +14502,8 @@ let elaborate_preprocess_refutation_native
   in
   let proof_delta = native_core_close_delta_table variables proof_delta in
   let definition_delta = native_core_close_delta_table variables raw_definition_delta in
-  let normalize_generated_skolems =
-    native_core_expand_generated_skolems_tm cert definition_delta
+  let normalize_generated_skolems ambient_shift =
+    native_core_expand_generated_skolems_tm ~ambient_shift cert definition_delta
   in
   let proof_delta = native_core_merge_external_delta proof_delta external_delta_table in
   let check_step_proof id prop proof =
