@@ -12968,6 +12968,41 @@ let native_core_replace_witness_symbols_in_pf replacements proof =
   in
   replace_pf 0 proof
 
+let native_core_replace_terms_in_pf replacements proof =
+  let normalize tm =
+    tm
+    |> native_core_normalize_bool_constants
+    |> tm_beta_eta_norm
+  in
+  let rec replace_tm depth tm =
+    match
+      List.find_opt
+        (fun (needle, _) -> tm = tmshift 0 depth needle)
+        replacements
+    with
+    | Some (_, replacement) -> tmshift 0 depth replacement |> normalize
+    | None ->
+        match tm with
+        | TpAp (body, tp) -> TpAp (replace_tm depth body, tp)
+        | Ap (left, right) -> Ap (replace_tm depth left, replace_tm depth right)
+        | Lam (tp, body) -> Lam (tp, replace_tm (depth + 1) body)
+        | Imp (left, right) -> Imp (replace_tm depth left, replace_tm depth right)
+        | All (tp, body) -> All (tp, replace_tm (depth + 1) body)
+        | DB _ | TmH _ | Prim _ -> tm
+  in
+  let rec replace_pf depth proof =
+    match proof with
+    | PTpAp (body, tp) -> PTpAp (replace_pf depth body, tp)
+    | PTmAp (body, tm) ->
+        PTmAp (replace_pf depth body, replace_tm depth tm |> normalize)
+    | PPfAp (left, right) -> PPfAp (replace_pf depth left, replace_pf depth right)
+    | PLam (prop, body) ->
+        PLam (replace_tm depth prop |> normalize, replace_pf depth body)
+    | TLam (tp, body) -> TLam (tp, replace_pf (depth + 1) body)
+    | Hyp _ | Known _ -> proof
+  in
+  replace_pf 0 proof
+
 let native_core_pf_contains_term_symbol names proof =
   let rec tm_contains = function
     | TmH name -> List.mem name names
@@ -13189,21 +13224,38 @@ let native_core_skolem_refutation_cps_proof
     |> native_core_replace_witness_symbols_in_tm replacements
     |> tm_beta_eta_norm
   in
-  let proof_with_replacements replacements proof =
+  let proof_with_replacements term_replacements replacements proof =
     native_core_replace_witness_symbols_in_pf
       (split_replacements @ replacements)
       proof
+    |> native_core_replace_terms_in_pf term_replacements
   in
-  let rec eliminate replacements witnesses source result proof result_to_target =
+  let rec eliminate term_replacements replacements witnesses source result proof result_to_target =
     match source, result, witnesses with
     | Ap (TmH "vampire_exists_prop", Lam (tp, body)), _, witness :: rest ->
         let replacements_under_binder =
           (witness, DB 0)
           :: List.map (fun (name, tm) -> (name, tmshift 0 1 tm)) replacements
         in
+        let term_replacements_under_binder =
+          List.map
+            (fun (needle, replacement) ->
+               (tmshift 0 1 needle, tmshift 0 1 replacement))
+            term_replacements
+        in
         let body_prop =
           native_core_formula_prop body
           |> native_core_replace_witness_symbols_in_tm replacements_under_binder
+          |> native_core_normalize_bool_constants
+          |> tm_beta_eta_norm
+        in
+        let epsilon_witness =
+          Ap (TmH (native_core_eps_symbol tp), Lam (tp, body_prop))
+          |> native_core_normalize_bool_constants
+          |> tm_beta_eta_norm
+        in
+        let term_replacements_under_binder =
+          (epsilon_witness, DB 0) :: term_replacements_under_binder
         in
         let continuation =
           TLam
@@ -13211,6 +13263,7 @@ let native_core_skolem_refutation_cps_proof
              PLam
                (body_prop,
                 eliminate
+                  term_replacements_under_binder
                   replacements_under_binder
                   rest
                   body
@@ -13249,10 +13302,11 @@ let native_core_skolem_refutation_cps_proof
                    (pfshift 0 1 source_right_proof)
                in
                PPfAp
-                 (pfshift 0 1 (proof_with_replacements replacements result_to_target),
+                 (pfshift 0 1 (proof_with_replacements term_replacements replacements result_to_target),
                   rebuilt))
           in
           eliminate
+            term_replacements
             replacements
             witnesses
             source_left
@@ -13281,10 +13335,11 @@ let native_core_skolem_refutation_cps_proof
                    (Hyp 0)
                in
                PPfAp
-                 (pfshift 0 1 (proof_with_replacements replacements result_to_target),
+                 (pfshift 0 1 (proof_with_replacements term_replacements replacements result_to_target),
                   rebuilt))
           in
           eliminate
+            term_replacements
             replacements
             witnesses
             source_right
@@ -13292,7 +13347,7 @@ let native_core_skolem_refutation_cps_proof
             source_right_proof
             right_result_to_target
         else
-          eliminate_base replacements source result proof result_to_target
+          eliminate_base term_replacements replacements source result proof result_to_target
     | Ap (Ap (TmH "vampire_or", source_left), source_right),
       Ap (Ap (TmH "vampire_or", result_left), result_right),
       _ ->
@@ -13325,7 +13380,7 @@ let native_core_skolem_refutation_cps_proof
                  (Hyp 0)
              in
              PPfAp
-               (pfshift 0 1 (proof_with_replacements replacements result_to_target),
+               (pfshift 0 1 (proof_with_replacements term_replacements replacements result_to_target),
                 rebuilt))
         in
         let rebuild_right_to_target =
@@ -13338,7 +13393,7 @@ let native_core_skolem_refutation_cps_proof
                  (Hyp 0)
              in
              PPfAp
-               (pfshift 0 1 (proof_with_replacements replacements result_to_target),
+               (pfshift 0 1 (proof_with_replacements term_replacements replacements result_to_target),
                 rebuilt))
         in
         let left_branch =
@@ -13346,6 +13401,7 @@ let native_core_skolem_refutation_cps_proof
             (source_left_prop,
              if left_count > 0 then
                eliminate
+                 term_replacements
                  replacements
                  left_witnesses
                  source_left
@@ -13363,6 +13419,7 @@ let native_core_skolem_refutation_cps_proof
             (source_right_prop,
              if right_count > 0 then
                eliminate
+                 term_replacements
                  replacements
                  right_witnesses
                  source_right
@@ -13379,11 +13436,11 @@ let native_core_skolem_refutation_cps_proof
           (PPfAp (PTmAp (proof, branch_target), left_branch),
            right_branch)
     | _, _, [] ->
-        eliminate_base replacements source result proof result_to_target
+        eliminate_base term_replacements replacements source result proof result_to_target
     | _ ->
         error
           (id ^ ": native preprocess Skolem CPS source has fewer existential binders than substitutions")
-  and eliminate_base replacements source result proof result_to_target =
+  and eliminate_base term_replacements replacements source result proof result_to_target =
         let source_prop = formula_prop_with_replacements replacements source in
         let expected_result_prop = formula_prop_with_replacements replacements result in
         if source_prop <> expected_result_prop then begin
@@ -13398,10 +13455,10 @@ let native_core_skolem_refutation_cps_proof
           native_core_bind_result_step_variables variables result_step_variables proof
         in
         PPfAp
-          (proof_with_replacements replacements result_to_target,
+          (proof_with_replacements term_replacements replacements result_to_target,
            result_checked_proof)
   in
-  eliminate [] witness_symbols source result parent_proof result_to_target
+  eliminate [] [] witness_symbols source result parent_proof result_to_target
 
 let native_core_truth_conflict_false_proof id literal proof =
   let is_true = function
