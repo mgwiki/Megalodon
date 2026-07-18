@@ -9849,7 +9849,7 @@ let native_core_avatar_split_proof cert id parent_ids result clause_table avatar
                 (id ^ ": native preprocess proof-term avatar_split quantified component needs at least one component literal and at most one component variable")
         in
         let infos = List.map definition_info definition_ids in
-        let substitution =
+        let default_substitution =
           infos
           |> List.filter_map
                (fun (_, _, _, component_witness, _, _, _, _, _) ->
@@ -9857,6 +9857,49 @@ let native_core_avatar_split_proof cert id parent_ids result clause_table avatar
                   | Some (component_var, _, _, _, _, witness) ->
                       Some (component_var, witness)
                   | None -> None)
+        in
+        let metadata_substitution =
+          let field key =
+            native_core_metadata_step_extra_field cert id "kernel_v1" key
+          in
+          let binding_count =
+            match field "parent_var_binding_count" with
+            | Some text -> (try int_of_string text with Failure _ -> 0)
+            | None -> 0
+          in
+          let witness_for_split split_name =
+            infos
+            |> List.find_map
+                 (fun (_, candidate_split, _, component_witness, _, _, _, _, _) ->
+                    if candidate_split = split_name then
+                      match component_witness with
+                      | Some (_, _, _, _, _, witness) -> Some witness
+                      | None -> None
+                    else None)
+          in
+          let rec loop index acc =
+            if index >= binding_count then List.rev acc
+            else
+              let prefix = "parent_var_binding_" ^ string_of_int index in
+              let acc =
+                match
+                  field (prefix ^ "_parent_var"),
+                  field (prefix ^ "_split_var")
+                with
+                | Some parent_var, Some split_var ->
+                    begin match witness_for_split ("split_" ^ split_var) with
+                    | Some witness -> (native_core_ident parent_var, witness) :: acc
+                    | None -> acc
+                    end
+                | _ -> acc
+              in
+              loop (index + 1) acc
+          in
+          loop 0 []
+        in
+        let substitution =
+          if metadata_substitution = [] then default_substitution
+          else metadata_substitution @ default_substitution
         in
         let instantiated_source_clause = subst_clause substitution source_clause in
         let source_step_variables = native_core_step_variables cert source_id in
@@ -11742,21 +11785,24 @@ let native_core_formula_orientation_proof
   in
   let source = native_core_close_tm (variables @ result_step_variables) source in
   let target = native_core_close_tm (variables @ result_step_variables) target in
-  let rec convert direction source target proof =
+  let rec convert local_depth direction source target proof =
+    let normalize_for_match tm =
+      normalize_formula_for_match (result_variable_count + local_depth) tm
+    in
     let source_prop =
-      normalize_formula_for_match result_variable_count source
+      normalize_for_match source
       |> native_core_formula_prop
       |> native_core_normalize_bool_constants
     in
     let target_prop =
-      normalize_formula_for_match result_variable_count target
+      normalize_for_match target
       |> native_core_formula_prop
       |> native_core_normalize_bool_constants
     in
     if source_prop = target_prop then proof
     else begin
       let target_for_match =
-        normalize_formula_for_match result_variable_count target
+        normalize_for_match target
         |> native_core_normalize_bool_constants
       in
       match direction, native_core_equality_sides target_for_match with
@@ -11791,6 +11837,7 @@ let native_core_formula_orientation_proof
           TLam
             (source_tp,
              convert
+               (local_depth + 1)
                direction
                source_body
                target_body
@@ -11799,24 +11846,24 @@ let native_core_formula_orientation_proof
           begin match direction with
           | `Forward ->
               let source_left_proof =
-                convert `Backward source_left target_left (Hyp 0)
+                convert local_depth `Backward source_left target_left (Hyp 0)
               in
               let source_right_proof =
                 PPfAp (pfshift 0 1 proof, source_left_proof)
               in
               PLam
                 (native_core_formula_prop target_left,
-                 convert `Forward source_right target_right source_right_proof)
+                 convert local_depth `Forward source_right target_right source_right_proof)
           | `Backward ->
               let target_left_proof =
-                convert `Forward source_left target_left (Hyp 0)
+                convert local_depth `Forward source_left target_left (Hyp 0)
               in
               let target_right_proof =
                 PPfAp (pfshift 0 1 proof, target_left_proof)
               in
               PLam
                 (native_core_formula_prop source_left,
-                 convert `Backward source_right target_right target_right_proof)
+                 convert local_depth `Backward source_right target_right target_right_proof)
           end
       | Ap (Ap (TmH "vampire_or", source_left), source_right),
         Ap (Ap (TmH "vampire_or", target_left), target_right) ->
@@ -11833,7 +11880,7 @@ let native_core_formula_orientation_proof
                    native_core_or_intro_left
                      target_left_prop
                      target_right_prop
-                     (convert `Forward source_left target_left (Hyp 0)))
+                     (convert local_depth `Forward source_left target_left (Hyp 0)))
               in
               let right_branch =
                 PLam
@@ -11841,7 +11888,7 @@ let native_core_formula_orientation_proof
                    native_core_or_intro_right
                      target_left_prop
                      target_right_prop
-                     (convert `Forward source_right target_right (Hyp 0)))
+                     (convert local_depth `Forward source_right target_right (Hyp 0)))
               in
               PPfAp (PPfAp (PTmAp (proof, target_prop), left_branch), right_branch)
           | `Backward ->
@@ -11856,7 +11903,7 @@ let native_core_formula_orientation_proof
                    native_core_or_intro_left
                      source_left_prop
                      source_right_prop
-                     (convert `Backward source_left target_left (Hyp 0)))
+                     (convert local_depth `Backward source_left target_left (Hyp 0)))
               in
               let right_branch =
                 PLam
@@ -11864,7 +11911,7 @@ let native_core_formula_orientation_proof
                    native_core_or_intro_right
                      source_left_prop
                      source_right_prop
-                     (convert `Backward source_right target_right (Hyp 0)))
+                     (convert local_depth `Backward source_right target_right (Hyp 0)))
               in
               PPfAp (PPfAp (PTmAp (proof, source_prop), left_branch), right_branch)
           end
@@ -11885,8 +11932,8 @@ let native_core_formula_orientation_proof
               native_core_and_intro
                 target_left_prop
                 target_right_prop
-                (convert `Forward source_left target_left source_left_proof)
-                (convert `Forward source_right target_right source_right_proof)
+                (convert local_depth `Forward source_left target_left source_left_proof)
+                (convert local_depth `Forward source_right target_right source_right_proof)
           | `Backward ->
               let source_left_prop = native_core_formula_prop source_left in
               let source_right_prop = native_core_formula_prop source_right in
@@ -11901,8 +11948,8 @@ let native_core_formula_orientation_proof
               native_core_and_intro
                 source_left_prop
                 source_right_prop
-                (convert `Backward source_left target_left target_left_proof)
-                (convert `Backward source_right target_right target_right_proof)
+                (convert local_depth `Backward source_left target_left target_left_proof)
+                (convert local_depth `Backward source_right target_right target_right_proof)
           end
       | Ap (TmH "vampire_exists_prop", Lam (source_tp, source_body)),
         Ap (TmH "vampire_exists_prop", Lam (target_tp, target_body))
@@ -11920,6 +11967,7 @@ let native_core_formula_orientation_proof
                            (native_core_formula_prop (tmshift 1 1 source_body),
                             let target_body_proof =
                               convert
+                                (local_depth + 1)
                                 `Forward
                                 (tmshift 1 1 source_body)
                                 (tmshift 1 1 target_body)
@@ -11944,6 +11992,7 @@ let native_core_formula_orientation_proof
                            (native_core_formula_prop (tmshift 1 1 target_body),
                             let source_body_proof =
                               convert
+                                (local_depth + 1)
                                 `Backward
                                 (tmshift 1 1 source_body)
                                 (tmshift 1 1 target_body)
@@ -11968,6 +12017,7 @@ let native_core_formula_orientation_proof
               let epsilon_witness = Ap (TmH (native_core_eps_symbol tp), predicate) in
               let choice_proof = PPfAp (PTmAp (Known choice, predicate), proof) in
               convert
+                local_depth
                 `Forward
                 (tmsubst body 0 epsilon_witness)
                 target
@@ -11984,11 +12034,11 @@ let native_core_formula_orientation_proof
           begin match direction with
           | `Forward ->
               let source_for_match =
-                normalize_formula_for_match result_variable_count source
+                normalize_for_match source
                 |> native_core_normalize_bool_constants
               in
               let target_for_match =
-                normalize_formula_for_match result_variable_count target
+                normalize_for_match target
                 |> native_core_normalize_bool_constants
               in
               begin match native_core_swapped_eq_literal (Pos source_for_match) with
@@ -12021,11 +12071,11 @@ let native_core_formula_orientation_proof
               end
           | `Backward ->
               let source_for_match =
-                normalize_formula_for_match result_variable_count source
+                normalize_for_match source
                 |> native_core_normalize_bool_constants
               in
               let target_for_match =
-                normalize_formula_for_match result_variable_count target
+                normalize_for_match target
                 |> native_core_normalize_bool_constants
               in
               begin match native_core_swapped_eq_literal (Pos target_for_match) with
@@ -12059,7 +12109,7 @@ let native_core_formula_orientation_proof
           end
     end
   in
-  let body_proof = convert `Forward source target parent_proof in
+  let body_proof = convert 0 `Forward source target parent_proof in
   native_core_bind_result_step_variables variables result_step_variables body_proof
 
 let native_core_predicate_definition_fold_step_proof
