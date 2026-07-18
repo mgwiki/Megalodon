@@ -6177,11 +6177,26 @@ let validate_kernel_v1_metadata_contracts cert =
                  require_field_int id fields "selected_parent_index" 0;
                  require_field_int id fields "selected_literal_index" literal_index;
                  let selected_parent_unit = field_required id fields "selected_parent_unit" in
-                 if selected_parent_unit <> parent_id then
-                   error
-                     (id ^ ": strict certificate v1 kernel_v1 equality_resolution selected_parent_unit "
-                      ^ selected_parent_unit ^ " does not match certificate parent " ^ parent_id);
-                 begin match Hashtbl.find_opt step_by_id parent_id with
+                 let selected_source_unit, selected_subst =
+                   if selected_parent_unit = parent_id then
+                     parent_id, []
+                   else
+                     begin match Hashtbl.find_opt step_by_id parent_id with
+                     | Some (Substitute (_, subst_parent_id, subst, _))
+                         when subst_parent_id = selected_parent_unit ->
+                         selected_parent_unit, subst
+                     | _ ->
+                         error
+                           (id ^ ": strict certificate v1 kernel_v1 equality_resolution selected_parent_unit "
+                            ^ selected_parent_unit ^ " does not match certificate parent "
+                            ^ parent_id ^ " or its substitution parent")
+                     end
+                 in
+                 begin match field_value "parent_0_substitution" fields with
+                 | Some _ -> require_field_substitution id fields "parent_0_substitution" selected_subst
+                 | None -> ()
+                 end;
+                 begin match Hashtbl.find_opt step_by_id selected_source_unit with
                  | Some parent_step ->
                      begin match step_clause_opt parent_step with
                      | Some parent_clause ->
@@ -6190,16 +6205,17 @@ let validate_kernel_v1_metadata_contracts cert =
                              (id ^ " strict kernel_v1 equality_resolution selected literal")
                          in
                          require_field_literal id fields "selected" selected;
-                         require_field_literal id fields "selected_substituted" selected
+                         require_field_literal id fields "selected_substituted"
+                           (subst_literal selected_subst selected)
                      | None ->
                          error
                            (id ^ ": strict certificate v1 kernel_v1 equality_resolution parent "
-                            ^ parent_id ^ " is not a clause-bearing step")
+                            ^ selected_source_unit ^ " is not a clause-bearing step")
                      end
                  | None ->
                      error
                        (id ^ ": strict certificate v1 kernel_v1 equality_resolution references missing parent "
-                        ^ parent_id)
+                        ^ selected_source_unit)
                  end;
                  require_field_clause id fields "result_clause" result;
                  begin match field_value "conclusion_clause" fields with
@@ -13694,6 +13710,110 @@ let native_core_paramodulate_unit_in_result_context
   in
   native_core_bind_result_step_variables variables result_step_variables body_proof
 
+let native_core_definition_rewrite_chain_proof
+    cert id variables source_id source_clause source_proof rewrites result lookup_clause =
+  if rewrites = [] then
+    error (id ^ ": native core proof-term definition_rewrite_chain needs at least one rewrite");
+  let result_step_variables = native_core_step_variables cert id in
+  let close_tm tm = native_core_close_tm (variables @ result_step_variables) tm in
+  let close_literal = function
+    | Pos atom -> Pos (close_tm atom)
+    | Neg atom -> Neg (close_tm atom)
+  in
+  let close_rewrite rewrite =
+    {
+      rewrite with
+      rewrite_from = close_tm rewrite.rewrite_from;
+      rewrite_to = close_tm rewrite.rewrite_to;
+    }
+  in
+  let source_clause = List.map close_literal source_clause in
+  let result = List.map close_literal result in
+  let rewrites = List.map close_rewrite rewrites in
+  let source_proof =
+    native_core_open_step_theorem_body_in_result_context
+      cert id variables source_id [] source_proof
+  in
+  let open_definition_parent rewrite =
+    let definition_clause, definition_proof = lookup_clause rewrite.definition_parent in
+    let definition_clause = List.map close_literal definition_clause in
+    let definition_proof =
+      native_core_open_step_theorem_body_in_result_context
+        cert id variables rewrite.definition_parent [] definition_proof
+    in
+    definition_clause, definition_proof
+  in
+  let replay_one (current_clause, current_proof) rewrite =
+    let definition_clause, definition_proof = open_definition_parent rewrite in
+    let definition_literal =
+      nth rewrite.definition_literal definition_clause
+        (id ^ " native definition_rewrite_chain definition literal")
+    in
+    let equality_atom =
+      match definition_literal with
+      | Pos atom -> atom
+      | Neg _ ->
+          error
+            (id ^ ": native core proof-term definition_rewrite_chain definition literal must be positive")
+    in
+    begin match megalodon_eq_poly_sides equality_atom with
+    | Some (_, left, right)
+        when (left = rewrite.rewrite_from && right = rewrite.rewrite_to)
+             || (right = rewrite.rewrite_from && left = rewrite.rewrite_to) -> ()
+    | Some _ ->
+        error
+          (id ^ ": native core proof-term definition_rewrite_chain rewrite terms do not match definition equality")
+    | None ->
+        error
+          (id ^ ": native core proof-term definition_rewrite_chain definition parent is not typed Megalodon equality")
+    end;
+    let target_literal =
+      nth rewrite.target_literal current_clause
+        (id ^ " native definition_rewrite_chain target literal")
+    in
+    let target_atom = literal_atom target_literal in
+    begin match try_tm_at_position target_atom rewrite.rewrite_position with
+    | Some found when found = rewrite.rewrite_from -> ()
+    | Some _ ->
+        error
+          (id ^ ": native core proof-term definition_rewrite_chain position does not contain from term")
+    | None ->
+        error
+          (id ^ ": native core proof-term definition_rewrite_chain position is invalid")
+    end;
+    let rewritten_atom =
+      replace_tm_at_position
+        target_atom
+        rewrite.rewrite_position
+        rewrite.rewrite_to
+        (id ^ " native definition_rewrite_chain target")
+    in
+    let rewritten_literal = replace_literal_atom target_literal rewritten_atom in
+    let next_clause =
+      replace_at rewrite.target_literal rewritten_literal current_clause
+        (id ^ " native definition_rewrite_chain target literal")
+    in
+    let next_proof =
+      native_core_paramodulate_unit
+        id definition_clause definition_proof current_clause current_proof
+        rewrite.definition_literal rewrite.target_literal rewrite.rewrite_position
+        rewrite.rewrite_from rewrite.rewrite_to next_clause
+    in
+    next_clause, next_proof
+  in
+  let final_clause, final_proof =
+    List.fold_left replay_one (source_clause, source_proof) rewrites
+  in
+  let body_proof =
+    if final_clause = result then final_proof
+    else if same_clause_multiset final_clause result then
+      native_core_prove_clause_to_clause id final_clause result final_proof
+    else
+      error
+        (id ^ ": native core proof-term definition_rewrite_chain final result does not match replayed chain")
+  in
+  native_core_bind_result_step_variables variables result_step_variables body_proof
+
 let native_core_source_kind_and_tptp_name = function
   | SourceAxiom name -> ("axiom", name)
   | SourceConjecture name -> ("conjecture", name)
@@ -14338,6 +14458,12 @@ let elaborate_core_resolution_refutation_native
           store id result
             (native_core_definition_input_proof
                proof_delta id variables result_step_variables result)
+      | DefinitionRewriteChain (id, parent_id, rewrites, result) ->
+          let parent_clause, parent_proof = lookup parent_id in
+          store id result
+            (native_core_definition_rewrite_chain_proof
+               cert id variables parent_id parent_clause parent_proof
+               rewrites result lookup)
       | FoolExhaustiveness (id, result) ->
           check_fool_exhaustiveness id result;
           store id result
@@ -14933,6 +15059,12 @@ let elaborate_preprocess_refutation_native
           store_clause id result
             (native_core_definition_input_proof
                proof_delta id variables result_step_variables result)
+      | DefinitionRewriteChain (id, parent_id, rewrites, result) ->
+          let parent_clause, parent_proof = lookup_clause parent_id in
+          store_clause id result
+            (native_core_definition_rewrite_chain_proof
+               cert id variables parent_id parent_clause parent_proof
+               rewrites result lookup_clause)
       | AvatarDefinition (id, split_var, split_positive, result) ->
           begin match native_core_avatar_definition_clause cert id split_var split_positive result with
           | Some (split_name, component_literals) ->
