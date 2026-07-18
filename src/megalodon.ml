@@ -11,6 +11,12 @@ let stm = ref "";;
 let mycnt = ref 0;;
 let archivefile = ref None;;
 let allowincompleteqed = ref false;;
+let onlycheckfromline : int option ref = ref None;;
+let checkingmainfile = ref true;;
+let skippedproofactive = ref false;;
+let skippedproofcount = ref 0;;
+let conditionalproofcount = ref 0;;
+let developmentknown : (string,unit) Hashtbl.t = Hashtbl.create 1000;;
 let doublecheckpf = ref true;;
 let maxbottlenecksreport = ref 3;;
 let removepfs = ref None;;
@@ -363,6 +369,35 @@ let rec istrusted name = function
   | PPfAp(d1,d2) -> istrusted name d1; istrusted name d2
   | PLam(m1,d2) -> istrusted name d2
   | TLam(a1,d2) -> istrusted name d2;;
+
+(* Like [istrusted], but also accepts propositions whose proofs were deliberately
+   skipped in the current development run.  The boolean result says whether the
+   proof actually depends on at least one such proposition.  These hashes are
+   deliberately kept separate from [istrustedhash], so development assumptions
+   never become fully trusted merely because a later proof uses them. *)
+let rec development_trust name = function
+  | Hyp(_) -> false
+  | Known(h) ->
+     if Hashtbl.mem istrustedhash h then false
+     else if Hashtbl.mem developmentknown h then true
+     else
+       begin
+         try
+           let localname = Hashtbl.find sigknh_rev h in
+           failwith (Printf.sprintf "Theorem %s ends with Qed but should not as it depends on non-proved %s" name localname)
+         with
+           Not_found -> failwith (Printf.sprintf "Theorem %s ends with Qed but should not as it depends on non-proved %s" name h)
+       end
+  | PTpAp(d1,_) -> development_trust name d1
+  | PTmAp(d1,_) -> development_trust name d1
+  | PPfAp(d1,d2) ->
+      let uses1 = development_trust name d1 in
+      let uses2 = development_trust name d2 in
+      uses1 || uses2
+  | PLam(_,d2) -> development_trust name d2
+  | TLam(_,d2) -> development_trust name d2;;
+
+type qed_trust = FullyTrusted | DevelopmentTrusted | AllowedIncomplete;;
 
 let read_ownedfile c =
   try
@@ -3271,18 +3306,42 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
 		  begin
 		    Hashtbl.add pfgknph gphv gpgtm;
 		  end;
+	        let trust =
+	          try
+	            istrusted thmname dgpf;
+	            FullyTrusted
+	          with Failure(original_failure) ->
+	            begin
+	              try
+	                if development_trust thmname dgpf then DevelopmentTrusted
+	                else raise (Failure(original_failure))
+	              with Failure(_) ->
+	                if !allowincompleteqed then AllowedIncomplete
+	                else raise (Failure(original_failure))
+	            end
+	        in
+	        begin
+	          match trust with
+	          | FullyTrusted ->
+	              Hashtbl.replace istrustedhash gphv ()
+	          | DevelopmentTrusted ->
+	              qed_is_complete := false;
+	              Hashtbl.remove indexknowns gphv;
+	              Hashtbl.replace developmentknown gphv ();
+	              incr conditionalproofcount;
+	              if !reporteachitem then
+	                (Printf.printf "~~ %s checked conditionally (uses a skipped proof)\n" thmname; flush stdout)
+	          | AllowedIncomplete ->
+	              (* Preserve the pre-existing -allowincompleteqed behaviour. *)
+	              qed_is_complete := false;
+	              Hashtbl.replace istrustedhash gphv ()
+	        end;
 		if !pfgout && i = 0 && not !includingsigfile then
-		  pfgmain := PfgThm(gphv,thmname,gpgtm,dgpf)::!pfgmain;
-	        if not !allowincompleteqed then
-	          istrusted thmname dgpf (* Raises an exception if not proved *)
-	        else
-	          begin
-	            try
-	              istrusted thmname dgpf
-	            with Failure(_) ->
-	              qed_is_complete := false
-	          end;
-	        Hashtbl.add istrustedhash gphv ()
+		  begin
+		    match trust with
+		    | DevelopmentTrusted -> pfgmain := PfgConj(gphv,thmname,gpgtm)::!pfgmain
+		    | FullyTrusted | AllowedIncomplete -> pfgmain := PfgThm(gphv,thmname,gpgtm,dgpf)::!pfgmain
+		  end
 	      end;
 	      if (!verbosity > 19) then (Printf.printf "Double checking:\n%s\n%s\n" (pf_to_str dgpf) (tm_to_str gpgtm); flush stdout);
 	      match
@@ -3308,7 +3367,9 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
 			match !mainfilehash with
 			| Some docsha ->
 			    if !sqltermout then Printf.printf "INSERT INTO `term` (`termid`,`termtp`,`termpoly`) VALUES ('%s','%s',%d);\n" gphv (stp_html_string Prop) i;
-			    if not !presentationonly then (Printf.printf "INSERT INTO `termdoc` (`termid`,`docsha`,`termdocname`,`termdockind`) VALUES ('%s','%s',\"%s\",'T');\n" gphv docsha (String.escaped thmname));
+			    if not !presentationonly then
+			      Printf.printf "INSERT INTO `termdoc` (`termid`,`docsha`,`termdocname`,`termdockind`) VALUES ('%s','%s',\"%s\",'%c');\n"
+			        gphv docsha (String.escaped thmname) (if !qed_is_complete then 'T' else 't');
 			    if !sqltermout then Printf.printf "INSERT INTO `proppf` (`propid`,`pfid`) VALUES ('%s','%s');\n" gphv dhv;
 			    if not !presentationonly then
 			      begin
@@ -4193,6 +4254,28 @@ let init_env () =
   appfloc := (fun d cxtp cxtm cxpf -> d);
   secstack := [];
   popfn := (fun () -> ())
+
+let proof_skip_reason () =
+  let (startline,_) = !thmstart in
+  let by_pragma = not (Lexer.proofs_enabled ()) in
+  let by_line =
+    match !checkingmainfile,!onlycheckfromline with
+    | true,Some n -> startline < n
+    | _ -> false
+  in
+  match by_pragma,by_line with
+  | false,false -> None
+  | true,false -> Some("//$P-")
+  | false,true ->
+      begin match !onlycheckfromline with
+      | Some n -> Some(Printf.sprintf "-onlycheckfromline %d" n)
+      | None -> assert false
+      end
+  | true,true ->
+      begin match !onlycheckfromline with
+      | Some n -> Some(Printf.sprintf "//$P- and -onlycheckfromline %d" n)
+      | None -> assert false
+      end
 	
 (*** Function for checking if a file solves a problem file in addition to checking the solution file for correctness. ***)
 let mgchecksolves probc solnc =
@@ -4372,6 +4455,8 @@ let mgcheck_ajax c =
 (*** Main function for checking a file ***)
 let mgcheck c =
   init_env ();
+  skippedproofactive := false;
+  Lexer.reset_proof_pragmas ();
   let tl = ref (TokStrRest(Lexer.token,Lexing.from_channel c)) in
   lineno := 1;
   charno := 0;
@@ -4383,11 +4468,33 @@ let mgcheck c =
           Syntax.set_html_item_start_line !lineno;
 	  let (ditem,tr) = parse_docitem !tl in
 	  tl := tr;
-	  evaluate_docitem ditem
+	  let skip =
+	    match ditem with
+	    | ThmDecl(_,x,_) ->
+	        begin
+	          match proof_skip_reason () with
+	          | None -> None
+	          | Some reason -> Some(x,fst !thmstart,reason)
+	        end
+	    | _ -> None
+	  in
+	  evaluate_docitem ditem;
+	  begin
+	    match skip with
+	    | None -> ()
+	    | Some(x,startline,reason) ->
+	        skippedproofactive := true;
+	        Lexer.request_proof_skip ();
+	        if !reporteachitem then
+	          (Printf.printf "-- %s proof skipped at line %d (%s)\n" x startline reason; flush stdout)
+	  end
       | Some (thmname,i,gpgtm,gphv,pfggphv) -> (*** reading a proof ***)
           Syntax.set_html_item_start_line !lineno;
 	  let (pitem,tr) = parse_pftacitem !tl in
 	  tl := tr;
+	  let was_skipped = !skippedproofactive in
+	  if was_skipped && pitem <> Admitted then
+	    raise (Failure("Internal error: skipped proof did not terminate as an admitted proof"));
           if pitem = Qed then
             begin
               match !removepfs with
@@ -4397,7 +4504,20 @@ let mgcheck c =
                  let (l2,c2) = !thmend in
                  pfposinfo := (l1,c1,l2,c2+1,!lineno,!charno+1)::!pfposinfo
             end;
-	  evaluate_pftac pitem thmname i gpgtm gphv pfggphv
+	  begin
+	    try
+	      evaluate_pftac pitem thmname i gpgtm gphv pfggphv;
+	      if was_skipped then
+	        begin
+	          Hashtbl.replace developmentknown gphv ();
+	          incr skippedproofcount;
+	          skippedproofactive := false
+	        end
+	    with e ->
+	      if was_skipped then
+	        skippedproofactive := false;
+	      raise e
+	  end
     done
   with
   | Lexer.Eof ->
@@ -4866,6 +4986,18 @@ let _ =
           end
         else if Sys.argv.(!j) = "-allowincompleteqed" then
           allowincompleteqed := true
+        else if Sys.argv.(!j) = "-onlycheckfromline" || Sys.argv.(!j) = "-onlycheckproofsfromline" then
+          begin
+	    if !j < i-2 then
+	      begin
+		incr j;
+		let n = int_of_string (Sys.argv.(!j)) in
+		if n < 1 then raise (Failure("-onlycheckfromline requires a positive line number"));
+		onlycheckfromline := Some n
+	      end
+	    else
+	      raise (Failure("Expected -onlycheckfromline <line>"))
+          end
         else if Sys.argv.(!j) = "-fof" then
           begin
 	    if !j < i-2 then
@@ -5230,6 +5362,7 @@ let _ =
 	else if !includingsigfile then
 	  let c = open_in (Sys.argv.(!j)) in
           begin
+            checkingmainfile := false;
             match !sexprallsubgoals with
             | None -> mgcheck c
             | Some(seaspre,seasincl,i) ->
@@ -5243,6 +5376,7 @@ let _ =
           end;
 	  title := None;
 	  authors := [];
+	  checkingmainfile := true;
 	  includedsigfiles := Sys.argv.(!j)::!includedsigfiles
 	else
 	  raise (Failure("Cannot understand command line argument " ^ (Sys.argv.(!j))))
@@ -5250,6 +5384,7 @@ let _ =
       includingsigfile := false;
       let checkfile () =
 	let c = open_in (Sys.argv.(i-1)) in
+        checkingmainfile := true;
         begin
           match !sexprallsubgoals with
           | None ->
@@ -5505,7 +5640,13 @@ let _ =
       | None ->
 	  ()
     end;
-  Printf.printf "Everything looks good.\n";
+  if !skippedproofcount = 0 && !conditionalproofcount = 0 then
+    Printf.printf "Everything looks good.\n"
+  else
+    Printf.printf
+      "Everything looks good in development mode: %d proof%s skipped and %d later proof%s checked conditionally.\n"
+      !skippedproofcount (if !skippedproofcount = 1 then " was" else "s were")
+      !conditionalproofcount (if !conditionalproofcount = 1 then " was" else "s were");
   if !countremovedpfs > 0 then
     Printf.printf "%d completed proof%s been removed for efficiency.\n" !countremovedpfs (if !countremovedpfs = 1 then " has" else "s have");
   let admittedthmsrecdeps : (string,string list) Hashtbl.t = Hashtbl.create 10 in

@@ -6,12 +6,32 @@
 {
 open Parser        (* The type token is defined in parser.mli *)
 exception Eof
+
+let skip_next_proof = ref false
+let proof_checking_enabled = ref true
+
+let request_proof_skip () = skip_next_proof := true
+let reset_proof_pragmas () =
+  skip_next_proof := false;
+  proof_checking_enabled := true
+let proofs_enabled () = !proof_checking_enabled
+
+let process_line_comment lxm =
+  let n = String.length lxm in
+  let last = if n > 0 && lxm.[n-1] = '\n' then n-1 else n in
+  let body =
+    if last <= 2 then ""
+    else String.trim (String.sub lxm 2 (last - 2))
+  in
+  if body = "$P-" then proof_checking_enabled := false
+  else if body = "$P+" then proof_checking_enabled := true
 }
-rule token = parse
-| [' ' '\t' '\r']     { incr charno; token lexbuf }     (* skip white space *)
-| ['\n']         { incr lineno; charno := 0; token lexbuf }     (* skip white space *)
-| "//" [^'\n']* ['\n'] as lxm { update_pos lxm; token lexbuf } (* skip one line comment *)
-| ['(']['*']['*']['*']*[^'*']*['*']+[')'] as lxm { update_pos lxm; token lexbuf }     (* skip comments *)
+rule normal_token = parse
+| [' ' '\t' '\r']     { incr charno; normal_token lexbuf }     (* skip white space *)
+| ['\n']         { incr lineno; charno := 0; normal_token lexbuf }     (* skip white space *)
+| "//" [^'\n']* ['\n'] as lxm { process_line_comment lxm; update_pos lxm; normal_token lexbuf } (* skip one line comment *)
+| "//" [^'\n']* as lxm { process_line_comment lxm; update_pos lxm; normal_token lexbuf }
+| ['(']['*']['*']['*']*[^'*']*['*']+[')'] as lxm { update_pos lxm; normal_token lexbuf }     (* skip comments *)
 | "(*" as lxm          { update_char_pos lxm; OPENCOM }
 | "*)" as lxm          { update_char_pos lxm; CLOSECOM }
 | ['"'][^'"']*['"'] as lxm           { update_char_pos lxm; STRING(String.sub lxm 1 (String.length lxm - 2)) }
@@ -123,3 +143,61 @@ rule token = parse
 | ['-']['0'-'9']+['.']['0'-'9']+['e''E']['0'-'9']+ as lxm { update_char_pos lxm; num_of_string lxm }
 | ['_''a'-'z''A'-'Z']['_''\'''0'-'9''a'-'z''A'-'Z']* as lxm { update_char_pos lxm; NAM(lxm) }
 | eof            { raise Eof }
+
+
+and skip_proof = parse
+| [' ' '\t' '\r']+ as lxm { update_char_pos lxm; skip_proof lexbuf }
+| ['\n'] { incr lineno; charno := 0; skip_proof lexbuf }
+| "//" [^'\n']* ['\n'] as lxm { process_line_comment lxm; update_pos lxm; skip_proof lexbuf }
+| "//" [^'\n']* as lxm { process_line_comment lxm; update_pos lxm; skip_proof lexbuf }
+| "(*" as lxm { update_char_pos lxm; skip_block_comment 1 lexbuf; skip_proof lexbuf }
+| ['"'] { incr charno; skip_string lexbuf; skip_proof lexbuf }
+| ['?'] { incr charno; skip_qstring lexbuf; skip_proof lexbuf }
+| ['_''a'-'z''A'-'Z']['_''\'''0'-'9''a'-'z''A'-'Z']* as lxm
+    {
+      update_char_pos lxm;
+      if lxm = "Qed" || lxm = "Admitted" then ADMITTED
+      else skip_proof lexbuf
+    }
+| [^' ''\t''\r''\n''/''(''"''?''_''a'-'z''A'-'Z']+ as lxm
+    { update_char_pos lxm; skip_proof lexbuf }
+| eof { raise (Failure("Reached end of file while skipping a proof; expected Qed. or Admitted.")) }
+| _ as ch
+    {
+      if ch = '\n' then (incr lineno; charno := 0) else incr charno;
+      skip_proof lexbuf
+    }
+
+and skip_string = parse
+| ['"'] { incr charno }
+| ['\n'] { incr lineno; charno := 0; skip_string lexbuf }
+| eof { raise (Failure("Reached end of file inside a string while skipping a proof")) }
+| _ { incr charno; skip_string lexbuf }
+
+and skip_qstring = parse
+| ['?'] { incr charno }
+| ['\n'] { incr lineno; charno := 0; skip_qstring lexbuf }
+| eof { raise (Failure("Reached end of file inside a question string while skipping a proof")) }
+| _ { incr charno; skip_qstring lexbuf }
+
+and skip_block_comment depth = parse
+| "(*" as lxm { update_char_pos lxm; skip_block_comment (depth + 1) lexbuf }
+| "*)" as lxm
+    {
+      update_char_pos lxm;
+      if depth > 1 then skip_block_comment (depth - 1) lexbuf
+    }
+| ['\n'] { incr lineno; charno := 0; skip_block_comment depth lexbuf }
+| eof { raise (Failure("Reached end of file inside a comment while skipping a proof")) }
+| _ { incr charno; skip_block_comment depth lexbuf }
+
+{
+let token lexbuf =
+  if !skip_next_proof then
+    begin
+      skip_next_proof := false;
+      skip_proof lexbuf
+    end
+  else
+    normal_token lexbuf
+}
