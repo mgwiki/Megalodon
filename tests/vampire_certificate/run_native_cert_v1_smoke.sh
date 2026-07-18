@@ -2616,6 +2616,32 @@ if rg -q 'needs an explicit source formula|formula orientation supports only|bui
   exit 1
 fi
 
+MEGALODON_CERT_DEBUG=1 bin/megalodon \
+  -vampirecertv1preprocesspfcheck \
+  -vampirecertv1 tests/vampire_certificate/closed_cases/line172.skolem_cps_guard.native.sexp \
+  -vampirecertv1source tests/vampire_certificate/closed_cases/line172.skolem_cps_guard.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_skolem_cps_guard.out" \
+  2>"$WORK_DIR/native_cert_v1_skolem_cps_guard.err"
+
+if ! rg -q 'Vampire certificate v1 native preprocess proof term checked 38 steps' \
+    "$WORK_DIR/native_cert_v1_skolem_cps_guard.out"; then
+  echo "native preprocess checker did not accept the line-172 Skolem CPS guard fixture" >&2
+  exit 1
+fi
+
+if ! rg -q 'native preprocess Skolem CPS candidate still contains certificate-local choice witnesses; keeping original refutation' \
+    "$WORK_DIR/native_cert_v1_skolem_cps_guard.err"; then
+  echo "native preprocess checker did not report the incomplete Skolem CPS witness discharge" >&2
+  exit 1
+fi
+
+if rg -q 'native preprocess Skolem CPS discharged certificate-local witnesses|admit|-allowincompleteqed' \
+    "$WORK_DIR/native_cert_v1_skolem_cps_guard.out" \
+    "$WORK_DIR/native_cert_v1_skolem_cps_guard.err"; then
+  echo "native preprocess checker falsely reported Skolem CPS witness discharge or used an admission marker" >&2
+  exit 1
+fi
+
 bin/megalodon \
   -vampirecertv1preprocesspfcheck \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_fool_primitive_expansion_valid.sexp \
