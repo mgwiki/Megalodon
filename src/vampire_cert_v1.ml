@@ -14133,10 +14133,32 @@ let native_core_skolem_refutation_cps_proof
 	      error (id ^ ": native preprocess Skolem CPS internal proposition depth moved outward");
 	    tmshift 0 (term_depth - captured_term_depth) tm
 	  in
-	  let result_to_target_builder term_depth proof_depth _term_replacements _replacements _fallback_replacements =
-	    result_to_target
-	    |> pftmshift 0 term_depth
-	    |> pfshift 0 proof_depth
+	  let result_to_target_builder term_depth proof_depth term_replacements replacements fallback_replacements =
+	    let result_prop =
+	      formula_prop_with_replacements
+	        ~close_depth:term_depth
+	        ~fallback_replacements
+	        replacements
+	        result
+	    in
+	    let shifted_result_to_target =
+	      result_to_target
+	      |> pftmshift 0 term_depth
+	      |> pfshift 0 (proof_depth + 1)
+	    in
+	    let bound_result_proof =
+	      native_core_bind_result_step_variables
+	        variables
+	        result_step_variables
+	        (Hyp 0)
+	      |> proof_with_replacements
+	           term_replacements
+	           replacements
+	           fallback_replacements
+	    in
+	    PLam
+	      (result_prop,
+	       PPfAp (shifted_result_to_target, bound_result_proof))
 	  in
 	  let rec eliminate term_depth proof_depth term_replacements replacements fallback_replacements witnesses source result proof result_to_target_builder =
     match source, result, witnesses with
@@ -14679,8 +14701,11 @@ let native_core_skolem_refutation_cps_proof
             (id ^ ": native preprocess Skolem CPS source body does not match the Skolem result")
         end;
         let result_checked_proof =
-          native_core_bind_result_step_variables variables result_step_variables proof
-          |> proof_with_replacements term_replacements selected_replacements fallback_replacements
+          proof_with_replacements
+            term_replacements
+            selected_replacements
+            fallback_replacements
+            proof
         in
 	        let result_to_target_proof =
 	          result_to_target_builder
