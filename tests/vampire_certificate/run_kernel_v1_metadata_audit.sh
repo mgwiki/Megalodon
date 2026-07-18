@@ -807,6 +807,8 @@ if [[ -s "$WORK_DIR/skolemize.tsv" ]]; then
           parent_index_field = prefix "_parent_index="
           unit_field = prefix "_unit="
           formula_field = prefix "_formula="
+          source_field = prefix "_source="
+          target_field = prefix "_target="
           if (index($0, parent_index_field) == 0) {
             print parent_index_field "\t" $0
           }
@@ -815,6 +817,12 @@ if [[ -s "$WORK_DIR/skolemize.tsv" ]]; then
           }
           if (index($0, formula_field) == 0) {
             print formula_field "\t" $0
+          }
+          if (index($0, source_field) == 0) {
+            print source_field "\t" $0
+          }
+          if (index($0, target_field) == 0) {
+            print target_field "\t" $0
           }
         }
       }
@@ -827,14 +835,6 @@ if [[ -s "$WORK_DIR/skolemize.tsv" ]]; then
     exit 1
   fi
 
-  if grep -Eq 'skolem_macro_edge_count=[1-9]' "$WORK_DIR/skolemize.tsv"; then
-    if ! grep -Eq 'skolem_macro_edge_[0-9]+_source=' "$WORK_DIR/skolemize.tsv" \
-       || ! grep -Eq 'skolem_macro_edge_[0-9]+_target=' "$WORK_DIR/skolemize.tsv"; then
-      echo "kernel_v1 metadata audit found Skolem macro edges but no decomposed source/target fields" >&2
-      sed -n '1,40p' "$WORK_DIR/skolemize.tsv" >&2
-      exit 1
-    fi
-  fi
 fi
 
 grep -F 'rule=rectify_formula' "$WORK_DIR/kernel_v1.tsv" \
