@@ -15205,6 +15205,7 @@ let native_core_skolem_refutation_cps_proof
     ?result_to_target_body
     ?result_assumption_prop
     ?result_assumption_step_variables
+    ?skolem_proof_object
     ?(split_replacements=[])
     id variables parent_step_variables result_step_variables source subst result
     result_checked_prop parent_proof result_proof final_proof target_prop =
@@ -15275,6 +15276,156 @@ let native_core_skolem_refutation_cps_proof
   if source_exists_count source <> List.length witness_symbols then
     error
       (id ^ ": native preprocess Skolem CPS source existential count does not match substitution count");
+  let skolem_branch_contracts =
+    match skolem_proof_object with
+    | Some proof_object -> proof_object.Vampire_kernel_syntax.skolem_proof_branches
+    | None -> []
+  in
+  let branch_witness_symbols branch =
+    branch.Vampire_kernel_syntax.skolem_branch_introduced_witnesses
+    |> List.map
+         (fun witness ->
+            witness.Vampire_kernel_syntax.skolem_witness_symbol)
+  in
+  let witness_set symbols =
+    List.sort_uniq String.compare symbols
+  in
+  let witness_set_text symbols =
+    match witness_set symbols with
+    | [] -> "-"
+    | symbols -> String.concat "," symbols
+  in
+  let formula_witness_symbols formula =
+    witness_symbols
+    |> List.filter (fun symbol -> tm_contains_symbol symbol formula)
+    |> witness_set
+  in
+  let debug_skolem_branch_contracts () =
+    if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1"
+       && skolem_branch_contracts <> [] then
+      List.iter
+        (fun branch ->
+           let source_exists =
+             match branch.Vampire_kernel_syntax.skolem_branch_source_formula with
+             | Some formula -> source_exists_count formula
+             | None -> -1
+           in
+           let target_exists =
+             match branch.Vampire_kernel_syntax.skolem_branch_target_formula with
+             | Some formula -> source_exists_count formula
+             | None -> -1
+           in
+           let source_symbols =
+             match branch.Vampire_kernel_syntax.skolem_branch_source_formula with
+             | Some formula -> formula_witness_symbols formula
+             | None -> []
+           in
+           let target_symbols =
+             match branch.Vampire_kernel_syntax.skolem_branch_target_formula with
+             | Some formula -> formula_witness_symbols formula
+             | None -> []
+           in
+           prerr_endline
+             (Printf.sprintf
+                "%s: native preprocess Skolem CPS branch contract #%d unit=%s parent=%s binders=%s witnesses=%s source_exists=%d target_exists=%d source_symbols=%s target_symbols=%s"
+                id
+                branch.Vampire_kernel_syntax.skolem_branch_index
+                (match branch.Vampire_kernel_syntax.skolem_branch_unit with
+                 | Some unit -> unit
+                 | None -> "?")
+                (match branch.Vampire_kernel_syntax.skolem_branch_parent_index with
+                 | Some index -> string_of_int index
+                 | None -> "?")
+                (match branch.Vampire_kernel_syntax.skolem_branch_binder_count with
+                 | Some count -> string_of_int count
+                 | None -> "?")
+                (witness_set_text (branch_witness_symbols branch))
+                source_exists
+                target_exists
+                (witness_set_text source_symbols)
+                (witness_set_text target_symbols)))
+        skolem_branch_contracts
+  in
+  begin match skolem_proof_object with
+  | Some proof_object ->
+      let contract =
+        proof_object.Vampire_kernel_syntax.skolem_proof_contract
+      in
+      let contract_witnesses =
+        contract.Vampire_kernel_syntax.skolem_introduced_witnesses
+        |> List.map
+             (fun witness ->
+                witness.Vampire_kernel_syntax.skolem_witness_symbol)
+        |> witness_set
+      in
+      let substitution_witnesses = witness_set witness_symbols in
+      if contract_witnesses <> substitution_witnesses then
+        error
+          (Printf.sprintf
+             "%s: native preprocess Skolem CPS proof-object witnesses %s do not match substitution witnesses %s"
+             id
+             (witness_set_text contract_witnesses)
+             (witness_set_text substitution_witnesses))
+  | None -> ()
+  end;
+  let branch_matches_formula formula = function
+    | Some branch_formula ->
+        native_core_normalize_bool_constants branch_formula |> tm_beta_eta_norm
+        =
+        (native_core_normalize_bool_constants formula |> tm_beta_eta_norm)
+    | None -> false
+  in
+  let debug_skolem_branch_candidates label term_depth proof_depth source result witnesses =
+    if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1"
+       && skolem_branch_contracts <> [] then
+      let active_witness_set = witness_set witnesses in
+      let source_exists = source_exists_count source in
+      let result_symbols = formula_witness_symbols result in
+      let candidate_labels =
+        skolem_branch_contracts
+        |> List.filter_map
+             (fun branch ->
+                let branch_witnesses =
+                  branch_witness_symbols branch |> witness_set
+                in
+                let source_match =
+                  branch_matches_formula
+                    source
+                    branch.Vampire_kernel_syntax.skolem_branch_source_formula
+                in
+                let target_match =
+                  branch_matches_formula
+                    result
+                    branch.Vampire_kernel_syntax.skolem_branch_target_formula
+                in
+                let witness_match = branch_witnesses = active_witness_set in
+                let target_symbols_match =
+                  branch_witnesses = [] || branch_witnesses = result_symbols
+                in
+                if source_match || target_match || witness_match || target_symbols_match then
+                  Some
+                    (Printf.sprintf
+                       "#%d%s%s%s%s[w=%s]"
+                       branch.Vampire_kernel_syntax.skolem_branch_index
+                       (if source_match then ":source" else "")
+                       (if target_match then ":target" else "")
+                       (if witness_match then ":witness" else "")
+                       (if target_symbols_match then ":target-symbols" else "")
+                       (witness_set_text branch_witnesses))
+                else
+                  None)
+      in
+      prerr_endline
+        (Printf.sprintf
+           "%s: native preprocess Skolem CPS %s branch candidates at term_depth=%d proof_depth=%d source_exists=%d active_witnesses=%s result_symbols=%s -> %s"
+           id label term_depth proof_depth source_exists
+           (witness_set_text active_witness_set)
+           (witness_set_text result_symbols)
+           (match candidate_labels with
+            | [] -> "none"
+            | labels -> String.concat " " labels))
+  in
+  debug_skolem_branch_contracts ();
   let parent_proof =
     let dummy_step_argument tp =
       match tp with
@@ -15606,9 +15757,23 @@ let native_core_skolem_refutation_cps_proof
 	      (result_prop,
 	       PPfAp (shifted_result_to_target, bound_result_proof))
 	  in
-	  let rec eliminate term_depth proof_depth term_replacements replacements fallback_replacements witnesses source result proof result_to_target_builder =
+  let rec eliminate term_depth proof_depth term_replacements replacements fallback_replacements witnesses source result proof result_to_target_builder =
+    debug_skolem_branch_candidates
+      "enter"
+      term_depth
+      proof_depth
+      source
+      result
+      witnesses;
     match source, result, witnesses with
     | Ap (TmH "vampire_exists_prop", Lam (tp, body)), _, witness :: rest ->
+        debug_skolem_branch_candidates
+          ("exists " ^ witness)
+          term_depth
+          proof_depth
+          source
+          result
+          witnesses;
         let replacements_under_binder =
           (witness, DB 0)
           :: List.map (fun (name, tm) -> (name, tmshift 0 1 tm)) replacements
@@ -15684,6 +15849,13 @@ let native_core_skolem_refutation_cps_proof
     | Ap (Ap (TmH "vampire_and", source_left), source_right),
       Ap (Ap (TmH "vampire_and", result_left), result_right),
       _ ->
+        debug_skolem_branch_candidates
+          "and"
+          term_depth
+          proof_depth
+          source
+          result
+          witnesses;
         let left_count = source_exists_count source_left in
         let right_count = source_exists_count source_right in
         let rec split_witnesses n acc rest =
@@ -15921,6 +16093,13 @@ let native_core_skolem_refutation_cps_proof
     | Ap (Ap (TmH "vampire_or", source_left), source_right),
       Ap (Ap (TmH "vampire_or", result_left), result_right),
       _ ->
+        debug_skolem_branch_candidates
+          "or"
+          term_depth
+          proof_depth
+          source
+          result
+          witnesses;
         let left_count = source_exists_count source_left in
         let right_count = source_exists_count source_right in
         let rec split_witnesses n acc rest =
@@ -19516,7 +19695,8 @@ let elaborate_preprocess_refutation_native
             (id, source_formula, subst, result, parent_step_variables,
              result_step_variables,
              result_checked_prop, result_assumption_step_variables,
-             result_assumption_prop, parent_proof, result_assumption_proof)
+             result_assumption_prop, parent_proof,
+             result_assumption_proof, skolem_proof_object)
             :: !skolem_cps_entries
       | FormulaCopy (id, parent_id, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
@@ -19785,11 +19965,11 @@ let elaborate_preprocess_refutation_native
   in
   let proof =
     List.fold_left
-	      (fun current
-	           (id, source_formula, subst, result, parent_step_variables,
-	           result_step_variables, result_checked_prop,
-	            result_assumption_step_variables, result_assumption_prop,
-	            parent_proof, result_proof) ->
+      (fun current
+           (id, source_formula, subst, result, parent_step_variables,
+            result_step_variables, result_checked_prop,
+            result_assumption_step_variables, result_assumption_prop,
+            parent_proof, result_proof, skolem_proof_object) ->
          try
            let introduced_witness_symbols =
              subst
@@ -19841,10 +20021,11 @@ let elaborate_preprocess_refutation_native
 	             native_core_skolem_refutation_cps_proof
 	               ~abstract_result_proof:abstract_skolem_result_by_prop
 	               ?result_to_target_body:shadow_result_to_target
-	               ~result_assumption_prop
-	               ~result_assumption_step_variables
-	               ~split_replacements
-	               id variables parent_step_variables result_step_variables
+               ~result_assumption_prop
+               ~result_assumption_step_variables
+               ?skolem_proof_object
+               ~split_replacements
+               id variables parent_step_variables result_step_variables
                source_formula subst result result_checked_prop parent_proof
                result_proof current native_core_false
            in
