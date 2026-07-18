@@ -24,6 +24,7 @@ type skolem_contract = {
 }
 
 type skolem_branch_contract = {
+  skolem_branch_index : int;
   skolem_branch_parent_index : int option;
   skolem_branch_unit : string option;
   skolem_branch_binder_count : int option;

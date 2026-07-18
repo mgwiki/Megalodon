@@ -8664,7 +8664,7 @@ let native_core_skolem_contract_introduced_names = function
            (fun witness ->
               witness.Vampire_kernel_syntax.skolem_witness_symbol)
 
-let native_core_kernel_v1_skolem_branch_contract cert id prefix =
+let native_core_kernel_v1_skolem_branch_contract cert id index prefix =
   match native_core_kernel_v1_field cert id (prefix ^ "_contract") with
   | None -> None
   | Some version ->
@@ -8724,7 +8724,8 @@ let native_core_kernel_v1_skolem_branch_contract cert id prefix =
       in
       Some
         {
-          Vampire_kernel_syntax.skolem_branch_parent_index =
+          Vampire_kernel_syntax.skolem_branch_index = index;
+          skolem_branch_parent_index =
             native_core_kernel_v1_int_field
               cert id (prefix ^ "_contract_parent_index");
           skolem_branch_unit =
@@ -8803,7 +8804,7 @@ let native_core_skolem_macro_edges cert id =
                   cert id (prefix ^ "_target")
                 |> List.map native_core_kernel_v1_skolem_formula_child;
               native_skolem_macro_edge_branch_contract =
-                native_core_kernel_v1_skolem_branch_contract cert id prefix;
+                native_core_kernel_v1_skolem_branch_contract cert id index prefix;
             }
           in
           collect (index + 1) (edge :: acc)
