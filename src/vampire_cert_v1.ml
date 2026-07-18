@@ -9524,6 +9524,20 @@ let native_core_close_tm ?(depth=0) variables tm =
   in
   close depth (native_core_normalize_bool_constants tm)
 
+let native_core_tm_scoped_under context_depth tm =
+  let rec scoped local_depth = function
+    | DB index -> index < context_depth + local_depth
+    | TpAp (body, _) -> scoped local_depth body
+    | Ap (left, right)
+    | Imp (left, right) ->
+        scoped local_depth left && scoped local_depth right
+    | Lam (_, body)
+    | All (_, body) ->
+        scoped (local_depth + 1) body
+    | TmH _ | Prim _ -> true
+  in
+  scoped 0 tm
+
 let native_core_close_pf variables proof =
   let rec close depth = function
     | Hyp i -> Hyp i
@@ -14385,13 +14399,16 @@ let rec native_core_direct_skolem_formula_proof
           | None -> None
           end
   in
-  let rec choose_basic current_target remaining_substitution source proof replacements used_choice =
+  let rec choose_basic local_depth current_target remaining_substitution source proof replacements used_choice =
     match source with
     | Ap (TmH "vampire_exists_prop", Lam (tp, body)) ->
         let choice = native_core_exists_choice_hash tp in
         if choice = "vampire_exists_unsupported_choice" then
           error
             (id ^ ": native core proof-term skolemization has no choice theorem for witness sort");
+        let predicate_for_body body =
+          Lam (tp, checked_formula_prop (local_depth + 1) body)
+        in
         let substitution_name, target_witness, remaining_substitution =
           let name, witness, rest =
             pick_substitution_for_target body current_target remaining_substitution
@@ -14410,26 +14427,25 @@ let rec native_core_direct_skolem_formula_proof
           | Some name ->
               let body = subst_named_tm name body in
               let epsilon_witness =
-                Ap (TmH (native_core_eps_symbol tp),
-                    Lam (tp, native_core_formula_prop body))
+                Ap (TmH (native_core_eps_symbol tp), predicate_for_body body)
               in
               register_witness_replacement target_witness epsilon_witness;
               body,
               (target_witness, epsilon_witness) :: replacements
           | None ->
               let epsilon_witness =
-                Ap (TmH (native_core_eps_symbol tp),
-                    Lam (tp, native_core_formula_prop body))
+                Ap (TmH (native_core_eps_symbol tp), predicate_for_body body)
               in
               register_witness_replacement target_witness epsilon_witness;
               body,
               (target_witness, epsilon_witness) :: replacements
         in
-        let predicate = Lam (tp, native_core_formula_prop body) in
+        let predicate = predicate_for_body body in
         let epsilon_witness = Ap (TmH (native_core_eps_symbol tp), predicate) in
         let choice_proof = PPfAp (PTmAp (Known choice, predicate), proof) in
         let instantiated_body = tmsubst body 0 epsilon_witness in
         choose_basic
+          local_depth
           current_target
           remaining_substitution
           instantiated_body
@@ -14442,7 +14458,7 @@ let rec native_core_direct_skolem_formula_proof
     let active_source = rewrite_witnesses replacements 0 helper_source in
     let active_target = rewrite_witnesses replacements 0 helper_target in
     let orientation_source, body_proof, helper_replacements, helper_used_choice, remaining_substitution =
-      choose_basic active_target remaining_substitution active_source (Hyp 0) [] false
+      choose_basic (List.length tps) active_target remaining_substitution active_source (Hyp 0) [] false
     in
     if not helper_used_choice then
       error (id ^ ": native core skolem helper implication did not eliminate an existential");
@@ -14549,26 +14565,28 @@ let rec native_core_direct_skolem_formula_proof
                   | Some name ->
                       let body = subst_named_tm name body in
                       let epsilon_witness =
-                        Ap (TmH (native_core_eps_symbol tp),
-                            Lam (tp, native_core_formula_prop body))
+                        Ap
+                          (TmH (native_core_eps_symbol tp),
+                           Lam (tp, checked_formula_prop (local_depth + 1) body))
                       in
                       register_witness_replacement target_witness epsilon_witness;
                       body,
                       (target_witness, epsilon_witness) :: replacements
                   | None ->
                       let epsilon_witness =
-                        Ap (TmH (native_core_eps_symbol tp),
-                            Lam (tp, native_core_formula_prop body))
+                        Ap
+                          (TmH (native_core_eps_symbol tp),
+                           Lam (tp, checked_formula_prop (local_depth + 1) body))
                       in
                       register_witness_replacement target_witness epsilon_witness;
                       body,
                       (target_witness, epsilon_witness) :: replacements
                 in
-                let predicate = Lam (tp, native_core_formula_prop body) in
+                let predicate = Lam (tp, checked_formula_prop (local_depth + 1) body) in
                 let choice_proof = PPfAp (PTmAp (Known choice, predicate), proof) in
                 let target_body = tmsubst body 0 target_witness in
                 let choice_proof =
-                  PPfAp (PLam (native_core_formula_prop target_body, Hyp 0), choice_proof)
+                  PPfAp (PLam (checked_formula_prop local_depth target_body, Hyp 0), choice_proof)
                 in
                 choose_with_helpers
                   local_depth
@@ -14710,7 +14728,7 @@ let rec native_core_direct_skolem_formula_proof
   in
   let orientation_source, choice_proof, replacements, used_choice, _remaining_substitution =
     if helper_records = [] then
-      choose_basic target substitution source proof [] false
+      choose_basic 0 target substitution source proof [] false
     else
       choose_with_helpers 0 helper_records substitution source target proof [] false
   in
@@ -18357,8 +18375,15 @@ let elaborate_core_resolution_refutation_native
                          ^ name
                          ^ " := "
                          ^ tm_to_str closed_witness);
-                    Hashtbl.replace proof_delta name (0, closed_witness);
-                    Hashtbl.replace definition_delta name (0, closed_witness)
+                    if native_core_tm_scoped_under (List.length variables) closed_witness then begin
+                      Hashtbl.replace proof_delta name (0, closed_witness);
+                      Hashtbl.replace definition_delta name (0, closed_witness)
+                    end else if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+                      prerr_endline
+                        (id
+                         ^ ": native core skolem kept context-dependent witness "
+                         ^ name
+                         ^ " out of arity-zero delta tables")
                 | _ -> ()
                 end
             | TmH raw_name, _ :: _ ->
@@ -19667,8 +19692,15 @@ let elaborate_preprocess_refutation_native
                          ^ name
                          ^ " := "
                          ^ tm_to_str closed_witness);
-                    Hashtbl.replace proof_delta name (0, closed_witness);
-                    Hashtbl.replace definition_delta name (0, closed_witness);
+                    if native_core_tm_scoped_under (List.length variables) closed_witness then begin
+                      Hashtbl.replace proof_delta name (0, closed_witness);
+                      Hashtbl.replace definition_delta name (0, closed_witness)
+                    end else if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+                      prerr_endline
+                        (id
+                         ^ ": native preprocess skolem kept context-dependent witness "
+                         ^ name
+                         ^ " out of arity-zero delta tables");
                     skolem_witness_replacements :=
                       (name, closed_witness)
                       :: List.remove_assoc name !skolem_witness_replacements
