@@ -123,9 +123,12 @@ type native_skolem_macro_edge = {
   native_skolem_macro_edge_formula_free_variables : native_kernel_typed_variable list;
   native_skolem_macro_edge_source_free_variables : native_kernel_typed_variable list;
   native_skolem_macro_edge_target_free_variables : native_kernel_typed_variable list;
-  native_skolem_macro_edge_formula_children : (string * tm) list;
-  native_skolem_macro_edge_source_children : (string * tm) list;
-  native_skolem_macro_edge_target_children : (string * tm) list;
+  native_skolem_macro_edge_formula_children :
+    Vampire_kernel_syntax.skolem_formula_child list;
+  native_skolem_macro_edge_source_children :
+    Vampire_kernel_syntax.skolem_formula_child list;
+  native_skolem_macro_edge_target_children :
+    Vampire_kernel_syntax.skolem_formula_child list;
   native_skolem_macro_edge_contract : string option;
   native_skolem_macro_edge_contract_primitive_rule : string option;
   native_skolem_macro_edge_contract_parent_index : int option;
@@ -8587,6 +8590,12 @@ let native_core_kernel_v1_formula_child_fields cert id prefix =
       in
       collect 0 []
 
+let native_core_kernel_v1_skolem_formula_child (role, formula) =
+  {
+    Vampire_kernel_syntax.skolem_child_role = role;
+    skolem_child_formula = formula;
+  }
+
 let native_core_kernel_v1_skolem_contract cert id =
   match native_core_kernel_v1_field cert id "skolem_contract" with
   | None -> None
@@ -8602,21 +8611,15 @@ let native_core_kernel_v1_skolem_contract cert id =
       if primitive_rule <> "skolem_formula" then
         error
           (id ^ ": kernel_v1 metadata field skolem_contract_primitive_rule must be skolem_formula");
-      let convert_child (role, formula) =
-        {
-          Vampire_kernel_syntax.skolem_child_role = role;
-          skolem_child_formula = formula;
-        }
-      in
       let source_children =
         native_core_kernel_v1_formula_child_fields
           cert id "skolem_contract_source_formula"
-        |> List.map convert_child
+        |> List.map native_core_kernel_v1_skolem_formula_child
       in
       let result_children =
         native_core_kernel_v1_formula_child_fields
           cert id "skolem_contract_result_formula"
-        |> List.map convert_child
+        |> List.map native_core_kernel_v1_skolem_formula_child
       in
       let introduced_count =
         match
@@ -8767,13 +8770,16 @@ let native_core_skolem_macro_edges cert id =
                   cert id (prefix ^ "_target") "free_variable";
               native_skolem_macro_edge_formula_children =
                 native_core_kernel_v1_formula_child_fields
-                  cert id (prefix ^ "_formula");
+                  cert id (prefix ^ "_formula")
+                |> List.map native_core_kernel_v1_skolem_formula_child;
               native_skolem_macro_edge_source_children =
                 native_core_kernel_v1_formula_child_fields
-                  cert id (prefix ^ "_source");
+                  cert id (prefix ^ "_source")
+                |> List.map native_core_kernel_v1_skolem_formula_child;
               native_skolem_macro_edge_target_children =
                 native_core_kernel_v1_formula_child_fields
-                  cert id (prefix ^ "_target");
+                  cert id (prefix ^ "_target")
+                |> List.map native_core_kernel_v1_skolem_formula_child;
               native_skolem_macro_edge_contract =
                 native_core_kernel_v1_field cert id (prefix ^ "_contract");
               native_skolem_macro_edge_contract_primitive_rule =
