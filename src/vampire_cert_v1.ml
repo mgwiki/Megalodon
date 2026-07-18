@@ -4590,6 +4590,18 @@ let validate_kernel_v1_metadata_contracts cert =
           quantified_variables
   in
   let validate_skolem_macro_edge_shape_metadata id fields =
+    begin match field_value "source_formula" fields with
+    | Some raw_source ->
+        require_formula_quantifier_fields
+          id fields "source_formula" raw_source
+    | None -> ()
+    end;
+    begin match field_value "result_formula" fields with
+    | Some raw_result ->
+        require_formula_quantifier_fields
+          id fields "result_formula" raw_result
+    | None -> ()
+    end;
     match field_value "skolem_macro_edge_count" fields with
     | None -> ()
     | Some _ ->
@@ -13171,6 +13183,37 @@ let native_core_skolem_parent_helper_formulas cert id =
   collect 1 []
 
 let native_core_skolem_source_existential_names cert id =
+  let metadata_names () =
+    match
+      native_core_metadata_step_extra_field
+        cert id "kernel_v1" "source_formula_quantifier_count"
+    with
+    | None -> None
+    | Some value ->
+        let count =
+          try int_of_string value
+          with Failure _ -> 0
+        in
+        let rec collect index acc =
+          if index >= count then List.rev acc
+          else
+            let prefix =
+              "source_formula_quantifier_" ^ string_of_int index
+            in
+            let acc =
+              match
+                native_core_metadata_step_extra_field
+                  cert id "kernel_v1" (prefix ^ "_kind"),
+                native_core_metadata_step_extra_field
+                  cert id "kernel_v1" (prefix ^ "_var")
+              with
+              | Some "exists", Some name -> name :: acc
+              | _ -> acc
+            in
+            collect (index + 1) acc
+        in
+        Some (collect 0 [])
+  in
   let rec collect = function
     | List [Atom "AP"; List [Atom "TMH"; exists_head];
             List [Atom binder; name; _tp; body]]
@@ -13181,10 +13224,13 @@ let native_core_skolem_source_existential_names cert id =
         List.concat_map collect items
     | Atom _ | Str _ -> []
   in
-  match native_core_metadata_step_extra_field cert id "kernel_v1" "source_formula" with
-  | Some value ->
-      collect (parse_sexpr value)
-  | None -> []
+  match metadata_names () with
+  | Some names -> names
+  | None ->
+      match native_core_metadata_step_extra_field cert id "kernel_v1" "source_formula" with
+      | Some value ->
+          collect (parse_sexpr value)
+      | None -> []
 
 let native_core_reorder_skolem_substitution_by_source cert id subst =
   let names = native_core_skolem_source_existential_names cert id in

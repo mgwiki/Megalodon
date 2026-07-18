@@ -747,7 +747,9 @@ if [[ -s "$WORK_DIR/skolemize.tsv" ]]; then
     'source_unit=' \
     'proof_parent_count=' \
     'source_formula=' \
+    'source_formula_quantifier_count=' \
     'result_formula=' \
+    'result_formula_quantifier_count=' \
     'skolem_macro_edge_count=' \
     'introduced_count=' \
     'introduced_0_symbol='; do
@@ -826,6 +828,8 @@ if [[ -s "$WORK_DIR/skolemize.tsv" ]]; then
       }
     }
     {
+      check_quantifier_fields("source_formula", $0)
+      check_quantifier_fields("result_formula", $0)
       if (match($0, /skolem_macro_edge_count=([0-9]+)/, edge_count_match)) {
         edge_count = edge_count_match[1] + 0
         for (edge_index = 0; edge_index < edge_count; ++edge_index) {
