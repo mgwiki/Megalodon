@@ -5770,6 +5770,32 @@ let validate_kernel_v1_metadata_contracts cert =
                  if introduced_count < 0 then
                    error
                      (id ^ ": strict certificate v1 kernel_v1 skolemize introduced_count must be non-negative");
+                 if proof_parent_count <> introduced_count + 1 then
+                   error
+                     (Printf.sprintf
+                        "%s: strict certificate v1 kernel_v1 skolemize proof_parent_count expected introduced_count + 1 (%d) but got %d"
+                        id (introduced_count + 1) proof_parent_count);
+                 let rec skolem_parent_body = function
+                   | All (_, body) -> skolem_parent_body body
+                   | body -> body
+                 in
+                 for parent_index = 1 to proof_parent_count - 1 do
+                   let parent_prefix =
+                     "parent_" ^ string_of_int parent_index
+                   in
+                   ignore
+                     (field_required id fields (parent_prefix ^ "_unit") : string);
+                   let parent_formula =
+                     parse_field id fields (parent_prefix ^ "_formula") parse_tm
+                   in
+                   match skolem_parent_body parent_formula with
+                   | Imp (Ap (TmH "vampire_exists_prop", Lam _), _) -> ()
+                   | _ ->
+                       error
+                         (id ^ ": strict certificate v1 kernel_v1 skolemize "
+                          ^ parent_prefix
+                          ^ "_formula is not a quantified existential-instantiation implication")
+                 done;
                  if introductions <> [] && introduced_count <> List.length introductions then
                    error
                      (Printf.sprintf

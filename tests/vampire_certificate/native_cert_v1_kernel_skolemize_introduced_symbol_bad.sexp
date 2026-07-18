@@ -26,7 +26,7 @@
     (result
       (formula
         (AP (TMH "p") (TMH "sk")))))
-  (step_extra "u1" "kernel_v1" ("schema=prover9-small-kernel-v1" "rule=skolemize" "primitive_expansion=prefix" "primitive_expansion_prefix=u1" "primitive_expansion_requires=skolem_formula" "conclusion_unit=u1" "proof_parent_count=1" "parent_count=0" "parent_0_unit=u0" "source_unit=u0" "source_formula=(AP (TMH \"vampire_exists_prop\") (LAM (SET) (AP (TMH \"p\") (TMH \"X0\"))))" "result_formula=(AP (TMH \"p\") (TMH \"sk\"))" "introduced_count=1" "introduced_0_kind=0" "introduced_0_raw_symbol=1" "introduced_0_symbol=bad_sk" "introduced_0_replaced_var=X0" "introduced_0_declaration=Variable sk:set."))
+  (step_extra "u1" "kernel_v1" ("schema=prover9-small-kernel-v1" "rule=skolemize" "primitive_expansion=prefix" "primitive_expansion_prefix=u1" "primitive_expansion_requires=skolem_formula" "conclusion_unit=u1" "proof_parent_count=2" "parent_count=0" "parent_0_unit=u0" "parent_1_unit=u1_parent_1" "source_unit=u0" "source_formula=(AP (TMH \"vampire_exists_prop\") (LAM (SET) (AP (TMH \"p\") (TMH \"X0\"))))" "parent_1_formula=(IMP (AP (TMH \"vampire_exists_prop\") (LAM (SET) (AP (TMH \"p\") (TMH \"X0\")))) (AP (TMH \"p\") (TMH \"sk\")))" "result_formula=(AP (TMH \"p\") (TMH \"sk\"))" "introduced_count=1" "introduced_0_kind=0" "introduced_0_raw_symbol=1" "introduced_0_symbol=bad_sk" "introduced_0_replaced_var=X0" "introduced_0_declaration=Variable sk:set."))
   (cnf_formula_clause "c1"
     (parent "u1")
     (index 0)
