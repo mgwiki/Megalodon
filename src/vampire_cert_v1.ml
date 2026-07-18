@@ -12891,6 +12891,14 @@ let native_core_skolem_parent_helper_formulas cert id =
     native_core_metadata_step_extra_field cert id "kernel_v1" key
     |> Option.map (fun value -> parse_tm (parse_sexpr value))
   in
+  let rec quantified_implication_prefix tps = function
+    | All (tp, body) -> quantified_implication_prefix (tps @ [tp]) body
+    | Imp _ -> Some tps
+    | _ -> None
+  in
+  let wrap_quantifiers tps body =
+    List.fold_right (fun tp acc -> All (tp, acc)) tps body
+  in
   let explicit_macro_edges =
     match native_core_metadata_step_extra_field cert id "kernel_v1" "skolem_macro_edge_count" with
     | Some value ->
@@ -12903,8 +12911,19 @@ let native_core_skolem_parent_helper_formulas cert id =
           else
             let prefix = "skolem_macro_edge_" ^ string_of_int index in
             let acc =
-              match parse_field (prefix ^ "_source"), parse_field (prefix ^ "_target") with
-              | Some source, Some target -> Imp (source, target) :: acc
+              match
+                parse_field (prefix ^ "_formula"),
+                parse_field (prefix ^ "_source"),
+                parse_field (prefix ^ "_target")
+              with
+              | Some formula, Some source, Some target ->
+                  let tps =
+                    match quantified_implication_prefix [] formula with
+                    | Some tps -> tps
+                    | None -> []
+                  in
+                  wrap_quantifiers tps (Imp (source, target)) :: acc
+              | _, Some source, Some target -> Imp (source, target) :: acc
               | _ -> acc
             in
             collect (index + 1) acc
@@ -13075,7 +13094,7 @@ let rec native_core_direct_skolem_formula_proof
     | DB _ | TmH _ | Prim _ -> false
   in
   let helper_records =
-    if List.length helper_formulas < 2 then []
+    if helper_formulas = [] then []
     else
       let rec peel_foralls tps = function
         | All (tp, body) -> peel_foralls (tps @ [tp]) body
