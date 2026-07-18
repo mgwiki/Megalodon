@@ -10104,6 +10104,19 @@ let native_core_avatar_split_proof cert id parent_ids result clause_table avatar
                                  definition_component_prop, component_to_split)
                           | _ -> None)
                 in
+                let non_quantified_negative_infos =
+                  infos
+                  |> List.filter_map
+                       (fun (_, split_name, component_literals, component_witness,
+                             _definition_component_prop, _component_to_split,
+                             split_to_component, split_prop, result_split_literal) ->
+                          match component_witness, component_literals, result_split_literal with
+                          | None, [component_literal], Some (Neg (TmH _)) ->
+                              Some
+                                (split_name, component_literal,
+                                 split_to_component, split_prop)
+                          | _ -> None)
+                in
                 let result_literal_to_target_under_literal literal =
                   pfshift 0 1 (result_literal_to_target literal)
                 in
@@ -10148,13 +10161,60 @@ let native_core_avatar_split_proof cert id parent_ids result clause_table avatar
                                    (pftmshift 0 1 (pfshift 0 3 component_to_split),
                                     component_clause_proof)
                                in
-                               PPfAp
-                                 (Hyp 2,
-                                  PPfAp (split_to_target, split_proof)))
+                                 PPfAp
+                                   (Hyp 2,
+                                    PPfAp (split_to_target, split_proof)))
                           else
                             find_non_quantified rest
                     in
-                    find_non_quantified non_quantified_positive_infos
+                    let rec find_non_quantified_negative = function
+                      | [] ->
+                          error
+                            (id ^ ": native preprocess proof-term avatar_split cannot refute choice-free source literal")
+                      | (split_name, component_literal, split_to_component, split_prop) :: rest ->
+                          let complement_literal =
+                            native_core_complement_literal component_literal
+                          in
+                          if literal = complement_literal then
+                            let negative_split_literal = Neg (TmH split_name) in
+                            let negative_split_prop =
+                              native_core_literal_prop negative_split_literal
+                            in
+                            let negative_split_to_target =
+                              result_literal_to_target_under_literal negative_split_literal
+                            in
+                            PLam
+                              (literal_prop,
+                               let not_negative_split =
+                                 PLam
+                                   (negative_split_prop,
+                                    PPfAp
+                                      (Hyp 3,
+                                       PPfAp
+                                         (pfshift 0 1 negative_split_to_target,
+                                          Hyp 0)))
+                               in
+                               let split_proof =
+                                 PPfAp
+                                   (PTmAp (Known native_core_dneg_hash, split_prop),
+                                    not_negative_split)
+                               in
+                               let component_proof =
+                                 PPfAp
+                                   (pfshift 0 1 split_to_component,
+                                    split_proof)
+                               in
+                               native_core_false_from_complement_proofs
+                                 component_literal
+                                 component_proof
+                                 complement_literal
+                                 (Hyp 0))
+                          else
+                            find_non_quantified_negative rest
+                    in
+                    try find_non_quantified non_quantified_positive_infos
+                    with Error _ ->
+                      find_non_quantified_negative non_quantified_negative_infos
                 in
                 let rec contradiction depth clause proof =
                   match clause with
@@ -12139,6 +12199,46 @@ let native_core_formula_orientation_proof
   in
   let source = native_core_close_tm (variables @ result_step_variables) source in
   let target = native_core_close_tm (variables @ result_step_variables) target in
+  let short_tm tm =
+    let text = tm_to_str tm in
+    if String.length text <= 300 then text
+    else String.sub text 0 300 ^ "..."
+  in
+  let rec first_tm_difference path left right =
+    if left = right then None
+    else
+      match left, right with
+      | TpAp (left_body, left_tp), TpAp (right_body, right_tp) ->
+          if left_tp <> right_tp then
+            Some (path ^ ".type", left, right)
+          else
+            first_tm_difference (path ^ ".tpap") left_body right_body
+      | Ap (left_fun, left_arg), Ap (right_fun, right_arg) ->
+          begin match first_tm_difference (path ^ ".fun") left_fun right_fun with
+          | Some _ as found -> found
+          | None -> first_tm_difference (path ^ ".arg") left_arg right_arg
+          end
+      | Lam (left_tp, left_body), Lam (right_tp, right_body)
+      | All (left_tp, left_body), All (right_tp, right_body) ->
+          if left_tp <> right_tp then
+            Some (path ^ ".binder-type", left, right)
+          else
+            first_tm_difference (path ^ ".body") left_body right_body
+      | Imp (left_a, left_b), Imp (right_a, right_b) ->
+          begin match first_tm_difference (path ^ ".left") left_a right_a with
+          | Some _ as found -> found
+          | None -> first_tm_difference (path ^ ".right") left_b right_b
+          end
+      | _ -> Some (path, left, right)
+  in
+  let debug_formula_orientation_difference source_for_match target_for_match =
+    match first_tm_difference "root" source_for_match target_for_match with
+    | Some (path, left, right) ->
+        prerr_endline ("native core formula orientation first diff path: " ^ path);
+        prerr_endline ("native core formula orientation first diff source: " ^ short_tm left);
+        prerr_endline ("native core formula orientation first diff target: " ^ short_tm right)
+    | None -> ()
+  in
   let rec convert local_depth direction source target proof =
     let normalize_for_match tm =
       normalize_formula_for_match (result_variable_count + local_depth) tm
@@ -12454,7 +12554,8 @@ let native_core_formula_orientation_proof
                         prerr_endline ("native core formula orientation debug source: " ^ tm_to_str source);
                         prerr_endline ("native core formula orientation debug target: " ^ tm_to_str target);
                         prerr_endline ("native core formula orientation debug normalized source: " ^ tm_to_str source_for_match);
-                        prerr_endline ("native core formula orientation debug normalized target: " ^ tm_to_str target_for_match)
+                        prerr_endline ("native core formula orientation debug normalized target: " ^ tm_to_str target_for_match);
+                        debug_formula_orientation_difference source_for_match target_for_match
                       end;
                       error
                         (id ^ ": native preprocess proof-term formula orientation supports only equality symmetry, true equality introduction, and matching logical structure")
@@ -12491,7 +12592,8 @@ let native_core_formula_orientation_proof
                         prerr_endline ("native core formula orientation debug source: " ^ tm_to_str source);
                         prerr_endline ("native core formula orientation debug target: " ^ tm_to_str target);
                         prerr_endline ("native core formula orientation debug normalized source: " ^ tm_to_str source_for_match);
-                        prerr_endline ("native core formula orientation debug normalized target: " ^ tm_to_str target_for_match)
+                        prerr_endline ("native core formula orientation debug normalized target: " ^ tm_to_str target_for_match);
+                        debug_formula_orientation_difference source_for_match target_for_match
                       end;
                       error
                         (id ^ ": native preprocess proof-term formula orientation supports only equality symmetry, true equality elimination, and matching logical structure")
@@ -12843,6 +12945,7 @@ let native_core_skolem_parent_helper_formulas cert id =
 let rec native_core_direct_skolem_formula_proof
     ?(helper_formulas=[])
     ?(normalize_formula_for_match=(fun _ tm -> tm))
+    ?(register_witness_replacement=(fun _ _ -> ()))
     ?(ambient_shift=0)
     id substitution source target proof =
   let rec contains_named name = function
@@ -13038,15 +13141,21 @@ let rec native_core_direct_skolem_formula_proof
               subst_tm [(name, target_witness)] body, replacements
           | Some name ->
               let body = subst_named_tm name body in
+              let epsilon_witness =
+                Ap (TmH (native_core_eps_symbol tp),
+                    Lam (tp, native_core_formula_prop body))
+              in
+              register_witness_replacement target_witness epsilon_witness;
               body,
-              (target_witness, Ap (TmH (native_core_eps_symbol tp),
-                                Lam (tp, native_core_formula_prop body)))
-              :: replacements
+              (target_witness, epsilon_witness) :: replacements
           | None ->
+              let epsilon_witness =
+                Ap (TmH (native_core_eps_symbol tp),
+                    Lam (tp, native_core_formula_prop body))
+              in
+              register_witness_replacement target_witness epsilon_witness;
               body,
-              (target_witness, Ap (TmH (native_core_eps_symbol tp),
-                                Lam (tp, native_core_formula_prop body)))
-              :: replacements
+              (target_witness, epsilon_witness) :: replacements
         in
         let predicate = Lam (tp, native_core_formula_prop body) in
         let epsilon_witness = Ap (TmH (native_core_eps_symbol tp), predicate) in
@@ -13171,15 +13280,21 @@ let rec native_core_direct_skolem_formula_proof
                       subst_tm [(name, target_witness)] body, replacements
                   | Some name ->
                       let body = subst_named_tm name body in
+                      let epsilon_witness =
+                        Ap (TmH (native_core_eps_symbol tp),
+                            Lam (tp, native_core_formula_prop body))
+                      in
+                      register_witness_replacement target_witness epsilon_witness;
                       body,
-                      (target_witness, Ap (TmH (native_core_eps_symbol tp),
-                                        Lam (tp, native_core_formula_prop body)))
-                      :: replacements
+                      (target_witness, epsilon_witness) :: replacements
                   | None ->
+                      let epsilon_witness =
+                        Ap (TmH (native_core_eps_symbol tp),
+                            Lam (tp, native_core_formula_prop body))
+                      in
+                      register_witness_replacement target_witness epsilon_witness;
                       body,
-                      (target_witness, Ap (TmH (native_core_eps_symbol tp),
-                                        Lam (tp, native_core_formula_prop body)))
-                      :: replacements
+                      (target_witness, epsilon_witness) :: replacements
                 in
                 let predicate = Lam (tp, native_core_formula_prop body) in
                 let choice_proof = PPfAp (PTmAp (Known choice, predicate), proof) in
@@ -13346,6 +13461,7 @@ let rec native_core_direct_skolem_formula_proof
 let native_core_skolem_formula_proof
     ?(helper_formulas=[])
     ?(normalize_formula_for_match=(fun _ tm -> tm))
+    ?(register_witness_replacement=(fun _ _ -> ()))
     id variables parent_step_variables result_step_variables substitution source target proof =
   let source = native_core_close_tm (variables @ result_step_variables) source in
   let target = native_core_close_tm (variables @ result_step_variables) target in
@@ -13479,6 +13595,7 @@ let native_core_skolem_formula_proof
           native_core_direct_skolem_formula_proof
             ~helper_formulas
             ~normalize_formula_for_match
+            ~register_witness_replacement
             ~ambient_shift:result_variable_count
             id closed_substitution source target proof
       | _ ->
@@ -16099,10 +16216,49 @@ let elaborate_core_resolution_refutation_native
           let helper_formulas =
             native_core_skolem_parent_helper_formulas cert id
           in
+          let introduced_names =
+            introductions
+            |> List.filter_map
+                 (fun introduction ->
+                    native_core_ident_opt introduction.skolem_intro_symbol)
+          in
+          let register_witness_replacement target_witness epsilon_witness =
+            match native_core_flatten_value_application target_witness with
+            | TmH raw_name, [] ->
+                begin match native_core_ident_opt raw_name with
+                | Some name when List.mem name introduced_names ->
+                    let closed_witness =
+                      native_core_close_tm variables epsilon_witness
+                      |> tm_beta_eta_norm
+                    in
+                    if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+                      prerr_endline
+                        (id
+                         ^ ": native core skolem registered witness definition "
+                         ^ name
+                         ^ " := "
+                         ^ tm_to_str closed_witness);
+                    Hashtbl.replace proof_delta name (0, closed_witness);
+                    Hashtbl.replace definition_delta name (0, closed_witness)
+                | _ -> ()
+                end
+            | TmH raw_name, _ :: _ ->
+                begin match native_core_ident_opt raw_name with
+                | Some name when List.mem name introduced_names
+                                 && Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" ->
+                    prerr_endline
+                      (id
+                       ^ ": native core skolem deferred dependent witness definition for "
+                       ^ name)
+                | _ -> ()
+                end
+            | _ -> ()
+          in
           let proof =
             try
               native_core_skolem_formula_proof
                 ~normalize_formula_for_match:normalize_generated_skolems
+                ~register_witness_replacement
                 id variables parent_step_variables result_step_variables
                 subst source_formula result parent_proof
             with (Error _ | Failure _) as exn ->
@@ -16111,6 +16267,7 @@ let elaborate_core_resolution_refutation_native
                 native_core_skolem_formula_proof
                   ~helper_formulas
                   ~normalize_formula_for_match:normalize_generated_skolems
+                  ~register_witness_replacement
                   id variables parent_step_variables result_step_variables
                   subst source_formula result parent_proof
           in
@@ -17263,10 +17420,49 @@ let elaborate_preprocess_refutation_native
           let helper_formulas =
             native_core_skolem_parent_helper_formulas cert id
           in
+          let introduced_names =
+            introductions
+            |> List.filter_map
+                 (fun introduction ->
+                    native_core_ident_opt introduction.skolem_intro_symbol)
+          in
+          let register_witness_replacement target_witness epsilon_witness =
+            match native_core_flatten_value_application target_witness with
+            | TmH raw_name, [] ->
+                begin match native_core_ident_opt raw_name with
+                | Some name when List.mem name introduced_names ->
+                    let closed_witness =
+                      native_core_close_tm variables epsilon_witness
+                      |> tm_beta_eta_norm
+                    in
+                    if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+                      prerr_endline
+                        (id
+                         ^ ": native preprocess skolem registered witness definition "
+                         ^ name
+                         ^ " := "
+                         ^ tm_to_str closed_witness);
+                    Hashtbl.replace proof_delta name (0, closed_witness);
+                    Hashtbl.replace definition_delta name (0, closed_witness)
+                | _ -> ()
+                end
+            | TmH raw_name, _ :: _ ->
+                begin match native_core_ident_opt raw_name with
+                | Some name when List.mem name introduced_names
+                                 && Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" ->
+                    prerr_endline
+                      (id
+                       ^ ": native preprocess skolem deferred dependent witness definition for "
+                       ^ name)
+                | _ -> ()
+                end
+            | _ -> ()
+          in
           let proof =
             try
               native_core_skolem_formula_proof
                 ~normalize_formula_for_match:normalize_generated_skolems
+                ~register_witness_replacement
                 id variables parent_step_variables result_step_variables
                 subst source_formula result parent_proof
             with (Error _ | Failure _) as exn ->
@@ -17275,6 +17471,7 @@ let elaborate_preprocess_refutation_native
                 native_core_skolem_formula_proof
                   ~helper_formulas
                   ~normalize_formula_for_match:normalize_generated_skolems
+                  ~register_witness_replacement
                   id variables parent_step_variables result_step_variables
                   subst source_formula result parent_proof
           in
