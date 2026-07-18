@@ -8251,7 +8251,26 @@ let native_core_close_tm ?(depth=0) variables tm =
   in
   let rec close depth = function
     | TmH name ->
-        begin match Option.bind (native_core_ident_opt name) (fun name -> variable_index name variables) with
+        let closeable_names =
+          let stripped =
+            if String.length name > 1 && name.[0] = '#' then
+              [String.sub name 1 (String.length name - 1)]
+            else []
+          in
+          name :: stripped
+        in
+        let find_variable_name =
+          closeable_names
+          |> List.find_map
+               (fun raw ->
+                  Option.bind
+                    (native_core_ident_opt raw)
+                    (fun ident ->
+                       Option.map
+                         (fun index -> index)
+                         (variable_index ident variables)))
+        in
+        begin match find_variable_name with
         | Some outer_index -> DB (depth + variable_count - outer_index - 1)
         | None -> TmH name
         end
@@ -13104,15 +13123,31 @@ let native_core_skolem_refutation_cps_proof
                error
                  (id ^ ": native preprocess Skolem CPS currently supports only nullary introduced witnesses"))
   in
+  let parent_proof = native_core_close_pf variables parent_proof in
+  let result_proof = native_core_close_pf variables result_proof in
+  let final_proof = native_core_close_pf variables final_proof in
   let rec source_exists_count = function
     | Ap (TmH "vampire_exists_prop", Lam (_, body)) ->
         1 + source_exists_count body
+    | Ap (Ap (TmH "vampire_and", left), right)
+    | Ap (Ap (TmH "vampire_or", left), right) ->
+        source_exists_count left + source_exists_count right
+    | Imp (left, right) ->
+        source_exists_count left + source_exists_count right
+    | All (_, body)
+    | Lam (_, body) ->
+        source_exists_count body
+    | TpAp (body, _)
+    | Ap (TmH "vampire_exists_prop", body)
+    | Ap (TmH "vLAM", body) ->
+        source_exists_count body
+    | Ap (left, right) ->
+        source_exists_count left + source_exists_count right
     | _ -> 0
   in
   if source_exists_count source <> List.length witness_symbols then
     error
       (id ^ ": native preprocess Skolem CPS source existential count does not match substitution count");
-  let result_prop = native_core_formula_prop result in
   let parent_proof =
     let dummy_step_argument tp =
       match tp with
@@ -13145,10 +13180,23 @@ let native_core_skolem_refutation_cps_proof
             error
               (id ^ ": native preprocess Skolem CPS could not isolate the Skolem result proof in the refutation")
   in
+  let result_to_target =
+    native_core_close_pf variables result_to_target
+  in
   let target_prop = tm_beta_eta_norm target_prop in
-  let rec eliminate replacements witnesses source proof result_to_target =
-    match source, witnesses with
-    | Ap (TmH "vampire_exists_prop", Lam (tp, body)), witness :: rest ->
+  let formula_prop_with_replacements replacements formula =
+    native_core_formula_prop formula
+    |> native_core_replace_witness_symbols_in_tm replacements
+    |> tm_beta_eta_norm
+  in
+  let proof_with_replacements replacements proof =
+    native_core_replace_witness_symbols_in_pf
+      (split_replacements @ replacements)
+      proof
+  in
+  let rec eliminate replacements witnesses source result proof result_to_target =
+    match source, result, witnesses with
+    | Ap (TmH "vampire_exists_prop", Lam (tp, body)), _, witness :: rest ->
         let replacements_under_binder =
           (witness, DB 0)
           :: List.map (fun (name, tm) -> (name, tmshift 0 1 tm)) replacements
@@ -13166,21 +13214,178 @@ let native_core_skolem_refutation_cps_proof
                   replacements_under_binder
                   rest
                   body
+                  result
                   (Hyp 0)
                   (pfshift 0 1 (pftmshift 0 1 result_to_target))))
         in
         PPfAp (PTmAp (proof, target_prop), continuation)
-    | _, [] ->
-        let source_prop =
-          native_core_formula_prop source
-          |> native_core_replace_witness_symbols_in_tm replacements
-          |> tm_beta_eta_norm
+    | Ap (Ap (TmH "vampire_and", source_left), source_right),
+      Ap (Ap (TmH "vampire_and", result_left), result_right),
+      _ ->
+        let left_count = source_exists_count source_left in
+        let right_count = source_exists_count source_right in
+        if left_count > 0 && right_count > 0 then
+          error
+            (id ^ ": native preprocess Skolem CPS currently supports conjunction traversal with one Skolemized branch")
+        else if left_count > 0 then
+          let source_left_prop = formula_prop_with_replacements replacements source_left in
+          let source_right_prop = formula_prop_with_replacements replacements source_right in
+          let result_left_prop = formula_prop_with_replacements replacements result_left in
+          let result_right_prop = formula_prop_with_replacements replacements result_right in
+          let source_left_proof =
+            native_core_and_elim_left source_left_prop source_right_prop proof
+          in
+          let source_right_proof =
+            native_core_and_elim_right source_left_prop source_right_prop proof
+          in
+          let left_result_to_target =
+            PLam
+              (result_left_prop,
+               let rebuilt =
+                 native_core_and_intro
+                   result_left_prop
+                   result_right_prop
+                   (Hyp 0)
+                   (pfshift 0 1 source_right_proof)
+               in
+               PPfAp
+                 (pfshift 0 1 (proof_with_replacements replacements result_to_target),
+                  rebuilt))
+          in
+          eliminate
+            replacements
+            witnesses
+            source_left
+            result_left
+            source_left_proof
+            left_result_to_target
+        else if right_count > 0 then
+          let source_left_prop = formula_prop_with_replacements replacements source_left in
+          let source_right_prop = formula_prop_with_replacements replacements source_right in
+          let result_left_prop = formula_prop_with_replacements replacements result_left in
+          let result_right_prop = formula_prop_with_replacements replacements result_right in
+          let source_left_proof =
+            native_core_and_elim_left source_left_prop source_right_prop proof
+          in
+          let source_right_proof =
+            native_core_and_elim_right source_left_prop source_right_prop proof
+          in
+          let right_result_to_target =
+            PLam
+              (result_right_prop,
+               let rebuilt =
+                 native_core_and_intro
+                   result_left_prop
+                   result_right_prop
+                   (pfshift 0 1 source_left_proof)
+                   (Hyp 0)
+               in
+               PPfAp
+                 (pfshift 0 1 (proof_with_replacements replacements result_to_target),
+                  rebuilt))
+          in
+          eliminate
+            replacements
+            witnesses
+            source_right
+            result_right
+            source_right_proof
+            right_result_to_target
+        else
+          eliminate_base replacements source result proof result_to_target
+    | Ap (Ap (TmH "vampire_or", source_left), source_right),
+      Ap (Ap (TmH "vampire_or", result_left), result_right),
+      _ ->
+        let left_count = source_exists_count source_left in
+        let right_count = source_exists_count source_right in
+        let rec split_witnesses n acc rest =
+          if n = 0 then (List.rev acc, rest)
+          else
+            match rest with
+            | witness :: rest -> split_witnesses (n - 1) (witness :: acc) rest
+            | [] ->
+                error
+                  (id ^ ": native preprocess Skolem CPS source has fewer existential binders than substitutions")
         in
-        let expected_result_prop =
-          result_prop
-          |> native_core_replace_witness_symbols_in_tm replacements
-          |> tm_beta_eta_norm
+        let left_witnesses, right_witnesses =
+          split_witnesses left_count [] witnesses
         in
+        let source_left_prop = formula_prop_with_replacements replacements source_left in
+        let source_right_prop = formula_prop_with_replacements replacements source_right in
+        let result_left_prop = formula_prop_with_replacements replacements result_left in
+        let result_right_prop = formula_prop_with_replacements replacements result_right in
+        let branch_target = target_prop in
+        let rebuild_left_to_target =
+          PLam
+            (result_left_prop,
+             let rebuilt =
+               native_core_or_intro_left
+                 result_left_prop
+                 result_right_prop
+                 (Hyp 0)
+             in
+             PPfAp
+               (pfshift 0 1 (proof_with_replacements replacements result_to_target),
+                rebuilt))
+        in
+        let rebuild_right_to_target =
+          PLam
+            (result_right_prop,
+             let rebuilt =
+               native_core_or_intro_right
+                 result_left_prop
+                 result_right_prop
+                 (Hyp 0)
+             in
+             PPfAp
+               (pfshift 0 1 (proof_with_replacements replacements result_to_target),
+                rebuilt))
+        in
+        let left_branch =
+          PLam
+            (source_left_prop,
+             if left_count > 0 then
+               eliminate
+                 replacements
+                 left_witnesses
+                 source_left
+                 result_left
+                 (Hyp 0)
+                 (pfshift 0 1 rebuild_left_to_target)
+             else if source_left_prop = result_left_prop then
+               PPfAp (pfshift 0 1 rebuild_left_to_target, Hyp 0)
+             else
+               error
+                 (id ^ ": native preprocess Skolem CPS unchanged disjunction branch does not match result"))
+        in
+        let right_branch =
+          PLam
+            (source_right_prop,
+             if right_count > 0 then
+               eliminate
+                 replacements
+                 right_witnesses
+                 source_right
+                 result_right
+                 (Hyp 0)
+                 (pfshift 0 1 rebuild_right_to_target)
+             else if source_right_prop = result_right_prop then
+               PPfAp (pfshift 0 1 rebuild_right_to_target, Hyp 0)
+             else
+               error
+                 (id ^ ": native preprocess Skolem CPS unchanged disjunction branch does not match result"))
+        in
+        PPfAp
+          (PPfAp (PTmAp (proof, branch_target), left_branch),
+           right_branch)
+    | _, _, [] ->
+        eliminate_base replacements source result proof result_to_target
+    | _ ->
+        error
+          (id ^ ": native preprocess Skolem CPS source has fewer existential binders than substitutions")
+  and eliminate_base replacements source result proof result_to_target =
+        let source_prop = formula_prop_with_replacements replacements source in
+        let expected_result_prop = formula_prop_with_replacements replacements result in
         if source_prop <> expected_result_prop then begin
           if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
             prerr_endline ("native preprocess Skolem CPS source base: " ^ tm_to_str source_prop);
@@ -13192,15 +13397,11 @@ let native_core_skolem_refutation_cps_proof
         let result_checked_proof =
           native_core_bind_result_step_variables variables result_step_variables proof
         in
-        let replacements = split_replacements @ replacements in
         PPfAp
-          (native_core_replace_witness_symbols_in_pf replacements result_to_target,
+          (proof_with_replacements replacements result_to_target,
            result_checked_proof)
-    | _ ->
-        error
-          (id ^ ": native preprocess Skolem CPS source has fewer existential binders than substitutions")
   in
-  eliminate [] witness_symbols source parent_proof result_to_target
+  eliminate [] witness_symbols source result parent_proof result_to_target
 
 let native_core_truth_conflict_false_proof id literal proof =
   let is_true = function
@@ -15971,7 +16172,7 @@ let elaborate_preprocess_refutation_native
           | None -> ()
           end
         end;
-        Some proof
+        Some (native_core_close_pf variables proof)
     | None ->
         if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
           prerr_endline
