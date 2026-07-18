@@ -758,7 +758,9 @@ if [[ -s "$WORK_DIR/skolemize.tsv" ]]; then
     'skolem_contract_primitive_rule=skolem_formula' \
     'skolem_contract_source_unit=' \
     'skolem_contract_source_formula=' \
+    'skolem_contract_source_formula_child_count=' \
     'skolem_contract_result_formula=' \
+    'skolem_contract_result_formula_child_count=' \
     'skolem_contract_proof_parent_count=' \
     'skolem_contract_introduced_count=' \
     'skolem_contract_macro_edge_count=' \
@@ -888,6 +890,8 @@ if [[ -s "$WORK_DIR/skolemize.tsv" ]]; then
       check_quantifier_fields("result_formula", $0)
       check_typed_variable_fields("source_formula", "free_variable", $0)
       check_typed_variable_fields("result_formula", "free_variable", $0)
+      check_child_fields("skolem_contract_source_formula", $0)
+      check_child_fields("skolem_contract_result_formula", $0)
       if (match($0, /skolem_macro_edge_count=([0-9]+)/, edge_count_match)) {
         edge_count = edge_count_match[1] + 0
         for (edge_index = 0; edge_index < edge_count; ++edge_index) {

@@ -4832,13 +4832,29 @@ let validate_kernel_v1_metadata_contracts cert =
         begin match field_value "source_formula" fields with
         | Some raw_source ->
             let source = parse_tm (parse_sexpr raw_source) in
-            require_field_tm id fields "skolem_contract_source_formula" source
+            require_field_tm id fields "skolem_contract_source_formula" source;
+            begin match
+              field_value "skolem_contract_source_formula_child_count" fields
+            with
+            | Some _ ->
+                require_formula_child_fields
+                  id fields "skolem_contract_source_formula" raw_source
+            | None -> ()
+            end
         | None -> ()
         end;
         begin match field_value "result_formula" fields with
         | Some raw_result ->
             let result = parse_tm (parse_sexpr raw_result) in
-            require_field_tm id fields "skolem_contract_result_formula" result
+            require_field_tm id fields "skolem_contract_result_formula" result;
+            begin match
+              field_value "skolem_contract_result_formula_child_count" fields
+            with
+            | Some _ ->
+                require_formula_child_fields
+                  id fields "skolem_contract_result_formula" raw_result
+            | None -> ()
+            end
         | None -> ()
         end;
         begin match field_value "proof_parent_count" fields with
