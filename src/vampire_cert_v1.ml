@@ -2006,6 +2006,72 @@ let rec same_mod_skolem_bound_names left right =
       same_mod_skolem_bound_names m n
   | _ -> false
 
+let skolemize_formula_tm_matches_witness_multiset subst source result =
+  (* Skolem certificates carry source variable names, but parsed existential
+     binders are de Bruijn terms.  When exact named substitution cannot be
+     replayed, verify that the result consumes exactly the emitted witness
+     terms at existential binders. *)
+  let choose_one items =
+    let rec go prefix = function
+      | [] -> []
+      | item :: rest -> (item, List.rev_append prefix rest) :: go (item :: prefix) rest
+    in
+    go [] items
+  in
+  let rec match_tm witnesses source result =
+    if source = result
+       || same_mod_skolem_bound_names source result then
+      [witnesses]
+    else
+      match source, result with
+      | Ap (TmH "vampire_exists_prop", Lam (_, body)), _ ->
+          choose_one witnesses
+          |> List.map
+               (fun ((_, witness), rest) ->
+                  match_tm rest (tmsubst body 0 witness) result)
+          |> List.flatten
+      | Ap (TmH "vampire_exists_prop", Ap (TmH "vLAM", body)), _ ->
+          choose_one witnesses
+          |> List.map
+               (fun ((_, witness), rest) ->
+                  match_tm rest (subst_tm [("db0", witness)] body) result)
+          |> List.flatten
+      | Imp (source_left, source_right), Imp (result_left, result_right) ->
+          match_tm witnesses source_left result_left
+          |> List.map
+               (fun witnesses -> match_tm witnesses source_right result_right)
+          |> List.flatten
+      | Ap (Ap (TmH "vampire_or", source_left), source_right),
+        Ap (Ap (TmH "vampire_or", result_left), result_right) ->
+          match_tm witnesses source_left result_left
+          |> List.map
+               (fun witnesses -> match_tm witnesses source_right result_right)
+          |> List.flatten
+      | Ap (Ap (TmH "vampire_and", source_left), source_right),
+        Ap (Ap (TmH "vampire_and", result_left), result_right) ->
+          match_tm witnesses source_left result_left
+          |> List.map
+               (fun witnesses -> match_tm witnesses source_right result_right)
+          |> List.flatten
+      | All (source_tp, source_body), All (result_tp, result_body)
+          when source_tp = result_tp ->
+          match_tm witnesses source_body result_body
+      | Lam (source_tp, source_body), Lam (result_tp, result_body)
+          when source_tp = result_tp ->
+          match_tm witnesses source_body result_body
+      | TpAp (source_fn, source_arg), TpAp (result_fn, result_arg)
+          when source_arg = result_arg ->
+          match_tm witnesses source_fn result_fn
+      | Ap (source_fn, source_arg), Ap (result_fn, result_arg) ->
+          match_tm witnesses source_fn result_fn
+          |> List.map
+               (fun witnesses -> match_tm witnesses source_arg result_arg)
+          |> List.flatten
+      | _ -> []
+  in
+  match_tm subst source result
+  |> List.exists (function [] -> true | _ -> false)
+
 let rec normalize_bool_equality_orientation tm =
   let normalize = normalize_bool_equality_orientation in
   match tm with
@@ -2499,7 +2565,8 @@ let check_skolem_formula checked id parent_id source introductions subst result 
   if expected <> result
     && normalize_bool_equality_orientation expected <> normalize_bool_equality_orientation result
     && normalize_equality_orientation expected <> normalize_equality_orientation result
-    && not (List.exists matches candidates) then begin
+    && not (List.exists matches candidates)
+    && not (skolemize_formula_tm_matches_witness_multiset subst parent_formula result) then begin
     debug_certificate_mismatch id expected result;
     error (id ^ ": skolem_formula result does not match explicit skolem substitution")
   end
