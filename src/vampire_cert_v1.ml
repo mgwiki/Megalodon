@@ -14090,7 +14090,6 @@ let native_core_skolem_refutation_cps_proof
           in
           let covered =
             List.map fst replacements_under_binder
-            @ List.map fst shifted
           in
           let sibling_fallbacks =
             witness_infos
@@ -14101,7 +14100,14 @@ let native_core_skolem_refutation_cps_proof
                     else
                       None)
           in
-          sibling_fallbacks @ shifted
+          let rec keep_first seen = function
+            | [] -> []
+            | (name, tm) :: rest when List.mem name seen ->
+                keep_first seen rest
+            | (name, tm) :: rest ->
+                (name, tm) :: keep_first (name :: seen) rest
+          in
+          keep_first [] (sibling_fallbacks @ shifted)
         in
         let term_replacements_under_binder =
           List.map
@@ -14467,6 +14473,12 @@ let native_core_skolem_refutation_cps_proof
               if String.length text <= 300 then text
               else String.sub text 0 300 ^ "..."
             in
+            prerr_endline
+              ("native preprocess Skolem CPS fallback replacement values: "
+               ^ String.concat ", "
+                   (List.map
+                      (fun (name, tm) -> name ^ ":=" ^ short_tm tm)
+                      fallback_replacements));
             let rec first_tm_difference path left right =
               if left = right then None
               else
