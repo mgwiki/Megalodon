@@ -12155,32 +12155,69 @@ let native_core_formula_orientation_proof
     in
     if source_prop = target_prop then proof
     else begin
+      let prop_eq_true_atom tm =
+        match native_core_equality_sides tm with
+        | Some (Prop, left, right) when left = native_core_true -> Some right
+        | Some (Prop, left, right) when right = native_core_true -> Some left
+        | _ -> None
+      in
+      let same_formula_prop left right =
+        let prop tm =
+          native_core_formula_prop tm
+          |> native_core_normalize_bool_constants
+        in
+        prop left = prop right
+      in
+      let source_for_match =
+        normalize_for_match source
+        |> native_core_normalize_bool_constants
+      in
       let target_for_match =
         normalize_for_match target
         |> native_core_normalize_bool_constants
       in
-      match direction, native_core_equality_sides target_for_match with
-      | `Forward, Some (Prop, left, right)
-          when left = native_core_true && is_definition_term right ->
-          begin match native_core_true_eq_from_proof right target_for_match proof with
+      match direction, prop_eq_true_atom source_for_match, prop_eq_true_atom target_for_match with
+      | `Forward, Some source_atom, Some target_atom ->
+          begin match native_core_proof_from_true_eq source_atom source_for_match proof with
+          | Some source_atom_proof ->
+              let target_atom_proof =
+                convert local_depth `Forward source_atom target_atom source_atom_proof
+              in
+              begin match native_core_true_eq_from_proof target_atom target_for_match target_atom_proof with
+              | Some proof -> proof
+              | None -> assert false
+              end
+          | None -> assert false
+          end
+      | `Backward, Some source_atom, Some target_atom ->
+          begin match native_core_proof_from_true_eq target_atom target_for_match proof with
+          | Some target_atom_proof ->
+              let source_atom_proof =
+                convert local_depth `Backward source_atom target_atom target_atom_proof
+              in
+              begin match native_core_true_eq_from_proof source_atom source_for_match source_atom_proof with
+              | Some proof -> proof
+              | None -> assert false
+              end
+          | None -> assert false
+          end
+      | `Forward, _, Some atom when same_formula_prop source atom ->
+          begin match native_core_true_eq_from_proof atom target_for_match proof with
           | Some proof -> proof
           | None -> assert false
           end
-      | `Forward, Some (Prop, left, right)
-          when right = native_core_true && is_definition_term left ->
-          begin match native_core_true_eq_from_proof left target_for_match proof with
+      | `Forward, Some atom, _ when same_formula_prop target atom ->
+          begin match native_core_proof_from_true_eq atom source_for_match proof with
           | Some proof -> proof
           | None -> assert false
           end
-      | `Backward, Some (Prop, left, right)
-          when left = native_core_true && is_definition_term right ->
-          begin match native_core_proof_from_true_eq right target_for_match proof with
+      | `Backward, _, Some atom when same_formula_prop source atom ->
+          begin match native_core_proof_from_true_eq atom target_for_match proof with
           | Some proof -> proof
           | None -> assert false
           end
-      | `Backward, Some (Prop, left, right)
-          when right = native_core_true && is_definition_term left ->
-          begin match native_core_proof_from_true_eq left target_for_match proof with
+      | `Backward, Some atom, _ when same_formula_prop target atom ->
+          begin match native_core_true_eq_from_proof atom source_for_match proof with
           | Some proof -> proof
           | None -> assert false
           end
@@ -12747,7 +12784,37 @@ let native_core_skolem_target_witness id source target =
       error
         (id ^ ": native core proof-term skolemization result does not match source body")
 
-let native_core_direct_skolem_formula_proof
+let native_core_skolem_parent_helper_formulas cert id =
+  let proof_parent_count =
+    match native_core_metadata_step_extra_field cert id "kernel_v1" "proof_parent_count" with
+    | Some value ->
+        begin try int_of_string value
+        with Failure _ -> 0
+        end
+    | None -> 0
+  in
+  let parse_parent_formula index =
+    match
+      native_core_metadata_step_extra_field
+        cert id "kernel_v1" ("parent_" ^ string_of_int index ^ "_formula")
+    with
+    | Some value -> Some (parse_tm (parse_sexpr value))
+    | None -> None
+  in
+  let rec collect index acc =
+    if index >= proof_parent_count then List.rev acc
+    else
+      let acc =
+        match parse_parent_formula index with
+        | Some formula -> formula :: acc
+        | None -> acc
+      in
+      collect (index + 1) acc
+  in
+  collect 1 []
+
+let rec native_core_direct_skolem_formula_proof
+    ?(helper_formulas=[])
     ?(normalize_formula_for_match=(fun _ tm -> tm))
     ?(ambient_shift=0)
     id substitution source target proof =
@@ -12782,7 +12849,166 @@ let native_core_direct_skolem_formula_proof
             All (a, rewrite_witnesses replacements (depth + 1) body)
         | DB _ | TmH _ | Prim _ -> tm
   in
-  let rec choose remaining_substitution source proof replacements used_choice =
+  let pick_substitution_for_target body target remaining =
+    let inferred_witness =
+      try Some (native_core_skolem_target_witness id body target)
+      with Error _ | Not_found -> None
+    in
+    match inferred_witness with
+    | Some inferred_witness ->
+        let rec pick prefix = function
+          | [] -> None
+          | (name, witness) :: rest ->
+              if witness = inferred_witness then
+                Some (name, witness, List.rev_append prefix rest)
+              else
+                pick ((name, witness) :: prefix) rest
+        in
+        begin match pick [] remaining with
+        | Some selected -> selected
+        | None ->
+            begin match remaining with
+            | (name, witness) :: rest -> name, witness, rest
+            | [] -> "", inferred_witness, []
+            end
+        end
+    | None ->
+        begin match remaining with
+        | (name, witness) :: rest -> name, witness, rest
+        | [] -> "", native_core_skolem_target_witness id body target, []
+        end
+  in
+  let checked_formula_prop local_depth tm =
+    normalize_formula_for_match (ambient_shift + local_depth) tm
+    |> native_core_formula_prop
+    |> native_core_normalize_bool_constants
+  in
+  let normalized_formula_for_helper local_depth tm =
+    normalize_formula_for_match (ambient_shift + local_depth) tm
+    |> native_core_normalize_bool_constants
+    |> tm_beta_eta_norm
+  in
+  let raw_formula_for_helper tm =
+    native_core_normalize_bool_constants tm
+    |> tm_beta_eta_norm
+  in
+  let rec formula_contains_exists = function
+    | Ap (TmH "vampire_exists_prop", Lam _) -> true
+    | TpAp (tm, _) -> formula_contains_exists tm
+    | Ap (left, right) | Imp (left, right) ->
+        formula_contains_exists left || formula_contains_exists right
+    | Lam (_, body) | All (_, body) -> formula_contains_exists body
+    | DB _ | TmH _ | Prim _ -> false
+  in
+  let helper_records =
+    if List.length helper_formulas < 2 then []
+    else
+      let rec peel_foralls tps = function
+        | All (tp, body) -> peel_foralls (tps @ [tp]) body
+        | Imp (source, target) -> Some (tps, source, target)
+        | _ -> None
+      in
+      helper_formulas
+      |> List.mapi (fun index formula -> index, peel_foralls [] formula)
+      |> List.filter_map
+           (fun (index, helper) ->
+              match helper with
+              | Some (tps, source, target) -> Some (index, tps, source, target)
+              | None -> None)
+  in
+  let shape_tag tm =
+    match tm with
+    | TmH name -> "TmH:" ^ name
+    | DB index -> "DB:" ^ string_of_int index
+    | Prim index -> "Prim:" ^ string_of_int index
+    | TpAp _ -> "TpAp"
+    | Ap (TmH name, _) -> "Ap:" ^ name
+    | Ap (Ap (TmH name, _), _) -> "Ap2:" ^ name
+    | Ap _ -> "Ap"
+    | Lam _ -> "Lam"
+    | Imp _ -> "Imp"
+    | All _ -> "All"
+  in
+  if helper_records <> [] && Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+    prerr_endline
+      (id
+       ^ ": native core skolem helper records="
+       ^ string_of_int (List.length helper_records)
+       ^ " source_shape="
+       ^ shape_tag source
+       ^ " target_shape="
+       ^ shape_tag target);
+  let helper_implication_proof tps helper_source helper_target =
+    let body_proof =
+      native_core_direct_skolem_formula_proof
+        ~helper_formulas:[]
+        ~normalize_formula_for_match
+        ~ambient_shift:(List.length tps)
+        id substitution helper_source helper_target (Hyp 0)
+    in
+    let implication =
+      PLam (native_core_formula_prop helper_source, body_proof)
+    in
+    List.fold_right (fun tp proof -> TLam (tp, proof)) tps implication
+  in
+  let instantiate_helper tps helper_source helper_target current_proof =
+    let proof =
+      helper_implication_proof tps helper_source helper_target
+    in
+    let args =
+      List.mapi
+        (fun index _ -> DB (List.length tps - index - 1))
+        tps
+    in
+    let proof = List.fold_left (fun proof arg -> PTmAp (proof, arg)) proof args in
+    ignore helper_source;
+    ignore helper_target;
+    PPfAp (proof, current_proof)
+  in
+  let rec helper_target_compatible local_depth helper_target target =
+    normalized_formula_for_helper local_depth helper_target
+    = normalized_formula_for_helper local_depth target
+    ||
+    match helper_target, target with
+    | All (helper_tp, helper_body), All (target_tp, target_body)
+        when helper_tp = target_tp ->
+        helper_target_compatible (local_depth + 1) helper_body target_body
+    | Imp (helper_left, helper_right), Imp (target_left, target_right) ->
+        helper_target_compatible local_depth helper_left target_left
+        && helper_target_compatible local_depth helper_right target_right
+    | Ap (Ap (TmH "vampire_and", helper_left), helper_right),
+      Ap (Ap (TmH "vampire_and", target_left), target_right)
+    | Ap (Ap (TmH "vampire_or", helper_left), helper_right),
+      Ap (Ap (TmH "vampire_or", target_left), target_right) ->
+        helper_target_compatible local_depth helper_left target_left
+        && helper_target_compatible local_depth helper_right target_right
+    | Ap (TmH "vampire_exists_prop", Lam _), _ ->
+        true
+    | _ -> false
+  in
+  let helper_target_matches_current local_depth helper_target target =
+    if formula_contains_exists helper_target then
+      helper_target_compatible local_depth helper_target target
+    else
+      raw_formula_for_helper helper_target = raw_formula_for_helper target
+  in
+  let rec matching_helper local_depth source target helpers =
+    match helpers with
+    | [] -> None
+    | ((_, _, helper_source, helper_target) as helper) :: rest ->
+        if normalized_formula_for_helper local_depth source
+           = normalized_formula_for_helper local_depth helper_source
+           && helper_target_matches_current local_depth helper_target target
+           && normalized_formula_for_helper local_depth helper_source
+              <> normalized_formula_for_helper local_depth helper_target then
+          Some (helper, rest)
+        else
+          begin match matching_helper local_depth source target rest with
+          | Some (found, remaining) -> Some (found, helper :: remaining)
+          | None -> None
+          end
+  in
+  let rec choose_basic remaining_substitution source proof replacements used_choice =
     match source with
     | Ap (TmH "vampire_exists_prop", Lam (tp, body)) ->
         let choice = native_core_exists_choice_hash tp in
@@ -12818,7 +13044,7 @@ let native_core_direct_skolem_formula_proof
         let epsilon_witness = Ap (TmH (native_core_eps_symbol tp), predicate) in
         let choice_proof = PPfAp (PTmAp (Known choice, predicate), proof) in
         let instantiated_body = tmsubst body 0 epsilon_witness in
-        choose
+        choose_basic
           remaining_substitution
           instantiated_body
           choice_proof
@@ -12826,14 +13052,243 @@ let native_core_direct_skolem_formula_proof
           true
     | _ -> source, proof, replacements, used_choice
   in
+  let rec choose_with_helpers
+      local_depth helpers remaining_substitution source target proof replacements used_choice =
+    let rec try_helpers helpers =
+      match matching_helper local_depth source target helpers with
+      | None -> None
+      | Some ((helper_index, tps, helper_source, helper_target), remaining_helpers) ->
+          if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+            prerr_endline
+              (id
+               ^ ": native core skolem helper parent_"
+               ^ string_of_int (helper_index + 1)
+               ^ " at depth "
+               ^ string_of_int local_depth);
+          try
+            let proof =
+              instantiate_helper tps helper_source helper_target proof
+            in
+            Some
+              (choose_with_helpers
+                 local_depth
+                 remaining_helpers
+                 remaining_substitution
+                 helper_target
+                 target
+                 proof
+                 replacements
+                 true)
+          with (Error _ | Failure _) as exn ->
+            if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+              prerr_endline
+                (id
+                 ^ ": native core skolem helper parent_"
+                 ^ string_of_int (helper_index + 1)
+                 ^ " failed: "
+                 ^ Printexc.to_string exn);
+            try_helpers remaining_helpers
+    in
+    match try_helpers helpers with
+    | Some result -> result
+    | None ->
+        match source with
+        | Ap (TmH "vampire_exists_prop", Lam (tp, body)) ->
+            begin match target with
+            | Ap (TmH "vampire_exists_prop", Lam (target_tp, _))
+                when target_tp = tp ->
+                source, proof, replacements, used_choice
+            | _ ->
+                let choice = native_core_exists_choice_hash tp in
+                if choice = "vampire_exists_unsupported_choice" then
+                  error
+                    (id ^ ": native core proof-term skolemization has no choice theorem for witness sort");
+                let substitution_name, target_witness, remaining_substitution =
+                  let name, witness, rest =
+                    pick_substitution_for_target body target remaining_substitution
+                  in
+                  (if name = "" then None else Some name), witness, rest
+                in
+                if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+                  prerr_endline
+                    (id
+                     ^ ": native core skolem choose "
+                     ^ (match substitution_name with Some name -> name | None -> "<inferred>")
+                     ^ " := "
+                     ^ tm_to_str target_witness);
+                let compact_named_body =
+                  match substitution_name with
+                  | Some name -> contains_named name body
+                  | None -> false
+                in
+                let body, replacements =
+                  match substitution_name with
+                  | Some name when compact_named_body ->
+                      subst_tm [(name, target_witness)] body, replacements
+                  | Some name ->
+                      subst_named_tm name body,
+                      (target_witness, Ap (TmH (native_core_eps_symbol tp),
+                                        Lam (tp, native_core_formula_prop (subst_named_tm name body))))
+                      :: replacements
+                  | None ->
+                      body,
+                      (target_witness, Ap (TmH (native_core_eps_symbol tp),
+                                        Lam (tp, native_core_formula_prop body)))
+                      :: replacements
+                in
+                let predicate = Lam (tp, native_core_formula_prop body) in
+                let choice_proof = PPfAp (PTmAp (Known choice, predicate), proof) in
+                let target_body = tmsubst body 0 target_witness in
+                let choice_proof =
+                  PPfAp (PLam (native_core_formula_prop target_body, Hyp 0), choice_proof)
+                in
+                choose_with_helpers
+                  local_depth
+                  helpers
+                  remaining_substitution
+                  target_body
+                  target
+                  choice_proof
+                  replacements
+                  true
+            end
+        | All (source_tp, source_body) ->
+            begin match target with
+            | All (target_tp, target_body) when source_tp = target_tp ->
+                let transformed_body, body_proof, replacements, used_choice =
+                  choose_with_helpers
+                    (local_depth + 1)
+                    helpers
+                    remaining_substitution
+                    source_body
+                    target_body
+                    (PTmAp (pftmshift 0 1 proof, DB 0))
+                    replacements
+                    used_choice
+                in
+                All (source_tp, transformed_body),
+                TLam (source_tp, body_proof),
+                replacements,
+                used_choice
+            | _ -> source, proof, replacements, used_choice
+            end
+        | Ap (Ap (TmH "vampire_and", source_left), source_right) ->
+            begin match target with
+            | Ap (Ap (TmH "vampire_and", target_left), target_right) ->
+                let source_left_prop = checked_formula_prop local_depth source_left in
+                let source_right_prop = checked_formula_prop local_depth source_right in
+                let source_left_proof =
+                  native_core_and_elim_left source_left_prop source_right_prop proof
+                in
+                let source_right_proof =
+                  native_core_and_elim_right source_left_prop source_right_prop proof
+                in
+                let transformed_left, left_proof, replacements, used_choice =
+                  choose_with_helpers
+                    local_depth
+                    helpers
+                    remaining_substitution
+                    source_left
+                    target_left
+                    source_left_proof
+                    replacements
+                    used_choice
+                in
+                let transformed_right, right_proof, replacements, used_choice =
+                  choose_with_helpers
+                    local_depth
+                    helpers
+                    remaining_substitution
+                    source_right
+                    target_right
+                    source_right_proof
+                    replacements
+                    used_choice
+                in
+                let transformed_source =
+                  Ap (Ap (TmH "vampire_and", transformed_left), transformed_right)
+                in
+                transformed_source,
+                native_core_and_intro
+                  (checked_formula_prop local_depth transformed_left)
+                  (checked_formula_prop local_depth transformed_right)
+                  left_proof
+                  right_proof,
+                replacements,
+                used_choice
+            | _ -> source, proof, replacements, used_choice
+            end
+        | Ap (Ap (TmH "vampire_or", source_left), source_right) ->
+            begin match target with
+            | Ap (Ap (TmH "vampire_or", target_left), target_right) ->
+                let source_left_prop = checked_formula_prop local_depth source_left in
+                let source_right_prop = checked_formula_prop local_depth source_right in
+                let transformed_left, left_proof, replacements, used_choice =
+                  choose_with_helpers
+                    local_depth
+                    helpers
+                    remaining_substitution
+                    source_left
+                    target_left
+                    (Hyp 0)
+                    replacements
+                    used_choice
+                in
+                let transformed_right, right_proof, replacements, used_choice =
+                  choose_with_helpers
+                    local_depth
+                    helpers
+                    remaining_substitution
+                    source_right
+                    target_right
+                    (Hyp 0)
+                    replacements
+                    used_choice
+                in
+                let transformed_source =
+                  Ap (Ap (TmH "vampire_or", transformed_left), transformed_right)
+                in
+                let transformed_prop =
+                  native_core_or
+                    (checked_formula_prop local_depth transformed_left)
+                    (checked_formula_prop local_depth transformed_right)
+                in
+                let left_branch =
+                  PLam
+                    (source_left_prop,
+                     native_core_or_intro_left
+                       (checked_formula_prop local_depth transformed_left)
+                       (checked_formula_prop local_depth transformed_right)
+                       left_proof)
+                in
+                let right_branch =
+                  PLam
+                    (source_right_prop,
+                     native_core_or_intro_right
+                       (checked_formula_prop local_depth transformed_left)
+                       (checked_formula_prop local_depth transformed_right)
+                       right_proof)
+                in
+                transformed_source,
+                PPfAp (PPfAp (PTmAp (proof, transformed_prop), left_branch), right_branch),
+                replacements,
+                used_choice
+            | _ -> source, proof, replacements, used_choice
+            end
+        | _ -> source, proof, replacements, used_choice
+  in
   let orientation_source, choice_proof, replacements, used_choice =
-    choose substitution source proof [] false
+    if helper_records = [] then
+      choose_basic substitution source proof [] false
+    else
+      choose_with_helpers 0 helper_records substitution source target proof [] false
   in
   if not used_choice then
     error
       (id ^ ": native core proof-term skolemization supports only existential sources");
   let orientation_target =
-    rewrite_witnesses replacements 0 target
+    if helper_records = [] then rewrite_witnesses replacements 0 target
+    else target
   in
   native_core_formula_orientation_proof
     ~normalize_formula_for_match:(fun count tm ->
@@ -12841,6 +13296,7 @@ let native_core_direct_skolem_formula_proof
     id [] [] [] orientation_source orientation_target choice_proof
 
 let native_core_skolem_formula_proof
+    ?(helper_formulas=[])
     ?(normalize_formula_for_match=(fun _ tm -> tm))
     id variables parent_step_variables result_step_variables substitution source target proof =
   let source = native_core_close_tm (variables @ result_step_variables) source in
@@ -12973,6 +13429,7 @@ let native_core_skolem_formula_proof
               substitution
           in
           native_core_direct_skolem_formula_proof
+            ~helper_formulas
             ~normalize_formula_for_match
             ~ambient_shift:result_variable_count
             id closed_substitution source target proof
@@ -15591,11 +16048,26 @@ let elaborate_core_resolution_refutation_native
           in
           let parent_step_variables = native_core_step_variables cert parent_id in
           let result_step_variables = native_core_step_variables cert id in
+          let helper_formulas =
+            native_core_skolem_parent_helper_formulas cert id
+          in
+          let proof =
+            try
+              native_core_skolem_formula_proof
+                ~normalize_formula_for_match:normalize_generated_skolems
+                id variables parent_step_variables result_step_variables
+                subst source_formula result parent_proof
+            with (Error _ | Failure _) as exn ->
+              if helper_formulas = [] then raise exn
+              else
+                native_core_skolem_formula_proof
+                  ~helper_formulas
+                  ~normalize_formula_for_match:normalize_generated_skolems
+                  id variables parent_step_variables result_step_variables
+                  subst source_formula result parent_proof
+          in
           store_formula id result
-            (native_core_skolem_formula_proof
-               ~normalize_formula_for_match:normalize_generated_skolems
-               id variables parent_step_variables result_step_variables
-               subst source_formula result parent_proof)
+            proof
       | FormulaCopy (id, parent_id, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
           if native_core_normalize_bool_constants (native_core_literal_prop result)
@@ -16719,11 +17191,23 @@ let elaborate_preprocess_refutation_native
           in
           let parent_step_variables = native_core_step_variables cert parent_id in
           let result_step_variables = native_core_step_variables cert id in
+          let helper_formulas =
+            native_core_skolem_parent_helper_formulas cert id
+          in
           let proof =
-            native_core_skolem_formula_proof
-              ~normalize_formula_for_match:normalize_generated_skolems
-              id variables parent_step_variables result_step_variables
-              subst source_formula result parent_proof
+            try
+              native_core_skolem_formula_proof
+                ~normalize_formula_for_match:normalize_generated_skolems
+                id variables parent_step_variables result_step_variables
+                subst source_formula result parent_proof
+            with (Error _ | Failure _) as exn ->
+              if helper_formulas = [] then raise exn
+              else
+                native_core_skolem_formula_proof
+                  ~helper_formulas
+                  ~normalize_formula_for_match:normalize_generated_skolems
+                  id variables parent_step_variables result_step_variables
+                  subst source_formula result parent_proof
           in
           store_formula id result proof;
           let result_checked_prop =
