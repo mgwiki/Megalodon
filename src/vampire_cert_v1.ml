@@ -14177,6 +14177,62 @@ let native_core_skolem_refutation_cps_proof
 	      error (id ^ ": native preprocess Skolem CPS internal proposition depth moved outward");
 	    tmshift 0 (term_depth - captured_term_depth) tm
 	  in
+	  let short_tm_debug tm =
+	    let text = tm_to_str tm in
+	    if String.length text <= 220 then text
+	    else String.sub text 0 220 ^ "..."
+	  in
+	  let rec first_tm_difference path left right =
+	    if left = right then None
+	    else
+	      match left, right with
+	      | TpAp (left_body, left_tp), TpAp (right_body, right_tp) ->
+	          if left_tp <> right_tp then Some (path ^ ".type", left, right)
+	          else first_tm_difference (path ^ ".tpap") left_body right_body
+	      | Ap (left_fun, left_arg), Ap (right_fun, right_arg) ->
+	          begin match first_tm_difference (path ^ ".fun") left_fun right_fun with
+	          | Some _ as found -> found
+	          | None -> first_tm_difference (path ^ ".arg") left_arg right_arg
+	          end
+	      | Lam (left_tp, left_body), Lam (right_tp, right_body)
+	      | All (left_tp, left_body), All (right_tp, right_body) ->
+	          if left_tp <> right_tp then Some (path ^ ".binder-type", left, right)
+	          else first_tm_difference (path ^ ".body") left_body right_body
+	      | Imp (left_a, left_b), Imp (right_a, right_b) ->
+	          begin match first_tm_difference (path ^ ".left") left_a right_a with
+	          | Some _ as found -> found
+	          | None -> first_tm_difference (path ^ ".right") left_b right_b
+	          end
+	      | _ -> Some (path, left, right)
+	  in
+	  let debug_prop_pair label term_depth proof_depth left right =
+	    if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" && left <> right then begin
+	      prerr_endline
+	        (id
+	         ^ ": native preprocess Skolem CPS "
+	         ^ label
+	         ^ " proposition mismatch at term_depth="
+	         ^ string_of_int term_depth
+	         ^ " proof_depth="
+	         ^ string_of_int proof_depth
+	         ^ (if tmshift 0 1 left = right then
+	              " (right is tmshift +1 of left)"
+	            else if left = tmshift 0 1 right then
+	              " (left is tmshift +1 of right)"
+	            else
+	              ""));
+	      begin match first_tm_difference "root" left right with
+	      | Some (path, diff_left, diff_right) ->
+	          prerr_endline
+	            (id ^ ": native preprocess Skolem CPS " ^ label ^ " first diff path: " ^ path);
+	          prerr_endline
+	            (id ^ ": native preprocess Skolem CPS " ^ label ^ " left: " ^ short_tm_debug diff_left);
+	          prerr_endline
+	            (id ^ ": native preprocess Skolem CPS " ^ label ^ " right: " ^ short_tm_debug diff_right)
+	      | None -> ()
+	      end
+	    end
+	  in
 	  let result_to_target_builder term_depth proof_depth term_replacements replacements fallback_replacements =
 	    let result_prop =
 	      formula_prop_with_replacements
@@ -14392,6 +14448,12 @@ let native_core_skolem_refutation_cps_proof
                 replacements
                 result_right
             in
+            debug_prop_pair
+              "and-left-count unchanged-right"
+              term_depth
+              proof_depth
+              source_right_prop
+              captured_result_right_prop;
 		          let left_result_to_target_builder term_depth proof_depth term_replacements replacements fallback_replacements =
 		            let result_left_prop = formula_prop_with_replacements ~close_depth:term_depth ~fallback_replacements replacements result_left in
 		            let result_right_prop =
@@ -14446,6 +14508,12 @@ let native_core_skolem_refutation_cps_proof
                 replacements
                 result_left
             in
+            debug_prop_pair
+              "and-right-count unchanged-left"
+              term_depth
+              proof_depth
+              source_left_prop
+              captured_result_left_prop;
 		          let right_result_to_target_builder term_depth proof_depth term_replacements replacements fallback_replacements =
 		            let result_left_prop =
                   shift_captured_tm
@@ -17171,6 +17239,17 @@ let elaborate_preprocess_refutation_native
                                 ^ "; diff actual "
                                 ^ short_tm diff_actual
                           in
+                          let context_sample =
+                            cxpf
+                            |> List.mapi (fun index prop -> "__" ^ string_of_int index ^ ":" ^ short_tm prop)
+                            |> fun props ->
+                                let rec take n = function
+                                  | _ when n = 0 -> []
+                                  | [] -> []
+                                  | x :: xs -> x :: take (n - 1) xs
+                                in
+                                String.concat " | " (take 6 props)
+                          in
                           Some
                             (path
                              ^ ": implication argument mismatch; expected "
@@ -17178,6 +17257,12 @@ let elaborate_preprocess_refutation_native
                              ^ "; actual "
                              ^ short_tm right_prop
                              ^ diff
+                             ^ "; term ctx depth "
+                             ^ string_of_int (List.length cxtm)
+                             ^ "; proof ctx depth "
+                             ^ string_of_int (List.length cxpf)
+                             ^ "; proof ctx top "
+                             ^ context_sample
                              ^ "; left proof "
                              ^ short_pf left
                              ^ "; right proof "
