@@ -903,6 +903,7 @@ if [[ -s "$WORK_DIR/skolemize.tsv" ]]; then
 	          contract_parent_index_field = prefix "_contract_parent_index="
 	          contract_unit_field = prefix "_contract_unit="
 	          contract_binder_count_field = prefix "_contract_binder_count="
+	          contract_introduced_count_field = prefix "_contract_introduced_count="
 	          contract_source_formula_field = prefix "_contract_source_formula="
 	          contract_target_formula_field = prefix "_contract_target_formula="
 	          if (index($0, parent_index_field) == 0) {
@@ -962,6 +963,33 @@ if [[ -s "$WORK_DIR/skolemize.tsv" ]]; then
 	          }
 	          if (index($0, contract_binder_count_field) == 0) {
 	            print contract_binder_count_field "\t" $0
+	          }
+	          if (index($0, contract_introduced_count_field) == 0) {
+	            print contract_introduced_count_field "\t" $0
+	          } else {
+	            contract_introduced_count_pattern = prefix "_contract_introduced_count=([0-9]+)"
+	            if (match($0, contract_introduced_count_pattern, contract_introduced_count_match)) {
+	              contract_introduced_count = contract_introduced_count_match[1] + 0
+	              for (introduced_index = 0; introduced_index < contract_introduced_count; ++introduced_index) {
+	                introduced_prefix = prefix "_contract_introduced_" introduced_index
+	                introduced_global_index_field = introduced_prefix "_index="
+	                introduced_symbol_field = introduced_prefix "_symbol="
+	                introduced_replaced_var_field = introduced_prefix "_replaced_var="
+	                introduced_witness_term_field = introduced_prefix "_witness_term="
+	                if (index($0, introduced_global_index_field) == 0) {
+	                  print introduced_global_index_field "\t" $0
+	                }
+	                if (index($0, introduced_symbol_field) == 0) {
+	                  print introduced_symbol_field "\t" $0
+	                }
+	                if (index($0, introduced_replaced_var_field) == 0) {
+	                  print introduced_replaced_var_field "\t" $0
+	                }
+	                if (index($0, introduced_witness_term_field) == 0) {
+	                  print introduced_witness_term_field "\t" $0
+	                }
+	              }
+	            }
 	          }
 	          if (index($0, contract_source_formula_field) == 0) {
 	            print contract_source_formula_field "\t" $0

@@ -102,6 +102,13 @@ type native_kernel_quantifier = {
   native_kernel_quantifier_variable : native_kernel_typed_variable;
 }
 
+type native_skolem_macro_edge_introduced_symbol = {
+  native_skolem_macro_edge_intro_index : int;
+  native_skolem_macro_edge_intro_symbol : string option;
+  native_skolem_macro_edge_intro_replaced_var : string option;
+  native_skolem_macro_edge_intro_witness_term : tm option;
+}
+
 type native_skolem_macro_edge = {
   native_skolem_macro_edge_index : int;
   native_skolem_macro_edge_parent_index : int option;
@@ -126,6 +133,8 @@ type native_skolem_macro_edge = {
   native_skolem_macro_edge_contract_binder_count : int option;
   native_skolem_macro_edge_contract_source_formula : tm option;
   native_skolem_macro_edge_contract_target_formula : tm option;
+  native_skolem_macro_edge_contract_introduced_symbols :
+    native_skolem_macro_edge_introduced_symbol list;
 }
 
 type step =
@@ -4985,6 +4994,127 @@ let validate_kernel_v1_metadata_contracts cert =
 	                    id fields (prefix ^ "_contract_binder_count") expected
 	              | None -> ()
 	              end;
+	              let contract_introduced_count =
+	                require_nonnegative_field_int
+	                  id fields (prefix ^ "_contract_introduced_count")
+	              in
+	              let global_introduced_count =
+	                match field_value "introduced_count" fields with
+	                | Some _ ->
+	                    require_nonnegative_field_int
+	                      id fields "introduced_count"
+	                | None ->
+	                    if contract_introduced_count = 0 then 0
+	                    else
+	                      error
+	                        (id ^ ": strict certificate v1 kernel_v1 metadata field "
+	                         ^ prefix
+	                         ^ "_contract_introduced_count references missing global introduced_count")
+	              in
+	              let contract_source =
+	                match field_value (prefix ^ "_contract_source_formula") fields with
+	                | Some raw_source -> Some (parse_tm (parse_sexpr raw_source))
+	                | None -> None
+	              in
+	              let contract_target =
+	                match field_value (prefix ^ "_contract_target_formula") fields with
+	                | Some raw_target -> Some (parse_tm (parse_sexpr raw_target))
+	                | None -> None
+	              in
+	              for introduced_local_index = 0 to contract_introduced_count - 1 do
+	                let introduced_prefix =
+	                  prefix ^ "_contract_introduced_"
+	                  ^ string_of_int introduced_local_index
+	                in
+	                let global_index =
+	                  require_nonnegative_field_int
+	                    id fields (introduced_prefix ^ "_index")
+	                in
+	                if global_index >= global_introduced_count then
+	                  error
+	                    (id ^ ": strict certificate v1 kernel_v1 metadata field "
+	                     ^ introduced_prefix
+	                     ^ "_index is outside introduced_count");
+	                let global_prefix =
+	                  "introduced_" ^ string_of_int global_index
+	                in
+	                let expected_symbol =
+	                  field_required id fields (global_prefix ^ "_symbol")
+	                in
+	                let actual_symbol =
+	                  field_required id fields (introduced_prefix ^ "_symbol")
+	                in
+	                if actual_symbol <> expected_symbol then
+	                  error
+	                    (id ^ ": strict certificate v1 kernel_v1 metadata field "
+	                     ^ introduced_prefix
+	                     ^ "_symbol does not match "
+	                     ^ global_prefix ^ "_symbol");
+	                begin match
+	                  field_value (global_prefix ^ "_replaced_var") fields,
+	                  field_value (introduced_prefix ^ "_replaced_var") fields
+	                with
+	                | Some expected, Some actual when actual = expected -> ()
+	                | Some expected, Some actual ->
+	                    error
+	                      (id ^ ": strict certificate v1 kernel_v1 metadata field "
+	                       ^ introduced_prefix
+	                       ^ "_replaced_var is " ^ actual
+	                       ^ " but " ^ global_prefix
+	                       ^ "_replaced_var is " ^ expected)
+	                | Some expected, None ->
+	                    error
+	                      (id ^ ": strict certificate v1 kernel_v1 metadata field "
+	                       ^ introduced_prefix
+	                       ^ "_replaced_var is missing expected value "
+	                       ^ expected)
+	                | None, Some _ ->
+	                    error
+	                      (id ^ ": strict certificate v1 kernel_v1 metadata field "
+	                       ^ introduced_prefix
+	                       ^ "_replaced_var is present but "
+	                       ^ global_prefix ^ "_replaced_var is absent")
+	                | None, None -> ()
+	                end;
+	                begin match
+	                  field_value (global_prefix ^ "_witness_term") fields,
+	                  field_value (introduced_prefix ^ "_witness_term") fields
+	                with
+	                | Some _expected, Some _actual ->
+	                    let expected =
+	                      parse_field
+	                        id fields (global_prefix ^ "_witness_term") parse_tm
+	                    in
+	                    require_field_tm
+	                      id fields (introduced_prefix ^ "_witness_term") expected
+	                | Some _, None ->
+	                    error
+	                      (id ^ ": strict certificate v1 kernel_v1 metadata field "
+	                       ^ introduced_prefix
+	                       ^ "_witness_term is missing expected witness")
+	                | None, Some _ ->
+	                    error
+	                      (id ^ ": strict certificate v1 kernel_v1 metadata field "
+	                       ^ introduced_prefix
+	                       ^ "_witness_term is present but "
+	                       ^ global_prefix ^ "_witness_term is absent")
+	                | None, None -> ()
+	                end;
+	                begin match contract_source, contract_target with
+	                | Some source, Some target ->
+	                    if tm_contains_symbol actual_symbol source then
+	                      error
+	                        (id ^ ": strict certificate v1 kernel_v1 metadata field "
+	                         ^ introduced_prefix
+	                         ^ "_symbol already occurs in branch source formula");
+	                    if not (tm_contains_symbol actual_symbol target) then
+	                      error
+	                        (id ^ ": strict certificate v1 kernel_v1 metadata field "
+	                         ^ introduced_prefix
+	                         ^ "_symbol does not occur in branch target formula")
+	                | _ -> ()
+	                end
+	              done;
 	              begin match field_value (prefix ^ "_source") fields with
 	              | Some raw_source ->
 	                  let source = parse_tm (parse_sexpr raw_source) in
@@ -8451,6 +8581,48 @@ let native_core_skolem_macro_edges cert id =
         if index >= count then List.rev acc
         else
           let prefix = "skolem_macro_edge_" ^ string_of_int index in
+          let contract_introduced_symbols =
+            match
+              native_core_kernel_v1_int_field
+                cert id (prefix ^ "_contract_introduced_count")
+            with
+            | None -> []
+            | Some introduced_count ->
+                if introduced_count < 0 then
+                  error
+                    (id ^ ": kernel_v1 metadata field "
+                     ^ prefix ^ "_contract_introduced_count is negative");
+                List.init introduced_count
+                  (fun local_index ->
+                     let introduced_prefix =
+                       prefix ^ "_contract_introduced_"
+                       ^ string_of_int local_index
+                     in
+                     let introduced_index =
+                       match
+                         native_core_kernel_v1_int_field
+                           cert id (introduced_prefix ^ "_index")
+                       with
+                       | Some introduced_index -> introduced_index
+                       | None ->
+                           error
+                             (id ^ ": kernel_v1 metadata field "
+                              ^ introduced_prefix ^ "_index is missing")
+                     in
+                     {
+                       native_skolem_macro_edge_intro_index =
+                         introduced_index;
+                       native_skolem_macro_edge_intro_symbol =
+                         native_core_kernel_v1_field
+                           cert id (introduced_prefix ^ "_symbol");
+                       native_skolem_macro_edge_intro_replaced_var =
+                         native_core_kernel_v1_field
+                           cert id (introduced_prefix ^ "_replaced_var");
+                       native_skolem_macro_edge_intro_witness_term =
+                         native_core_kernel_v1_tm_field
+                           cert id (introduced_prefix ^ "_witness_term");
+                     })
+          in
           let edge =
             {
               native_skolem_macro_edge_index = index;
@@ -8517,6 +8689,8 @@ let native_core_skolem_macro_edges cert id =
               native_skolem_macro_edge_contract_target_formula =
                 native_core_kernel_v1_tm_field
                   cert id (prefix ^ "_contract_target_formula");
+              native_skolem_macro_edge_contract_introduced_symbols =
+                contract_introduced_symbols;
             }
           in
           collect (index + 1) (edge :: acc)
