@@ -14007,12 +14007,65 @@ let native_core_skolem_refutation_cps_proof
     native_core_close_pf variables result_to_target
   in
   let target_prop = tm_beta_eta_norm target_prop in
-  let formula_prop_with_replacements ?(fallback_replacements=[]) replacements formula =
-    let all_replacements = replacements @ fallback_replacements in
+  let formula_prop_with_ordered_replacements close_depth ordered_replacements formula =
     native_core_formula_prop formula
-    |> native_core_replace_witness_symbols_in_tm all_replacements
-    |> native_core_close_tm ~depth:(List.length replacements) variables
+    |> native_core_replace_witness_symbols_in_tm ordered_replacements
+    |> native_core_close_tm ~depth:close_depth variables
     |> tm_beta_eta_norm
+  in
+  let formula_prop_with_replacements ?(fallback_replacements=[]) replacements formula =
+    formula_prop_with_ordered_replacements
+      (List.length replacements)
+      (replacements @ fallback_replacements)
+      formula
+  in
+  let raw_formula_with_replacements replacements fallback_replacements formula =
+    formula
+    |> native_core_normalize_bool_constants
+    |> tm_beta_eta_norm
+    |> native_core_replace_witness_symbols_in_tm (replacements @ fallback_replacements)
+    |> native_core_normalize_bool_constants
+    |> tm_beta_eta_norm
+  in
+  let select_replacements_to_match label replacements fallback_replacements source result =
+    let source_prop =
+      formula_prop_with_replacements ~fallback_replacements replacements source
+    in
+    let result_prop =
+      formula_prop_with_replacements ~fallback_replacements replacements result
+    in
+    if source_prop = result_prop then
+      Some (replacements, source_prop, result_prop)
+    else
+      let candidate_symbols =
+        witness_symbols
+        |> List.filter (fun symbol -> tm_contains_symbol symbol result)
+      in
+      let rec try_overrides = function
+        | [] -> None
+        | symbol :: rest ->
+            let replacements_with_override =
+              (symbol, DB 0) :: replacements
+            in
+            let candidate_prop =
+              formula_prop_with_ordered_replacements
+                (List.length replacements)
+                (replacements_with_override @ fallback_replacements)
+                result
+            in
+            if source_prop = candidate_prop then begin
+              if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+                prerr_endline
+                  (id
+                   ^ ": native preprocess Skolem CPS refreshed active witness "
+                   ^ symbol
+                   ^ " for "
+                   ^ label);
+              Some (replacements_with_override, source_prop, candidate_prop)
+            end else
+              try_overrides rest
+      in
+      try_overrides candidate_symbols
   in
   let proof_with_replacements term_replacements replacements fallback_replacements proof =
     let all_replacements = replacements @ fallback_replacements in
@@ -14401,8 +14454,21 @@ let native_core_skolem_refutation_cps_proof
 	                    term_replacements replacements fallback_replacements,
 	                  Hyp 0)
              else
-               error
-                 (id ^ ": native preprocess Skolem CPS unchanged disjunction branch does not match result"))
+               begin match
+                 select_replacements_to_match
+                   "unchanged left disjunction branch"
+                   replacements fallback_replacements source_left result_left
+               with
+               | Some (selected_replacements, _, _) ->
+                   PPfAp
+                     (rebuild_left_to_target_builder
+                        term_depth (proof_depth + 1)
+                        term_replacements selected_replacements fallback_replacements,
+                      Hyp 0)
+               | None ->
+                   error
+                     (id ^ ": native preprocess Skolem CPS unchanged disjunction branch does not match result")
+               end)
         in
 	        let right_branch =
 	          PLam
@@ -14426,8 +14492,21 @@ let native_core_skolem_refutation_cps_proof
 	                    term_replacements replacements fallback_replacements,
 	                  Hyp 0)
              else
-               error
-                 (id ^ ": native preprocess Skolem CPS unchanged disjunction branch does not match result"))
+               begin match
+                 select_replacements_to_match
+                   "unchanged right disjunction branch"
+                   replacements fallback_replacements source_right result_right
+               with
+               | Some (selected_replacements, _, _) ->
+                   PPfAp
+                     (rebuild_right_to_target_builder
+                        term_depth (proof_depth + 1)
+                        term_replacements selected_replacements fallback_replacements,
+                      Hyp 0)
+               | None ->
+                   error
+                     (id ^ ": native preprocess Skolem CPS unchanged disjunction branch does not match result")
+               end)
         in
 	        let candidate =
 	          PPfAp
@@ -14452,6 +14531,43 @@ let native_core_skolem_refutation_cps_proof
 	  and eliminate_base term_depth proof_depth term_replacements replacements fallback_replacements source result proof result_to_target_builder =
         let source_prop = formula_prop_with_replacements ~fallback_replacements replacements source in
         let expected_result_prop = formula_prop_with_replacements ~fallback_replacements replacements result in
+        let selected_replacements, expected_result_prop =
+          if source_prop = expected_result_prop then
+            replacements, expected_result_prop
+          else
+            let candidate_symbols =
+              witness_symbols
+              |> List.filter (fun symbol -> tm_contains_symbol symbol result)
+            in
+            let rec try_overrides = function
+              | [] -> None
+              | symbol :: rest ->
+                  let replacements_with_override =
+                    (symbol, DB 0) :: replacements
+                  in
+                  let candidate_prop =
+                    formula_prop_with_ordered_replacements
+                      (List.length replacements)
+                      (replacements_with_override @ fallback_replacements)
+                      result
+                  in
+                  if source_prop = candidate_prop then
+                    Some (symbol, replacements_with_override, candidate_prop)
+                  else
+                    try_overrides rest
+            in
+            begin match try_overrides candidate_symbols with
+            | Some (symbol, replacements_with_override, candidate_prop) ->
+                if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+                  prerr_endline
+                    (id
+                     ^ ": native preprocess Skolem CPS refreshed active witness "
+                     ^ symbol
+                     ^ " at base binder");
+                replacements_with_override, candidate_prop
+            | None -> replacements, expected_result_prop
+            end
+        in
         if source_prop <> expected_result_prop then begin
           if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
             prerr_endline ("native preprocess Skolem CPS source base: " ^ tm_to_str source_prop);
@@ -14479,6 +14595,31 @@ let native_core_skolem_refutation_cps_proof
                    (List.map
                       (fun (name, tm) -> name ^ ":=" ^ short_tm tm)
                       fallback_replacements));
+            prerr_endline
+              ("native preprocess Skolem CPS active replacement values: "
+               ^ String.concat ", "
+                   (List.map
+                      (fun (name, tm) -> name ^ ":=" ^ short_tm tm)
+                      replacements));
+            prerr_endline
+              ("native preprocess Skolem CPS raw result before replacements: "
+               ^ short_tm result);
+            begin match native_core_tm_term_symbol_detail witness_symbols result with
+            | Some detail ->
+                prerr_endline
+                  ("native preprocess Skolem CPS raw result first witness: " ^ detail)
+            | None -> ()
+            end;
+            prerr_endline
+              ("native preprocess Skolem CPS raw result after replacements: "
+               ^ short_tm
+                   (raw_formula_with_replacements
+                      replacements fallback_replacements result));
+            prerr_endline
+              ("native preprocess Skolem CPS raw source after replacements: "
+               ^ short_tm
+                   (raw_formula_with_replacements
+                      replacements fallback_replacements source));
             let rec first_tm_difference path left right =
               if left = right then None
               else
@@ -14515,12 +14656,12 @@ let native_core_skolem_refutation_cps_proof
         end;
         let result_checked_proof =
           native_core_bind_result_step_variables variables result_step_variables proof
-          |> proof_with_replacements term_replacements replacements fallback_replacements
+          |> proof_with_replacements term_replacements selected_replacements fallback_replacements
         in
 	        let result_to_target_proof =
 	          result_to_target_builder
-	            term_depth proof_depth term_replacements replacements fallback_replacements
-	          |> proof_with_replacements term_replacements replacements fallback_replacements
+	            term_depth proof_depth term_replacements selected_replacements fallback_replacements
+	          |> proof_with_replacements term_replacements selected_replacements fallback_replacements
         in
         if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
           begin match native_core_pf_term_symbol_detail witness_symbols result_to_target_proof with
