@@ -16690,31 +16690,30 @@ let elaborate_preprocess_refutation_native
                source_formula subst result result_checked_prop parent_proof
                result_proof current native_core_false
            in
-           if final_refutation_proof_checks candidate
-              && not (native_core_pf_contains_choice_witness candidate) then begin
+           if native_core_pf_contains_choice_witness candidate then begin
+             if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
+               prerr_endline
+                 (id ^ ": native preprocess Skolem CPS candidate still contains certificate-local choice witnesses; keeping original refutation");
+               begin match native_core_pf_choice_witness_detail candidate with
+               | Some detail ->
+                   prerr_endline
+                     (id ^ ": native preprocess Skolem CPS first choice witness: " ^ detail)
+               | None -> ()
+               end;
+               begin match native_core_pf_choice_known_detail candidate with
+               | Some detail ->
+                   prerr_endline
+                     (id ^ ": native preprocess Skolem CPS first choice theorem: " ^ detail)
+               | None -> ()
+               end
+             end;
+             current
+           end else if final_refutation_proof_checks candidate then begin
              if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
                prerr_endline
                  (id ^ ": native preprocess Skolem CPS discharged certificate-local witnesses");
              candidate
-	           end else if native_core_pf_contains_choice_witness candidate then begin
-	             if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
-	               prerr_endline
-	                 (id ^ ": native preprocess Skolem CPS candidate still contains certificate-local choice witnesses; keeping original refutation");
-	               begin match native_core_pf_choice_witness_detail candidate with
-	               | Some detail ->
-	                   prerr_endline
-	                     (id ^ ": native preprocess Skolem CPS first choice witness: " ^ detail)
-	               | None -> ()
-	               end;
-	               begin match native_core_pf_choice_known_detail candidate with
-	               | Some detail ->
-	                   prerr_endline
-	                     (id ^ ": native preprocess Skolem CPS first choice theorem: " ^ detail)
-	               | None -> ()
-	               end
-	             end;
-	             current
-	           end else begin
+           end else begin
              if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
                prerr_endline
                  (id ^ ": native preprocess Skolem CPS candidate did not check; keeping original refutation");
