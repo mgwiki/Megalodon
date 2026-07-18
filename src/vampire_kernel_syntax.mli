@@ -23,6 +23,15 @@ type skolem_contract = {
   skolem_introduced_witnesses : skolem_introduced_witness list;
 }
 
+type skolem_branch_contract = {
+  skolem_branch_parent_index : int option;
+  skolem_branch_unit : string option;
+  skolem_branch_binder_count : int option;
+  skolem_branch_source_formula : Syntax.tm option;
+  skolem_branch_target_formula : Syntax.tm option;
+  skolem_branch_introduced_witnesses : skolem_introduced_witness list;
+}
+
 val schema : string
 
 val supported_rules : string list

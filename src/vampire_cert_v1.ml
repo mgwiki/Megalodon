@@ -102,13 +102,6 @@ type native_kernel_quantifier = {
   native_kernel_quantifier_variable : native_kernel_typed_variable;
 }
 
-type native_skolem_macro_edge_introduced_symbol = {
-  native_skolem_macro_edge_intro_index : int;
-  native_skolem_macro_edge_intro_symbol : string option;
-  native_skolem_macro_edge_intro_replaced_var : string option;
-  native_skolem_macro_edge_intro_witness_term : tm option;
-}
-
 type native_skolem_macro_edge = {
   native_skolem_macro_edge_index : int;
   native_skolem_macro_edge_parent_index : int option;
@@ -129,15 +122,8 @@ type native_skolem_macro_edge = {
     Vampire_kernel_syntax.skolem_formula_child list;
   native_skolem_macro_edge_target_children :
     Vampire_kernel_syntax.skolem_formula_child list;
-  native_skolem_macro_edge_contract : string option;
-  native_skolem_macro_edge_contract_primitive_rule : string option;
-  native_skolem_macro_edge_contract_parent_index : int option;
-  native_skolem_macro_edge_contract_unit : string option;
-  native_skolem_macro_edge_contract_binder_count : int option;
-  native_skolem_macro_edge_contract_source_formula : tm option;
-  native_skolem_macro_edge_contract_target_formula : tm option;
-  native_skolem_macro_edge_contract_introduced_symbols :
-    native_skolem_macro_edge_introduced_symbol list;
+  native_skolem_macro_edge_branch_contract :
+    Vampire_kernel_syntax.skolem_branch_contract option;
 }
 
 type step =
@@ -8678,6 +8664,84 @@ let native_core_skolem_contract_introduced_names = function
            (fun witness ->
               witness.Vampire_kernel_syntax.skolem_witness_symbol)
 
+let native_core_kernel_v1_skolem_branch_contract cert id prefix =
+  match native_core_kernel_v1_field cert id (prefix ^ "_contract") with
+  | None -> None
+  | Some version ->
+      if version <> "branch_v1" then
+        error
+          (id ^ ": kernel_v1 metadata field " ^ prefix
+           ^ "_contract has unsupported version " ^ version);
+      let primitive_rule =
+        native_core_kernel_v1_required_field
+          cert id (prefix ^ "_contract_primitive_rule")
+      in
+      if primitive_rule <> "skolem_branch" then
+        error
+          (id ^ ": kernel_v1 metadata field " ^ prefix
+           ^ "_contract_primitive_rule must be skolem_branch");
+      let introduced_count =
+        match
+          native_core_kernel_v1_int_field
+            cert id (prefix ^ "_contract_introduced_count")
+        with
+        | None -> 0
+        | Some count ->
+            if count < 0 then
+              error
+                (id ^ ": kernel_v1 metadata field "
+                 ^ prefix ^ "_contract_introduced_count is negative");
+            count
+      in
+      let introduced_witnesses =
+        List.init introduced_count
+          (fun local_index ->
+             let introduced_prefix =
+               prefix ^ "_contract_introduced_"
+               ^ string_of_int local_index
+             in
+             ignore
+               (match
+                 native_core_kernel_v1_int_field
+                   cert id (introduced_prefix ^ "_index")
+                with
+                | Some introduced_index -> introduced_index
+                | None ->
+                    error
+                      (id ^ ": kernel_v1 metadata field "
+                       ^ introduced_prefix ^ "_index is missing"));
+             {
+               Vampire_kernel_syntax.skolem_witness_symbol =
+                 native_core_kernel_v1_required_field
+                   cert id (introduced_prefix ^ "_symbol");
+               skolem_witness_replaced_var =
+                 native_core_kernel_v1_required_field
+                   cert id (introduced_prefix ^ "_replaced_var");
+               skolem_witness_term =
+                 native_core_kernel_v1_tm_field
+                   cert id (introduced_prefix ^ "_witness_term");
+             })
+      in
+      Some
+        {
+          Vampire_kernel_syntax.skolem_branch_parent_index =
+            native_core_kernel_v1_int_field
+              cert id (prefix ^ "_contract_parent_index");
+          skolem_branch_unit =
+            native_core_kernel_v1_field
+              cert id (prefix ^ "_contract_unit");
+          skolem_branch_binder_count =
+            native_core_kernel_v1_int_field
+              cert id (prefix ^ "_contract_binder_count");
+          skolem_branch_source_formula =
+            native_core_kernel_v1_tm_field
+              cert id (prefix ^ "_contract_source_formula");
+          skolem_branch_target_formula =
+            native_core_kernel_v1_tm_field
+              cert id (prefix ^ "_contract_target_formula");
+          skolem_branch_introduced_witnesses = introduced_witnesses;
+        }
+
 let native_core_skolem_macro_edges cert id =
   match native_core_kernel_v1_int_field cert id "skolem_macro_edge_count" with
   | None -> []
@@ -8688,48 +8752,6 @@ let native_core_skolem_macro_edges cert id =
         if index >= count then List.rev acc
         else
           let prefix = "skolem_macro_edge_" ^ string_of_int index in
-          let contract_introduced_symbols =
-            match
-              native_core_kernel_v1_int_field
-                cert id (prefix ^ "_contract_introduced_count")
-            with
-            | None -> []
-            | Some introduced_count ->
-                if introduced_count < 0 then
-                  error
-                    (id ^ ": kernel_v1 metadata field "
-                     ^ prefix ^ "_contract_introduced_count is negative");
-                List.init introduced_count
-                  (fun local_index ->
-                     let introduced_prefix =
-                       prefix ^ "_contract_introduced_"
-                       ^ string_of_int local_index
-                     in
-                     let introduced_index =
-                       match
-                         native_core_kernel_v1_int_field
-                           cert id (introduced_prefix ^ "_index")
-                       with
-                       | Some introduced_index -> introduced_index
-                       | None ->
-                           error
-                             (id ^ ": kernel_v1 metadata field "
-                              ^ introduced_prefix ^ "_index is missing")
-                     in
-                     {
-                       native_skolem_macro_edge_intro_index =
-                         introduced_index;
-                       native_skolem_macro_edge_intro_symbol =
-                         native_core_kernel_v1_field
-                           cert id (introduced_prefix ^ "_symbol");
-                       native_skolem_macro_edge_intro_replaced_var =
-                         native_core_kernel_v1_field
-                           cert id (introduced_prefix ^ "_replaced_var");
-                       native_skolem_macro_edge_intro_witness_term =
-                         native_core_kernel_v1_tm_field
-                           cert id (introduced_prefix ^ "_witness_term");
-                     })
-          in
           let edge =
             {
               native_skolem_macro_edge_index = index;
@@ -8780,27 +8802,8 @@ let native_core_skolem_macro_edges cert id =
                 native_core_kernel_v1_formula_child_fields
                   cert id (prefix ^ "_target")
                 |> List.map native_core_kernel_v1_skolem_formula_child;
-              native_skolem_macro_edge_contract =
-                native_core_kernel_v1_field cert id (prefix ^ "_contract");
-              native_skolem_macro_edge_contract_primitive_rule =
-                native_core_kernel_v1_field
-                  cert id (prefix ^ "_contract_primitive_rule");
-              native_skolem_macro_edge_contract_parent_index =
-                native_core_kernel_v1_int_field
-                  cert id (prefix ^ "_contract_parent_index");
-              native_skolem_macro_edge_contract_unit =
-                native_core_kernel_v1_field cert id (prefix ^ "_contract_unit");
-              native_skolem_macro_edge_contract_binder_count =
-                native_core_kernel_v1_int_field
-                  cert id (prefix ^ "_contract_binder_count");
-              native_skolem_macro_edge_contract_source_formula =
-                native_core_kernel_v1_tm_field
-                  cert id (prefix ^ "_contract_source_formula");
-              native_skolem_macro_edge_contract_target_formula =
-                native_core_kernel_v1_tm_field
-                  cert id (prefix ^ "_contract_target_formula");
-              native_skolem_macro_edge_contract_introduced_symbols =
-                contract_introduced_symbols;
+              native_skolem_macro_edge_branch_contract =
+                native_core_kernel_v1_skolem_branch_contract cert id prefix;
             }
           in
           collect (index + 1) (edge :: acc)
@@ -13956,13 +13959,25 @@ let native_core_skolem_parent_helper_formulas cert id =
 	    |> List.filter_map
 	         (fun edge ->
 	            let edge_source =
-	              match edge.native_skolem_macro_edge_contract_source_formula with
-	              | Some source -> Some source
+	              match edge.native_skolem_macro_edge_branch_contract with
+	              | Some contract ->
+	                  begin match
+	                    contract.Vampire_kernel_syntax.skolem_branch_source_formula
+	                  with
+	                  | Some source -> Some source
+	                  | None -> edge.native_skolem_macro_edge_source
+	                  end
 	              | None -> edge.native_skolem_macro_edge_source
 	            in
 	            let edge_target =
-	              match edge.native_skolem_macro_edge_contract_target_formula with
-	              | Some target -> Some target
+	              match edge.native_skolem_macro_edge_branch_contract with
+	              | Some contract ->
+	                  begin match
+	                    contract.Vampire_kernel_syntax.skolem_branch_target_formula
+	                  with
+	                  | Some target -> Some target
+	                  | None -> edge.native_skolem_macro_edge_target
+	                  end
 	              | None -> edge.native_skolem_macro_edge_target
 	            in
 	            match
