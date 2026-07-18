@@ -88,6 +88,10 @@ with `-vampireabytargetstop`, `--proof megalodon`, strict native checking, a
 contains the current strict-native pass cases `172:4` and `183:4`; use
 `TARGETS="172:4 183:4 233:4" EXPECT_FAIL_TARGETS="233:4"` to include the
 current Skolem/CPS frontier without making routine checks fail.
+For line-233-style Skolem replay debugging, add
+`MEGALODON_CERT_DEBUG=1 MEGALODON_CERT_FAIL_FAST_SKOLEM_CPS=1` so Megalodon
+stops at the first Skolem CPS candidate rejection instead of continuing through
+the slower fallback proof.
 
 For freshly exported TH0 files containing `% megalodon_source_map` comments,
 set `CHECK_SOURCE_MAP=1` to additionally run `-vampirecertv1source` for every
