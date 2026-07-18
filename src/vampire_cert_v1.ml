@@ -13635,6 +13635,14 @@ let native_core_skolem_refutation_cps_proof
 	          (PPfAp (PTmAp (proof, branch_target), left_branch),
 	           right_branch)
 	        in
+	        (* Close Skolem witnesses that only survive through an unused
+	           disjunction side in the replay continuation.  The caller still
+	           rejects any remaining witness or choice leak and rechecks the
+	           whole proof against False. *)
+	        let candidate =
+	          proof_with_replacements
+	            term_replacements replacements fallback_replacements candidate
+	        in
 	        debug_witness_pf "or-elimination candidate" candidate;
 	        candidate
 	    | _, _, [] ->
