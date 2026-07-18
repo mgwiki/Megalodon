@@ -18422,8 +18422,14 @@ let elaborate_preprocess_refutation_native
                 ^ ": native preprocess Skolem CPS inlining AVATAR splits "
                 ^ String.concat ", " (List.map fst split_replacements));
            let shadow_result_to_target =
-             try shadow_skolem_final_refutation id result_checked_prop result
-             with (Error _ | Failure _) -> None
+             if Sys.getenv_opt "MEGALODON_CERT_DISABLE_SKOLEM_SHADOW" = Some "1" then begin
+               if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+                 prerr_endline
+                   (id ^ ": native preprocess Skolem CPS shadow replay disabled by environment");
+               None
+             end else
+               try shadow_skolem_final_refutation id result_checked_prop result
+               with (Error _ | Failure _) -> None
            in
            begin match shadow_result_to_target with
            | Some _ when Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" ->
