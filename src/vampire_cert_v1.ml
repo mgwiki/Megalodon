@@ -15147,15 +15147,34 @@ let elaborate_preprocess_refutation_native
   let transitional_primitive_clause_steps = Hashtbl.create 17 in
   let skolem_cps_entries = ref [] in
   let final_proof = ref None in
+  let first_stored_choice_witness = ref None in
+  let debug_stored_choice_witness kind id proof =
+    if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+      match !first_stored_choice_witness with
+      | Some _ -> ()
+      | None ->
+          begin match native_core_pf_choice_witness_detail proof with
+          | None -> ()
+          | Some detail ->
+              first_stored_choice_witness := Some (kind, id, detail);
+              prerr_endline
+                (id ^ ": native preprocess first stored "
+                 ^ kind
+                 ^ " proof containing certificate-local choice witness: "
+                 ^ detail)
+          end
+  in
   let store_clause id clause proof =
     let prop = native_core_step_clause_prop cert variables id clause in
     check_step_proof id prop proof;
+    debug_stored_choice_witness "clause" id proof;
     Hashtbl.replace clause_table id (clause, proof);
     if clause = [] then final_proof := Some proof
   in
   let store_formula id formula proof =
     let prop = native_preprocess_step_formula_prop cert variables id formula in
     check_step_proof id prop proof;
+    debug_stored_choice_witness "formula" id proof;
     Hashtbl.replace formula_table id (formula, proof)
   in
   let final_refutation_proof_checks proof =
