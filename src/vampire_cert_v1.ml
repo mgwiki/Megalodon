@@ -15658,6 +15658,31 @@ let native_core_skolem_refutation_cps_proof
 	      end
 	    end
 	  in
+	  let debug_replacement_set label term_depth replacements fallback_replacements =
+	    if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+	      let short_tm tm =
+	        let text = tm_to_str tm in
+	        if String.length text <= 180 then text
+	        else String.sub text 0 180 ^ "..."
+	      in
+	      prerr_endline
+	        (id
+	         ^ ": native preprocess Skolem CPS "
+	         ^ label
+	         ^ " replacements at term_depth="
+	         ^ string_of_int term_depth
+	         ^ " active=["
+	         ^ String.concat ", "
+	             (List.map
+	                (fun (name, tm) -> name ^ ":=" ^ short_tm tm)
+	                replacements)
+	         ^ "] fallback=["
+	         ^ String.concat ", "
+	             (List.map
+	                (fun (name, tm) -> name ^ ":=" ^ short_tm tm)
+	                fallback_replacements)
+	         ^ "]")
+	  in
 	  let unshift_and_component tm =
 	    try Some (tmshift 0 (-1) tm |> tm_beta_eta_norm)
 	    with _ -> None
@@ -15925,6 +15950,15 @@ let native_core_skolem_refutation_cps_proof
             in
             PLam
               (formula_prop_with_replacements ~close_depth:term_depth ~fallback_replacements replacements result_left,
+               let delayed_shift = term_depth - captured_term_depth in
+               let delayed_source_right =
+                 if delayed_shift = 0 then source_right
+                 else tmshift 0 delayed_shift source_right
+               in
+               let delayed_result_right =
+                 if delayed_shift = 0 then result_right
+                 else tmshift 0 delayed_shift result_right
+               in
                eliminate
                  term_depth
                  (proof_depth + 1)
@@ -15932,8 +15966,8 @@ let native_core_skolem_refutation_cps_proof
                  replacements
                  fallback_replacements
                  right_witnesses
-                 source_right
-                 result_right
+                 delayed_source_right
+                 delayed_result_right
                  right_source_proof
                  right_result_to_target_builder)
           in
@@ -15972,6 +16006,10 @@ let native_core_skolem_refutation_cps_proof
 	              proof_depth
 	              source_right_prop
 	              captured_result_right_prop;
+	            if source_right_prop <> captured_result_right_prop then
+	              debug_replacement_set
+	                "and-left-count unchanged-right"
+	                term_depth replacements fallback_replacements;
 			          let left_result_to_target_builder term_depth proof_depth term_replacements replacements fallback_replacements =
 		            let result_left_prop = formula_prop_with_replacements ~close_depth:term_depth ~fallback_replacements replacements result_left in
 		            let result_right_prop =
@@ -16042,6 +16080,10 @@ let native_core_skolem_refutation_cps_proof
 	              proof_depth
 	              source_left_prop
 	              captured_result_left_prop;
+	            if source_left_prop <> captured_result_left_prop then
+	              debug_replacement_set
+	                "and-right-count unchanged-left"
+	                term_depth replacements fallback_replacements;
 			          let right_result_to_target_builder term_depth proof_depth term_replacements replacements fallback_replacements =
 		            let result_left_prop =
                   shift_captured_tm
