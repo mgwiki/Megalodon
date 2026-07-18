@@ -11228,34 +11228,27 @@ let native_core_cnf_formula_clause_proof
       (if shift_parent_proof then pftmshift 0 result_variable_count proof else proof)
       parent_step_variables
   in
-  let quantifier_witness pending tp =
-    let rec find_named = function
-      | [] -> None
-      | (name, candidate_tp) :: rest ->
-          if candidate_tp = tp then
-            match db_for_result_variable name tp with
-            | Some tm -> Some tm
-            | None -> find_named rest
-          else find_named rest
-    in
-    match find_named pending with
-    | Some tm -> tm
-    | None ->
-        begin match fallback_variable tp with
-        | Some tm -> tm
-        | None ->
-            error
-              (id ^ ": native preprocess proof-term cnf_formula_clause cannot instantiate formula universal binder")
-        end
-  in
-  let consume_quantifier pending tp =
-    let rec drop_first_same_sort acc = function
+  let quantifier_candidates pending tp =
+    let rec collect acc prefix = function
       | [] -> List.rev acc
-      | (_, candidate_tp) :: rest when candidate_tp = tp ->
-          List.rev_append acc rest
-      | item :: rest -> drop_first_same_sort (item :: acc) rest
+      | ((name, candidate_tp) as item) :: rest ->
+          let acc =
+            if candidate_tp = tp then
+              match db_for_result_variable name tp with
+              | Some tm -> (tm, List.rev_append prefix rest) :: acc
+              | None -> acc
+            else acc
+          in
+          collect acc (item :: prefix) rest
     in
-    drop_first_same_sort [] pending
+    let candidates = collect [] [] pending in
+    if candidates <> [] then candidates
+    else
+      match fallback_variable tp with
+      | Some tm -> [tm, pending]
+      | None ->
+          error
+            (id ^ ": native preprocess proof-term cnf_formula_clause cannot instantiate formula universal binder")
   in
   let rec eliminate pending formula proof =
     let formula_prop = native_core_formula_prop formula in
@@ -11268,11 +11261,19 @@ let native_core_cnf_formula_clause_proof
             | All (tp, _) -> tp
             | _ -> assert false
           in
-          let arg = quantifier_witness pending tp in
-          eliminate
-            (consume_quantifier pending tp)
-            (tmsubst body 0 arg)
-            (PTmAp (proof, arg))
+          let rec try_candidates = function
+            | [] ->
+                error
+                  (id ^ ": native preprocess proof-term cnf_formula_clause cannot instantiate formula universal binder to project target clause")
+            | (arg, pending) :: rest ->
+                try
+                  eliminate
+                    pending
+                    (tmsubst body 0 arg)
+                    (PTmAp (proof, arg))
+                with Error _ -> try_candidates rest
+          in
+          try_candidates (quantifier_candidates pending tp)
       | Ap (Ap (TmH "vampire_or", left), right) ->
           let left_prop = native_core_formula_prop left in
           let right_prop = native_core_formula_prop right in
