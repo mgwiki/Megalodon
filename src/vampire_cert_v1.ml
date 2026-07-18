@@ -12785,6 +12785,33 @@ let native_core_skolem_target_witness id source target =
         (id ^ ": native core proof-term skolemization result does not match source body")
 
 let native_core_skolem_parent_helper_formulas cert id =
+  let parse_field key =
+    native_core_metadata_step_extra_field cert id "kernel_v1" key
+    |> Option.map (fun value -> parse_tm (parse_sexpr value))
+  in
+  let explicit_macro_edges =
+    match native_core_metadata_step_extra_field cert id "kernel_v1" "skolem_macro_edge_count" with
+    | Some value ->
+        let count =
+          try int_of_string value
+          with Failure _ -> 0
+        in
+        let rec collect index acc =
+          if index >= count then List.rev acc
+          else
+            let prefix = "skolem_macro_edge_" ^ string_of_int index in
+            let acc =
+              match parse_field (prefix ^ "_source"), parse_field (prefix ^ "_target") with
+              | Some source, Some target -> Imp (source, target) :: acc
+              | _ -> acc
+            in
+            collect (index + 1) acc
+        in
+        collect 0 []
+    | None -> []
+  in
+  if explicit_macro_edges <> [] then explicit_macro_edges
+  else
   let proof_parent_count =
     match native_core_metadata_step_extra_field cert id "kernel_v1" "proof_parent_count" with
     | Some value ->
