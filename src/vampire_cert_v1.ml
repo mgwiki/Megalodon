@@ -14233,6 +14233,58 @@ let native_core_skolem_refutation_cps_proof
 	      end
 	    end
 	  in
+	  let unshift_and_component tm =
+	    try Some (tmshift 0 (-1) tm |> tm_beta_eta_norm)
+	    with _ -> None
+	  in
+	  let native_core_and_components_of_prop prop =
+	    match tm_beta_eta_norm prop with
+	    | All (Prop, Imp (Imp (left, Imp (right, DB 0)), DB 0)) ->
+	        begin match unshift_and_component left, unshift_and_component right with
+	        | Some left, Some right -> Some (left, right)
+	        | _ -> None
+	        end
+	    | _ -> None
+	  in
+	  let debug_conjunction_contract label term_depth proof_depth expected rebuilt =
+	    if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
+	      if expected = rebuilt then
+	        prerr_endline
+	          (id
+	           ^ ": native preprocess Skolem CPS "
+	           ^ label
+	           ^ " conjunction contract OK at term_depth="
+	           ^ string_of_int term_depth
+	           ^ " proof_depth="
+	           ^ string_of_int proof_depth)
+	      else begin
+	        debug_prop_pair
+	          (label ^ " conjunction contract")
+	          term_depth
+	          proof_depth
+	          expected
+	          rebuilt;
+	        begin match
+	          native_core_and_components_of_prop expected,
+	          native_core_and_components_of_prop rebuilt
+	        with
+	        | Some (expected_left, expected_right), Some (rebuilt_left, rebuilt_right) ->
+	            debug_prop_pair
+	              (label ^ " expected-left/rebuilt-left")
+	              term_depth proof_depth expected_left rebuilt_left;
+	            debug_prop_pair
+	              (label ^ " expected-right/rebuilt-right")
+	              term_depth proof_depth expected_right rebuilt_right
+	        | _ ->
+	            prerr_endline
+	              (id
+	               ^ ": native preprocess Skolem CPS "
+	               ^ label
+	               ^ " could not decompose conjunction contract")
+	        end
+	      end
+	    end
+	  in
 	  let result_to_target_builder term_depth proof_depth term_replacements replacements fallback_replacements =
 	    let result_prop =
 	      formula_prop_with_replacements
@@ -14241,6 +14293,17 @@ let native_core_skolem_refutation_cps_proof
 	        replacements
 	        result
 	    in
+	    let checked_result_prop =
+	      tmshift 0 term_depth result_checked_prop
+	      |> native_core_replace_witness_symbols_in_tm
+	           (replacements @ fallback_replacements)
+	    in
+	    debug_prop_pair
+	      "result-to-target replaced-checked/current"
+	      term_depth
+	      proof_depth
+	      checked_result_prop
+	      result_prop;
 	    let shifted_result_to_target =
 	      result_to_target
 	      |> pftmshift 0 term_depth
@@ -14465,6 +14528,16 @@ let native_core_skolem_refutation_cps_proof
 		            PLam
 		              (result_left_prop,
 		               let rebuilt =
+	                 debug_conjunction_contract
+	                   "and-left-count"
+	                   term_depth
+	                   (proof_depth + 1)
+	                   (formula_prop_with_replacements
+	                      ~close_depth:term_depth
+	                      ~fallback_replacements
+	                      replacements
+	                      result)
+	                   (native_core_and result_left_prop result_right_prop |> tm_beta_eta_norm);
 	                 native_core_and_intro
 	                   result_left_prop
 	                   result_right_prop
@@ -14525,6 +14598,16 @@ let native_core_skolem_refutation_cps_proof
 		            PLam
 		              (result_right_prop,
 	               let rebuilt =
+	                 debug_conjunction_contract
+	                   "and-right-count"
+	                   term_depth
+	                   (proof_depth + 1)
+	                   (formula_prop_with_replacements
+	                      ~close_depth:term_depth
+	                      ~fallback_replacements
+	                      replacements
+	                      result)
+	                   (native_core_and result_left_prop result_right_prop |> tm_beta_eta_norm);
 	                 native_core_and_intro
 	                   result_left_prop
 	                   result_right_prop
