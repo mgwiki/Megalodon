@@ -4524,6 +4524,71 @@ let validate_kernel_v1_metadata_contracts cert =
     ignore actual_imp;
     ignore (require_nonnegative_field_int id fields (prefix ^ "_imp_count") : int)
   in
+  let rec quantified_variables_of_sexpr = function
+    | List [Atom "ALLV"; name; tp; body] ->
+        ("forall", atom name, parse_tp tp) :: quantified_variables_of_sexpr body
+    | List [Atom "ALL"; tp; body] ->
+        ("forall", "", parse_tp tp) :: quantified_variables_of_sexpr body
+    | List [Atom "AP"; List [Atom "TMH"; exists_head];
+            List [Atom binder; name; tp; body]]
+        when atom exists_head = "vampire_exists_prop"
+             && (binder = "LAMV" || binder = "VLAMV") ->
+        ("exists", atom name, parse_tp tp) :: quantified_variables_of_sexpr body
+    | List [Atom "AP"; List [Atom "TMH"; exists_head];
+            List [Atom "LAM"; tp; body]]
+        when atom exists_head = "vampire_exists_prop" ->
+        ("exists", "", parse_tp tp) :: quantified_variables_of_sexpr body
+    | List [Atom "AP"; left; right]
+    | List [Atom "IMP"; left; right] ->
+        quantified_variables_of_sexpr left @ quantified_variables_of_sexpr right
+    | List [Atom "LAMV"; _; _; body]
+    | List [Atom "VLAMV"; _; _; body]
+    | List [Atom "LAM"; _; body] ->
+        quantified_variables_of_sexpr body
+    | List items ->
+        List.concat_map quantified_variables_of_sexpr items
+    | Atom _ | Str _ -> []
+  in
+  let require_formula_quantifier_fields id fields prefix raw_formula =
+    match field_value (prefix ^ "_quantifier_count") fields with
+    | None -> ()
+    | Some _ ->
+        let quantified_variables =
+          quantified_variables_of_sexpr (parse_sexpr raw_formula)
+        in
+        require_field_int
+          id fields (prefix ^ "_quantifier_count")
+          (List.length quantified_variables);
+        List.iteri
+          (fun index (kind, variable, tp) ->
+             let field_prefix =
+               prefix ^ "_quantifier_" ^ string_of_int index
+             in
+             let actual_kind =
+               field_required id fields (field_prefix ^ "_kind")
+             in
+             if actual_kind <> kind then
+               error
+                 (Printf.sprintf
+                    "%s: strict certificate v1 kernel_v1 metadata field %s_kind expected %s but raw formula has %s"
+                    id field_prefix actual_kind kind);
+             let actual_variable =
+               field_required id fields (field_prefix ^ "_var")
+             in
+             if actual_variable <> variable then
+               error
+                 (Printf.sprintf
+                    "%s: strict certificate v1 kernel_v1 metadata field %s_var expected %s but raw formula has %s"
+                    id field_prefix actual_variable variable);
+             let actual_tp =
+               parse_field id fields (field_prefix ^ "_type") parse_tp
+             in
+             if actual_tp <> tp then
+               error
+                 (id ^ ": strict certificate v1 kernel_v1 metadata field "
+                  ^ field_prefix ^ "_type does not match the raw formula binder type"))
+          quantified_variables
+  in
   let validate_skolem_macro_edge_shape_metadata id fields =
     match field_value "skolem_macro_edge_count" fields with
     | None -> ()
@@ -4532,21 +4597,27 @@ let validate_kernel_v1_metadata_contracts cert =
         for index = 0 to count - 1 do
           let prefix = "skolem_macro_edge_" ^ string_of_int index in
           begin match field_value (prefix ^ "_formula") fields with
-          | Some _ ->
-              let formula = parse_field id fields (prefix ^ "_formula") parse_tm in
-              require_formula_shape_fields id fields (prefix ^ "_formula") formula
+          | Some raw_formula ->
+              let formula = parse_tm (parse_sexpr raw_formula) in
+              require_formula_shape_fields id fields (prefix ^ "_formula") formula;
+              require_formula_quantifier_fields
+                id fields (prefix ^ "_formula") raw_formula
           | None -> ()
           end;
           begin match field_value (prefix ^ "_source") fields with
-          | Some _ ->
-              let source = parse_field id fields (prefix ^ "_source") parse_tm in
-              require_formula_shape_fields id fields (prefix ^ "_source") source
+          | Some raw_source ->
+              let source = parse_tm (parse_sexpr raw_source) in
+              require_formula_shape_fields id fields (prefix ^ "_source") source;
+              require_formula_quantifier_fields
+                id fields (prefix ^ "_source") raw_source
           | None -> ()
           end;
           begin match field_value (prefix ^ "_target") fields with
-          | Some _ ->
-              let target = parse_field id fields (prefix ^ "_target") parse_tm in
-              require_formula_shape_fields id fields (prefix ^ "_target") target
+          | Some raw_target ->
+              let target = parse_tm (parse_sexpr raw_target) in
+              require_formula_shape_fields id fields (prefix ^ "_target") target;
+              require_formula_quantifier_fields
+                id fields (prefix ^ "_target") raw_target
           | None -> ()
           end
         done

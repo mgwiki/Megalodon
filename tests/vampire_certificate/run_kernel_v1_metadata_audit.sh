@@ -799,6 +799,32 @@ if [[ -s "$WORK_DIR/skolemize.tsv" ]]; then
   fi
 
   awk '
+    function check_quantifier_fields(qprefix, line,    count_field, count_pattern, count_match, count, quantifier_index, quantifier_prefix, kind_field, var_field, type_field) {
+      count_field = qprefix "_quantifier_count="
+      if (index(line, count_field) == 0) {
+        print count_field "\t" line
+      } else {
+        count_pattern = qprefix "_quantifier_count=([0-9]+)"
+        if (match(line, count_pattern, count_match)) {
+          count = count_match[1] + 0
+          for (quantifier_index = 0; quantifier_index < count; ++quantifier_index) {
+            quantifier_prefix = qprefix "_quantifier_" quantifier_index
+            kind_field = quantifier_prefix "_kind="
+            var_field = quantifier_prefix "_var="
+            type_field = quantifier_prefix "_type="
+            if (index(line, kind_field) == 0) {
+              print kind_field "\t" line
+            }
+            if (index(line, var_field) == 0) {
+              print var_field "\t" line
+            }
+            if (index(line, type_field) == 0) {
+              print type_field "\t" line
+            }
+          }
+        }
+      }
+    }
     {
       if (match($0, /skolem_macro_edge_count=([0-9]+)/, edge_count_match)) {
         edge_count = edge_count_match[1] + 0
@@ -819,6 +845,7 @@ if [[ -s "$WORK_DIR/skolemize.tsv" ]]; then
           if (index($0, formula_field) == 0) {
             print formula_field "\t" $0
           }
+          check_quantifier_fields(prefix "_formula", $0)
           if (index($0, binder_count_field) == 0) {
             print binder_count_field "\t" $0
           } else {
@@ -841,9 +868,11 @@ if [[ -s "$WORK_DIR/skolemize.tsv" ]]; then
           if (index($0, source_field) == 0) {
             print source_field "\t" $0
           }
+          check_quantifier_fields(prefix "_source", $0)
           if (index($0, target_field) == 0) {
             print target_field "\t" $0
           }
+          check_quantifier_fields(prefix "_target", $0)
         }
       }
     }
