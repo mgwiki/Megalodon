@@ -9628,18 +9628,42 @@ let native_core_debug_skolem_proof_object id = function
                 string_of_int
                   branch.Vampire_kernel_syntax.skolem_branch_index)
       in
+      let branch_choice_summary =
+        branches
+        |> List.filter_map
+             (fun branch ->
+                match branch.Vampire_kernel_syntax.skolem_branch_choices with
+                | [] -> None
+                | choices ->
+                    let labels =
+                      choices
+                      |> List.map
+                           (fun choice ->
+                              choice.Vampire_kernel_syntax.skolem_branch_choice_symbol
+                              ^ "/"
+                              ^ choice.Vampire_kernel_syntax.skolem_branch_choice_replaced_variable)
+                    in
+                    Some
+                      (string_of_int
+                         branch.Vampire_kernel_syntax.skolem_branch_index
+                       ^ ":"
+                       ^ String.concat "," labels))
+      in
       prerr_endline
         (Printf.sprintf
-           "%s: native Skolem proof object source_children=%d result_children=%d witnesses=%d macro_edges=%s branches=%d[%s]"
+           "%s: native Skolem proof object source_children=%d result_children=%d witnesses=%d macro_edges=%s branches=%d[%s] branch_choices=%s"
            id
            (List.length contract.Vampire_kernel_syntax.skolem_source_children)
            (List.length contract.Vampire_kernel_syntax.skolem_result_children)
            (List.length contract.Vampire_kernel_syntax.skolem_introduced_witnesses)
            (match contract.Vampire_kernel_syntax.skolem_macro_edge_count with
-            | Some count -> string_of_int count
-            | None -> "?")
+           | Some count -> string_of_int count
+           | None -> "?")
            (List.length branches)
-           (String.concat "," branch_indices))
+           (String.concat "," branch_indices)
+           (match branch_choice_summary with
+            | [] -> "-"
+            | labels -> String.concat " " labels))
   | _ -> ()
 
 let native_core_symbol_table cert =
