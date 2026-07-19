@@ -42,6 +42,22 @@ library assumptions for Qed dependency checking. This flag is explicit so the
 default Megalodon behavior still rejects theorems that depend on
 unindexed/unowned axioms.
 
+Useful overrides:
+
+```sh
+PREFIX_END_LINE=205 EXPECTED_RECONSTRUCTED=9 WALL_SECONDS=240 \
+VAMPIRE=/path/to/vampire \
+tests/vampire_reconstruction/run_live_hammer_prefix_no_incomplete.sh
+```
+
+At the time this was added, the prefix through `or3I3` reconstructed eight
+proof commands, while `or3E` produced a real Vampire certificate quickly but
+became the next slow native-reconstruction frontier. That certificate is
+AVATAR-heavy, with multiple `avatar_split`, `avatar_definition`,
+`split_dependency`, and SAT/RUP-backed `avatar_refutation` records. Keep this
+as an opt-in probe rather than part of the default fast gate until the AVATAR
+native proof path is cheaper and more complete.
+
 This suite checks Megalodon's TH0 hammer obligations against Vampire proof
 output.
 
