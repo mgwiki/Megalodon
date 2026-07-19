@@ -8867,6 +8867,18 @@ let native_core_kernel_v1_tm_field cert id key =
   native_core_kernel_v1_field cert id key
   |> Option.map (fun value -> parse_tm (parse_sexpr value))
 
+let parse_kernel_v1_lambda_tm = function
+  | List [Atom "LAMV"; name; tp; body]
+  | List [Atom "VLAMV"; name; tp; body] ->
+      Lam (parse_tp tp, subst_named_tm (atom name) (parse_tm body))
+  | List [Atom "LAM"; tp; body] ->
+      Lam (parse_tp tp, parse_tm body)
+  | sexpr -> parse_tm sexpr
+
+let native_core_kernel_v1_lambda_tm_field cert id key =
+  native_core_kernel_v1_field cert id key
+  |> Option.map (fun value -> parse_kernel_v1_lambda_tm (parse_sexpr value))
+
 let native_core_kernel_v1_tp_field cert id key =
   native_core_kernel_v1_field cert id key
   |> Option.map (fun value -> parse_tp (parse_sexpr value))
@@ -9316,16 +9328,16 @@ let native_core_kernel_v1_skolem_branch_contract cert id index prefix =
                    prefix ^ "_contract_branch_choice_"
                    ^ string_of_int choice_index
                  in
-                 let required_tm suffix =
-                   match
-                     native_core_kernel_v1_tm_field
-                       cert id (choice_prefix ^ suffix)
-                   with
+                 let required_tm_with parser suffix =
+                   match parser cert id (choice_prefix ^ suffix) with
                    | Some tm -> tm
                    | None ->
                        error
                          (id ^ ": kernel_v1 metadata requires "
                           ^ choice_prefix ^ suffix)
+                 in
+                 let required_tm suffix =
+                   required_tm_with native_core_kernel_v1_tm_field suffix
                  in
                  let choice_type =
                    match
@@ -9349,7 +9361,9 @@ let native_core_kernel_v1_skolem_branch_contract cert id index prefix =
                        cert id (choice_prefix ^ "_replaced_var");
                    skolem_branch_choice_type = choice_type;
                    skolem_branch_choice_predicate =
-                     required_tm "_predicate";
+                     required_tm_with
+                       native_core_kernel_v1_lambda_tm_field
+                       "_predicate";
                    skolem_branch_choice_body =
                      required_tm "_body";
                  })
@@ -9414,9 +9428,14 @@ let native_core_kernel_v1_skolem_branch_contract cert id index prefix =
                   id index
                   choice.Vampire_kernel_syntax.skolem_branch_choice_symbol);
            let expected_predicate =
+             let expected_body =
+               subst_named_tm
+                 choice.Vampire_kernel_syntax.skolem_branch_choice_replaced_variable
+                 choice.Vampire_kernel_syntax.skolem_branch_choice_body
+             in
              Lam
                (choice.Vampire_kernel_syntax.skolem_branch_choice_type,
-                choice.Vampire_kernel_syntax.skolem_branch_choice_body)
+                expected_body)
              |> tm_beta_eta_norm
            in
            if tm_beta_eta_norm
