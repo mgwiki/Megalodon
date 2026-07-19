@@ -19205,7 +19205,6 @@ let elaborate_preprocess_refutation_native
   let transitional_primitive_clause_steps = Hashtbl.create 17 in
   let skolem_cps_entries = ref [] in
   let skolem_witness_replacements = ref [] in
-  let skolem_witness_raw_replacements = ref [] in
   let final_proof = ref None in
   let first_stored_choice_witness = ref None in
   let debug_stored_choice_witness kind id proof =
@@ -20130,10 +20129,7 @@ let elaborate_preprocess_refutation_native
                          ^ " out of arity-zero delta tables");
                     skolem_witness_replacements :=
                       (name, closed_witness)
-                      :: List.remove_assoc name !skolem_witness_replacements;
-                    skolem_witness_raw_replacements :=
-                      (name, tm_beta_eta_norm epsilon_witness)
-                      :: List.remove_assoc name !skolem_witness_raw_replacements
+                      :: List.remove_assoc name !skolem_witness_replacements
                 | _ -> ()
                 end
             | TmH raw_name, _ :: _ ->
@@ -20149,31 +20145,21 @@ let elaborate_preprocess_refutation_native
             | _ -> ()
           in
           let build_skolem_formula_proof result_step_variables =
-            let proof =
-              try
+            try
+              native_core_skolem_formula_proof
+                ~normalize_formula_for_match:normalize_generated_skolems
+                ~register_witness_replacement
+                id variables parent_step_variables result_step_variables
+                subst source_formula result parent_proof
+            with (Error _ | Failure _) as exn ->
+              if helper_formulas = [] then raise exn
+              else
                 native_core_skolem_formula_proof
+                  ~helper_formulas
                   ~normalize_formula_for_match:normalize_generated_skolems
                   ~register_witness_replacement
                   id variables parent_step_variables result_step_variables
                   subst source_formula result parent_proof
-              with (Error _ | Failure _) as exn ->
-                if helper_formulas = [] then raise exn
-                else
-                  native_core_skolem_formula_proof
-                    ~helper_formulas
-                    ~normalize_formula_for_match:normalize_generated_skolems
-                    ~register_witness_replacement
-                    id variables parent_step_variables result_step_variables
-                    subst source_formula result parent_proof
-            in
-            let inverse_witness_replacements =
-              (!skolem_witness_raw_replacements @ !skolem_witness_replacements)
-              |> List.filter
-                   (fun (name, _) -> List.mem name introduced_names)
-              |> List.map
-                   (fun (name, witness) -> (witness, TmH name))
-            in
-            native_core_replace_terms_in_pf inverse_witness_replacements proof
           in
           let proof =
             build_skolem_formula_proof result_step_variables
