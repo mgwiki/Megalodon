@@ -75,6 +75,21 @@ Vampire with the same extra proof-detail options used by Megalodon's live
 `VAMPIRE_PROOF_ARGS` only when intentionally testing another proof-export
 configuration.
 
+For the tracked 100-case THF gate over currently known-solvable hammer
+exports, use:
+
+```sh
+VAMPIRE=/path/to/vampire \
+tests/vampire_certificate/run_known_solvable_strict_100.sh
+```
+
+This uses `known_solvable_strict_100.list`, runs 20 Vampire jobs in parallel
+with `-t 10`, checks every native certificate with strict source-map
+validation, and then runs the native primitive and `kernel_v1` metadata audits.
+The list is curated from previously solved `examples/hammer/out1` proof-output
+filenames rather than the lexicographic first-100 slice, which is known to
+spend most of its time on repeat Vampire timeouts.
+
 For fast focused replay of original Megalodon `aby` targets, use:
 
 ```sh
