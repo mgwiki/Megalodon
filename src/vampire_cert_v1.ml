@@ -15689,6 +15689,7 @@ let native_core_skolem_refutation_cps_proof
     ?result_assumption_step_variables
     ?skolem_proof_object
     ?(split_replacements=[])
+    ?(initial_fallback_replacements=[])
     id variables parent_step_variables result_step_variables source subst result
     result_checked_prop parent_proof result_proof final_proof target_prop =
   let result_assumption_prop =
@@ -17444,7 +17445,7 @@ let native_core_skolem_refutation_cps_proof
         PPfAp
           (result_to_target_proof, result_checked_proof)
   in
-	  eliminate 0 0 target_prop [] [] [] witness_symbols source result parent_proof result_to_target_builder
+	  eliminate 0 0 target_prop [] [] initial_fallback_replacements witness_symbols source result parent_proof result_to_target_builder
 
 let native_core_truth_conflict_false_proof id literal proof =
   let is_true = function
@@ -19381,6 +19382,9 @@ let elaborate_core_resolution_refutation_native
             | TmH raw_name, [] ->
                 begin match native_core_ident_opt raw_name with
                 | Some name when List.mem name introduced_names ->
+                    let replacement_names =
+                      List.sort_uniq String.compare [raw_name; name]
+                    in
                     let closed_witness =
                       native_core_close_tm variables epsilon_witness
                       |> tm_beta_eta_norm
@@ -19393,10 +19397,13 @@ let elaborate_core_resolution_refutation_native
                          ^ " := "
                          ^ tm_to_str closed_witness);
                     if native_core_tm_scoped_under (List.length variables) closed_witness then begin
-                      if not (Hashtbl.mem proof_delta name) then
-                        Hashtbl.replace proof_delta name (0, closed_witness);
-                      if not (Hashtbl.mem definition_delta name) then
-                        Hashtbl.replace definition_delta name (0, closed_witness)
+                      List.iter
+                        (fun replacement_name ->
+                           if not (Hashtbl.mem proof_delta replacement_name) then
+                             Hashtbl.replace proof_delta replacement_name (0, closed_witness);
+                           if not (Hashtbl.mem definition_delta replacement_name) then
+                             Hashtbl.replace definition_delta replacement_name (0, closed_witness))
+                        replacement_names
                     end else if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
                       prerr_endline
                         (id
@@ -20745,6 +20752,9 @@ let elaborate_preprocess_refutation_native
             | TmH raw_name, [] ->
                 begin match native_core_ident_opt raw_name with
                 | Some name when List.mem name introduced_names ->
+                    let replacement_names =
+                      List.sort_uniq String.compare [raw_name; name]
+                    in
                     let closed_witness =
                       native_core_close_tm variables epsilon_witness
                       |> tm_beta_eta_norm
@@ -20757,19 +20767,25 @@ let elaborate_preprocess_refutation_native
                          ^ " := "
                          ^ tm_to_str closed_witness);
                     if native_core_tm_scoped_under (List.length variables) closed_witness then begin
-                      if not (Hashtbl.mem proof_delta name) then
-                        Hashtbl.replace proof_delta name (0, closed_witness);
-                      if not (Hashtbl.mem definition_delta name) then
-                        Hashtbl.replace definition_delta name (0, closed_witness)
+                      List.iter
+                        (fun replacement_name ->
+                           if not (Hashtbl.mem proof_delta replacement_name) then
+                             Hashtbl.replace proof_delta replacement_name (0, closed_witness);
+                           if not (Hashtbl.mem definition_delta replacement_name) then
+                             Hashtbl.replace definition_delta replacement_name (0, closed_witness))
+                        replacement_names
                     end else if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
                       prerr_endline
                         (id
                          ^ ": native preprocess skolem kept context-dependent witness "
                          ^ name
                          ^ " out of arity-zero delta tables");
-                    skolem_witness_replacements :=
-                      (name, closed_witness)
-                      :: List.remove_assoc name !skolem_witness_replacements
+                    List.iter
+                      (fun replacement_name ->
+                         skolem_witness_replacements :=
+                           (replacement_name, closed_witness)
+                           :: List.remove_assoc replacement_name !skolem_witness_replacements)
+                      replacement_names
                 | _ -> ()
                 end
             | TmH raw_name, _ :: _ ->
@@ -21601,6 +21617,7 @@ let elaborate_preprocess_refutation_native
                       ~result_assumption_step_variables
                       ?skolem_proof_object
                       ~split_replacements
+                      ~initial_fallback_replacements:!skolem_witness_replacements
                       id variables parent_step_variables result_step_variables
                       source_formula subst result result_checked_prop parent_proof
                       result_proof continuation_body target_prop
@@ -21765,6 +21782,7 @@ let elaborate_preprocess_refutation_native
                ~result_assumption_step_variables
                ?skolem_proof_object
                ~split_replacements
+               ~initial_fallback_replacements:!skolem_witness_replacements
                id variables parent_step_variables result_step_variables
                source_formula subst result result_checked_prop parent_proof
                result_proof current native_core_false
