@@ -20618,9 +20618,19 @@ let elaborate_preprocess_refutation_native
                       proof_object.Vampire_kernel_syntax.skolem_proof_branches
                       |> List.concat_map
                            (fun branch ->
-                              branch.Vampire_kernel_syntax.skolem_branch_parent_step_variables)
+                              branch.Vampire_kernel_syntax.skolem_branch_parent_instantiations)
                       |> List.filter_map
-                           (fun (branch_name, branch_tp) ->
+                           (fun instantiation ->
+                              if instantiation.Vampire_kernel_syntax.skolem_parent_inst_role
+                                 <> "preserved_variable" then
+                                None
+                              else
+                                let branch_name =
+                                  instantiation.Vampire_kernel_syntax.skolem_parent_inst_variable
+                                in
+                                let branch_tp =
+                                  instantiation.Vampire_kernel_syntax.skolem_parent_inst_type
+                                in
                               List.find_opt
                                 (fun (name, tp) ->
                                    name = branch_name && tp = branch_tp)
