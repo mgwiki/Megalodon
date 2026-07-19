@@ -1282,7 +1282,12 @@ let same_clause_multiset left right =
   List.length left = List.length right && consume left right
 
 let lookup_clause checked id =
-  match (try List.assoc id checked with Not_found -> error ("unknown certificate parent " ^ id)) with
+  let checked_clause =
+    try List.assoc id checked with Not_found ->
+      try List.assoc (id ^ "_split_dependency") checked with Not_found ->
+        error ("unknown certificate parent " ^ id)
+  in
+  match checked_clause with
   | CheckedClause clause -> clause
   | CheckedFormula _ -> error (id ^ " is a formula parent, but a clause parent was expected")
   | CheckedSatClauseRecord -> error (id ^ " is an AVATAR SAT clause record, but a clause parent was expected")
@@ -7250,6 +7255,17 @@ let validate_kernel_v1_metadata_contracts cert =
                  let selected_source_unit, selected_subst =
                    if selected_parent_unit = parent_id then
                      parent_id, []
+                   else if selected_parent_unit = parent_id ^ "_split_dependency" then
+                     begin match Hashtbl.find_opt step_by_id selected_parent_unit with
+                     | Some (SplitDependency (_, owner_id, _, _))
+                         when owner_id = parent_id ->
+                         selected_parent_unit, []
+                     | _ ->
+                         error
+                           (id ^ ": strict certificate v1 kernel_v1 equality_resolution selected_parent_unit "
+                            ^ selected_parent_unit ^ " does not name a split_dependency owned by certificate parent "
+                            ^ parent_id)
+                     end
                    else
                      begin match Hashtbl.find_opt step_by_id parent_id with
                      | Some (Substitute (_, subst_parent_id, subst, _))

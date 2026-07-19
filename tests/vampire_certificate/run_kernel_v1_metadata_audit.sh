@@ -131,6 +131,11 @@ while IFS= read -r native_file; do
       if (match($0, /^  \([[:alnum:]_]+ "([^"]+)"/, step)) {
         seen[step[1]] = FNR
       }
+      if (index($0, "\"kernel_v1\"") != 0 &&
+          index($0, "\"rule=split_dependency\"") != 0 &&
+          match($0, /"conclusion_unit=(u[0-9][[:alnum:]_]*)"/, conclusion)) {
+        seen[conclusion[1] "_split_dependency"] = FNR
+      }
     }
 
     index($0, "\"kernel_v1\"") != 0 {
