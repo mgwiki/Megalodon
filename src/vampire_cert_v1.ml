@@ -16643,7 +16643,7 @@ let native_core_skolem_refutation_cps_proof
 	                  fallback_replacements_under_binder
                   rest
 	                  body
-	                  result
+	                  (tmshift 0 1 result)
 	                  (Hyp 0)
 	                  result_to_target_builder))
 	        in
