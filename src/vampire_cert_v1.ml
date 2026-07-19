@@ -15953,6 +15953,7 @@ let native_core_skolem_refutation_cps_proof
     ?skolem_proof_object
     ?(split_replacements=[])
     ?(initial_fallback_replacements=[])
+    ?(register_branch_witness_replacement=(fun _ _ _ -> ()))
     id variables parent_step_variables result_step_variables source subst result
     result_checked_prop parent_proof result_proof final_proof target_prop =
   let result_assumption_prop =
@@ -16184,6 +16185,31 @@ let native_core_skolem_refutation_cps_proof
         =
         (native_core_normalize_bool_constants formula |> tm_beta_eta_norm)
     | None -> false
+  in
+  let branch_has_proposition_role role branch =
+    branch.Vampire_kernel_syntax.skolem_branch_propositions
+    |> List.exists
+         (fun proposition ->
+            proposition.Vampire_kernel_syntax.skolem_branch_prop_role = role)
+  in
+  let matching_single_witness_branch_contract witness source result =
+    let matches =
+      skolem_branch_contracts
+      |> List.filter
+           (fun branch ->
+              branch_witness_symbols branch |> witness_set = [witness]
+              && branch_matches_formula
+                   source
+                   branch.Vampire_kernel_syntax.skolem_branch_source_formula
+              && branch_matches_formula
+                   result
+                   branch.Vampire_kernel_syntax.skolem_branch_target_formula
+              && branch_has_proposition_role "source" branch
+              && branch_has_proposition_role "target" branch)
+    in
+    match matches with
+    | [branch] -> Some branch
+    | _ -> None
   in
   let debug_skolem_branch_candidates label term_depth proof_depth source result witnesses =
     if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1"
@@ -16966,6 +16992,28 @@ let native_core_skolem_refutation_cps_proof
           |> native_core_normalize_bool_constants
           |> tm_beta_eta_norm
         in
+        begin match
+          matching_single_witness_branch_contract witness source result
+        with
+        | Some branch ->
+            let target_witness =
+              match List.assoc_opt witness witness_terms with
+              | Some witness_term -> witness_term
+              | None -> TmH witness
+            in
+            if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+              prerr_endline
+                (Printf.sprintf
+                   "%s: native preprocess Skolem CPS branch contract #%d publishes witness %s"
+                   id
+                   branch.Vampire_kernel_syntax.skolem_branch_index
+                   witness);
+            register_branch_witness_replacement
+              branch
+              target_witness
+              epsilon_witness
+        | None -> ()
+        end;
         let term_replacements_under_binder =
           (epsilon_witness, DB 0) :: term_replacements_under_binder
         in
@@ -20121,6 +20169,7 @@ let elaborate_preprocess_refutation_native
   let transitional_primitive_clause_steps = Hashtbl.create 17 in
   let skolem_cps_entries = ref [] in
   let skolem_witness_replacements = ref [] in
+  let staged_skolem_branch_witness_replacements = ref [] in
   let final_proof = ref None in
   let first_stored_choice_witness = ref None in
   let debug_stored_choice_witness kind id proof =
@@ -21968,6 +22017,127 @@ let elaborate_preprocess_refutation_native
         in
         List.fold_right (fun prop proof -> PLam (prop, proof)) tail body
   in
+  let register_cps_branch_witness_replacement
+      id parent_step_variables result_step_variables branch target_witness
+      epsilon_witness =
+    let contract_epsilon_witness =
+      match branch.Vampire_kernel_syntax.skolem_branch_source_formula with
+      | Some (Ap (TmH "vampire_exists_prop", Lam (tp, body))) ->
+          Some
+            (Ap
+               (TmH (native_core_eps_symbol tp),
+                Lam
+                  (tp,
+                   native_core_formula_prop body
+                   |> native_core_normalize_bool_constants
+                   |> tm_beta_eta_norm))
+             |> native_core_normalize_bool_constants
+             |> tm_beta_eta_norm)
+      | _ -> None
+    in
+    let epsilon_witness =
+      match contract_epsilon_witness with
+      | Some witness -> witness
+      | None -> epsilon_witness
+    in
+    let introduced_names =
+      branch.Vampire_kernel_syntax.skolem_branch_introduced_witnesses
+      |> List.filter_map
+           (fun witness ->
+              native_core_ident_opt
+                witness.Vampire_kernel_syntax.skolem_witness_symbol)
+      |> List.sort_uniq String.compare
+    in
+    let register_closed_witness raw_name name closed_witness =
+      let replacement_names =
+        native_core_symbol_name_aliases raw_name
+        @ native_core_symbol_name_aliases name
+        |> List.sort_uniq String.compare
+      in
+      if native_core_tm_scoped_under
+           (List.length variables)
+           closed_witness then begin
+        if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+          prerr_endline
+            (id
+             ^ ": native preprocess Skolem CPS staged branch witness definition "
+             ^ name
+             ^ " := "
+             ^ tm_to_str closed_witness);
+        staged_skolem_branch_witness_replacements :=
+          (id, replacement_names, closed_witness)
+          :: !staged_skolem_branch_witness_replacements
+      end else if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+        prerr_endline
+          (id
+           ^ ": native preprocess Skolem CPS kept context-dependent branch witness "
+           ^ name
+           ^ " out of the final replacement table")
+    in
+    match native_core_flatten_value_application target_witness with
+    | TmH raw_name, [] ->
+        begin match native_core_ident_opt raw_name with
+        | Some name when List.mem name introduced_names ->
+            let closed_witness =
+              native_core_close_tm variables epsilon_witness
+              |> tm_beta_eta_norm
+            in
+            register_closed_witness raw_name name closed_witness
+        | _ -> ()
+        end
+    | TmH raw_name, args ->
+        begin match native_core_ident_opt raw_name with
+        | Some name when List.mem name introduced_names ->
+            let dependency_types =
+              args
+              |> List.map
+                   (fun arg ->
+                      match arg with
+                      | TmH raw_dependency ->
+                          begin match native_core_ident_opt raw_dependency with
+                          | Some dependency ->
+                              List.assoc_opt
+                                dependency
+                                (variables @ parent_step_variables
+                                 @ result_step_variables)
+                          | None -> None
+                          end
+                      | _ -> None)
+            in
+            let rec collect_types = function
+              | [] -> Some []
+              | Some tp :: rest ->
+                  begin match collect_types rest with
+                  | Some rest -> Some (tp :: rest)
+                  | None -> None
+                  end
+              | None :: _ -> None
+            in
+            begin match collect_types dependency_types with
+            | Some dependency_types ->
+                let body =
+                  native_core_close_tm variables epsilon_witness
+                  |> tm_beta_eta_norm
+                in
+                let closed_witness =
+                  List.fold_right
+                    (fun tp body -> Lam (tp, tmshift 0 1 body))
+                    dependency_types
+                    body
+                  |> tm_beta_eta_norm
+                in
+                register_closed_witness raw_name name closed_witness
+            | None ->
+                if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+                  prerr_endline
+                    (id
+                     ^ ": native preprocess Skolem CPS deferred dependent branch witness definition for "
+                     ^ name)
+            end
+        | _ -> ()
+        end
+    | _ -> ()
+  in
   let try_grouped_skolem_cps_discharge () =
     let entries = !skolem_cps_entries in
     if List.length entries <= 1 then
@@ -22061,7 +22231,12 @@ let elaborate_preprocess_refutation_native
 	                      ~result_assumption_step_variables
 	                      ?skolem_proof_object
 	                      ~split_replacements
-	                      ~initial_fallback_replacements:group_replacements
+                      ~initial_fallback_replacements:group_replacements
+                      ~register_branch_witness_replacement:
+                        (fun _branch target_witness epsilon_witness ->
+                           register_cps_branch_witness_replacement
+                             id parent_step_variables result_step_variables
+                             _branch target_witness epsilon_witness)
 	                      id variables parent_step_variables result_step_variables
 	                      source_formula subst result result_checked_prop parent_proof
 	                      result_proof continuation_body target_prop
@@ -22227,10 +22402,41 @@ let elaborate_preprocess_refutation_native
                ?skolem_proof_object
                ~split_replacements
                ~initial_fallback_replacements:!skolem_witness_replacements
+               ~register_branch_witness_replacement:
+                 (fun _branch target_witness epsilon_witness ->
+                    register_cps_branch_witness_replacement
+                      id parent_step_variables result_step_variables
+                      _branch target_witness epsilon_witness)
                id variables parent_step_variables result_step_variables
                source_formula subst result result_checked_prop parent_proof
                result_proof current native_core_false
            in
+           let staged_branch_replacements_for_entry =
+             !staged_skolem_branch_witness_replacements
+             |> List.filter (fun (entry_id, _, _) -> entry_id = id)
+           in
+           List.iter
+             (fun (_entry_id, replacement_names, closed_witness) ->
+                if native_core_pf_contains_exact_term closed_witness candidate then begin
+                  if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+                    prerr_endline
+                      (id
+                       ^ ": native preprocess Skolem CPS promoted exact branch witness replacements "
+                       ^ String.concat "," replacement_names);
+                  List.iter
+                    (fun replacement_name ->
+                       skolem_witness_replacements :=
+                         (replacement_name, closed_witness)
+                         :: List.remove_assoc
+                              replacement_name
+                              !skolem_witness_replacements)
+                    replacement_names
+                end else if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+                  prerr_endline
+                    (id
+                     ^ ": native preprocess Skolem CPS did not promote non-exact branch witness replacements "
+                     ^ String.concat "," replacement_names))
+             staged_branch_replacements_for_entry;
            let fail_fast_skolem_cps () =
              Sys.getenv_opt "MEGALODON_CERT_FAIL_FAST_SKOLEM_CPS" = Some "1"
            in
@@ -22288,13 +22494,19 @@ let elaborate_preprocess_refutation_native
                                |> List.filter
                                     (fun symbol -> tm_contains_symbol symbol witness)
                              in
-                             if native_core_pf_contains_exact_term witness candidate
-                                || (witness_choice_symbols <> []
-                                    && native_core_pf_contains_term_symbol
-                                         witness_choice_symbols candidate) then
-                               Some name
-                             else
-                               None)
+                             let exact =
+                               native_core_pf_contains_exact_term witness candidate
+                             in
+                             let choice_symbol =
+                               witness_choice_symbols <> []
+                               && native_core_pf_contains_term_symbol
+                                    witness_choice_symbols candidate
+                             in
+                             if exact then
+                               Some (name ^ ":exact")
+                             else if choice_symbol then
+                               Some (name ^ ":choice-symbol-only")
+                             else None)
                      |> List.sort_uniq String.compare
                    in
                    begin match matching_registered_witnesses with
