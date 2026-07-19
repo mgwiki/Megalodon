@@ -3491,6 +3491,53 @@ let vampire_guided_negated_conjecture_reconstruction
       apply_prefix proof proposition binding local_prefix
     end;
   let rec try_state depth preferred_locals proof proposition binding =
+    let try_quantified matched_target_terms =
+      if depth <= 0 then None
+      else
+        begin match proposition with
+        | All (tp, body) ->
+            let terms =
+              match tp with
+              | Prop ->
+                  vampire_ordered_unique
+                    (preferred_locals
+                     @ matched_target_terms
+                     @ [TmH (!fal); vampire_native_core_false_tm; claimtm])
+              | _ -> vampire_ordered_context_terms_of_type cxtm tp
+            in
+            let rec try_terms = function
+              | [] -> None
+              | tm :: rest ->
+                  let next_binding = vampire_instantiate_source_binding binding tm in
+                  let next_preferred_locals =
+                    match tp with
+                    | Prop -> remove_term tm preferred_locals
+                    | _ -> preferred_locals
+                  in
+                  if debug then
+                    begin
+                      Printf.printf
+                        "Vampire native guided negated-conjecture instantiating depth %d with %s.\n"
+                        depth
+                        (tm_to_str tm);
+                      flush stdout
+                    end;
+                  begin match
+                    try_state
+                      (depth - 1)
+                      next_preferred_locals
+                      (PTmAp (proof, tm))
+                      (tmsubst body 0 tm)
+                      next_binding
+                  with
+                  | Some _ as result -> result
+                  | None -> try_terms rest
+                  end
+            in
+            try_terms terms
+        | _ -> None
+        end
+    in
     begin match vampire_negated_conjecture_target binding with
     | Some source_target
         when target_matches_goal source_target
@@ -3522,61 +3569,10 @@ let vampire_guided_negated_conjecture_reconstruction
             proposition
         with
         | Some _ as result -> result
-        | None -> None
+        | None -> try_quantified [source_target; claimtm]
         end
     | _ ->
-        if depth <= 0 then None
-        else
-          begin match proposition with
-          | All (tp, body) ->
-              let terms =
-                match tp with
-                | Prop ->
-                    let matched_target_terms =
-                      match vampire_negated_conjecture_target binding with
-                      | Some source_target when target_matches_goal source_target ->
-                          [source_target; claimtm]
-                      | None -> []
-                      | Some _ -> []
-                    in
-                    vampire_ordered_unique
-                      (preferred_locals
-                       @ matched_target_terms
-                       @ [TmH (!fal); vampire_native_core_false_tm; claimtm])
-                | _ -> vampire_ordered_context_terms_of_type cxtm tp
-              in
-              let rec try_terms = function
-                | [] -> None
-                | tm :: rest ->
-                    let next_binding = vampire_instantiate_source_binding binding tm in
-                    let next_preferred_locals =
-                      match tp with
-                      | Prop -> remove_term tm preferred_locals
-                      | _ -> preferred_locals
-                    in
-                    if debug then
-                      begin
-                        Printf.printf
-                          "Vampire native guided negated-conjecture instantiating depth %d with %s.\n"
-                          depth
-                          (tm_to_str tm);
-                        flush stdout
-                      end;
-                    begin match
-                      try_state
-                        (depth - 1)
-                        next_preferred_locals
-                        (PTmAp (proof, tm))
-                        (tmsubst body 0 tm)
-                        next_binding
-                    with
-                    | Some _ as result -> result
-                    | None -> try_terms rest
-                    end
-              in
-              try_terms terms
-          | _ -> None
-          end
+        try_quantified []
     end
   in
   try_state 8 local_prefix proof proposition binding
