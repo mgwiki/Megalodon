@@ -21064,7 +21064,7 @@ let elaborate_preprocess_refutation_native
                (id ^ ": native preprocess Skolem CPS skipped: " ^ Printexc.to_string exn);
            current)
       proof
-      !skolem_cps_entries
+      (List.rev !skolem_cps_entries)
   in
   let proof =
     let split_replacements =
