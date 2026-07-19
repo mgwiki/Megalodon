@@ -8516,6 +8516,28 @@ let native_core_ident s =
 let native_core_ident_opt s =
   try Some (native_core_ident s) with Error _ -> None
 
+let native_core_symbol_name_aliases name =
+  let add candidate names =
+    if candidate = "" || List.mem candidate names then names
+    else candidate :: names
+  in
+  let add_hash candidate names =
+    if candidate = "" || candidate.[0] = '#' then names
+    else add ("#" ^ candidate) names
+  in
+  let names =
+    []
+    |> add name
+    |> add_hash name
+  in
+  match native_core_ident_opt name with
+  | Some ident ->
+      names
+      |> add ident
+      |> add_hash ident
+      |> List.rev
+  | None -> List.rev names
+
 let native_core_generated_skolem_symbols cert =
   let step_symbols =
     cert.steps
@@ -19383,7 +19405,9 @@ let elaborate_core_resolution_refutation_native
                 begin match native_core_ident_opt raw_name with
                 | Some name when List.mem name introduced_names ->
                     let replacement_names =
-                      List.sort_uniq String.compare [raw_name; name]
+                      native_core_symbol_name_aliases raw_name
+                      @ native_core_symbol_name_aliases name
+                      |> List.sort_uniq String.compare
                     in
                     let closed_witness =
                       native_core_close_tm variables epsilon_witness
@@ -20753,7 +20777,9 @@ let elaborate_preprocess_refutation_native
                 begin match native_core_ident_opt raw_name with
                 | Some name when List.mem name introduced_names ->
                     let replacement_names =
-                      List.sort_uniq String.compare [raw_name; name]
+                      native_core_symbol_name_aliases raw_name
+                      @ native_core_symbol_name_aliases name
+                      |> List.sort_uniq String.compare
                     in
                     let closed_witness =
                       native_core_close_tm variables epsilon_witness
