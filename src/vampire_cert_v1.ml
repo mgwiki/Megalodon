@@ -16575,7 +16575,7 @@ let native_core_skolem_refutation_cps_proof
 	      (result_prop,
 	       PPfAp (shifted_result_to_target, bound_result_proof))
 	  in
-  let rec eliminate term_depth proof_depth term_replacements replacements fallback_replacements witnesses source result proof result_to_target_builder =
+  let rec eliminate term_depth proof_depth target_prop term_replacements replacements fallback_replacements witnesses source result proof result_to_target_builder =
     debug_skolem_branch_candidates
       "enter"
       term_depth
@@ -16602,19 +16602,41 @@ let native_core_skolem_refutation_cps_proof
             (fun (name, tm) -> (name, tmshift 0 1 tm))
             fallback_replacements
         in
-        TLam
-          (source_tp,
-           eliminate
-             (term_depth + 1)
-             proof_depth
-             shifted_term_replacements
-             shifted_replacements
-             shifted_fallback_replacements
-             witnesses
-             source_body
-             result_body
-             (PTmAp (pftmshift 0 1 proof, DB 0))
-             result_to_target_builder)
+        let body_result_to_target_builder term_depth proof_depth term_replacements replacements fallback_replacements =
+          let result_body_prop =
+            formula_prop_with_replacements
+              ~close_depth:term_depth
+              ~fallback_replacements
+              replacements
+              result_body
+            |> native_core_replace_terms_in_tm term_replacements
+          in
+          PLam (result_body_prop, Hyp 0)
+        in
+        let result_body_proof =
+          eliminate
+            (term_depth + 1)
+            proof_depth
+            (formula_prop_with_replacements
+               ~close_depth:(term_depth + 1)
+               ~fallback_replacements:shifted_fallback_replacements
+               shifted_replacements
+               result_body)
+            shifted_term_replacements
+            shifted_replacements
+            shifted_fallback_replacements
+            witnesses
+            source_body
+            result_body
+            (PTmAp (pftmshift 0 1 proof, DB 0))
+            body_result_to_target_builder
+        in
+        let result_proof = TLam (source_tp, result_body_proof) in
+        PPfAp
+          (result_to_target_builder
+             term_depth proof_depth
+             term_replacements replacements fallback_replacements,
+           result_proof)
     | Ap (TmH "vampire_exists_prop", Lam (tp, body)), _, witness :: rest ->
         debug_skolem_branch_candidates
           ("exists " ^ witness)
@@ -16677,12 +16699,20 @@ let native_core_skolem_refutation_cps_proof
         let term_replacements_under_binder =
           (epsilon_witness, DB 0) :: term_replacements_under_binder
         in
+        let target_prop =
+          target_prop
+          |> native_core_replace_witness_symbols_in_tm
+               (replacements_under_binder @ fallback_replacements_under_binder)
+          |> native_core_replace_terms_in_tm term_replacements_under_binder
+          |> tm_beta_eta_norm
+        in
         let continuation_body =
           eliminate
             (term_depth + 1)
-            (proof_depth + 1)
-            term_replacements_under_binder
-            replacements_under_binder
+              (proof_depth + 1)
+              (tmshift 0 1 target_prop)
+              term_replacements_under_binder
+              replacements_under_binder
             fallback_replacements_under_binder
             rest
             body
@@ -16795,10 +16825,11 @@ let native_core_skolem_refutation_cps_proof
                  if delayed_shift = 0 then result_right
                  else tmshift 0 delayed_shift result_right
                in
-               eliminate
-                 term_depth
-                 (proof_depth + 1)
-                 term_replacements
+	               eliminate
+	                 term_depth
+	                 (proof_depth + 1)
+                   target_prop
+	                 term_replacements
                  replacements
                  fallback_replacements
                  right_witnesses
@@ -16807,10 +16838,11 @@ let native_core_skolem_refutation_cps_proof
                  right_source_proof
                  right_result_to_target_builder)
           in
-          eliminate
-            term_depth
-            proof_depth
-            term_replacements
+	          eliminate
+	            term_depth
+	            proof_depth
+              target_prop
+	            term_replacements
             replacements
             fallback_replacements
             left_witnesses
@@ -16884,6 +16916,7 @@ let native_core_skolem_refutation_cps_proof
 		          eliminate
 		            term_depth
 		            proof_depth
+                target_prop
 	            term_replacements
 	            replacements
 	            fallback_replacements
@@ -16955,9 +16988,10 @@ let native_core_skolem_refutation_cps_proof
 		                    term_replacements replacements fallback_replacements,
 		                  rebuilt))
 		          in
-		          eliminate
-		            term_depth
-		            proof_depth
+	          eliminate
+	            term_depth
+	            proof_depth
+              target_prop
 	            term_replacements
 	            replacements
 	            fallback_replacements
@@ -17042,6 +17076,7 @@ let native_core_skolem_refutation_cps_proof
 	               eliminate
 	                 term_depth
 	                 (proof_depth + 1)
+                   branch_target
 	                 term_replacements
 	                 replacements
 	                 fallback_replacements
@@ -17102,6 +17137,7 @@ let native_core_skolem_refutation_cps_proof
 	               eliminate
 	                 term_depth
 	                 (proof_depth + 1)
+                   branch_target
 	                 term_replacements
 	                 replacements
 	                 fallback_replacements
@@ -17369,7 +17405,7 @@ let native_core_skolem_refutation_cps_proof
         PPfAp
           (result_to_target_proof, result_checked_proof)
   in
-	  eliminate 0 0 [] [] [] witness_symbols source result parent_proof result_to_target_builder
+	  eliminate 0 0 target_prop [] [] [] witness_symbols source result parent_proof result_to_target_builder
 
 let native_core_truth_conflict_false_proof id literal proof =
   let is_true = function
