@@ -964,10 +964,13 @@ let vampire_expand_returned_proof ?extra_delta cxtm source_map proof =
         (fun h v ->
            if not (Hashtbl.mem sigdelta h) then Hashtbl.replace merged_delta h v)
         (Vampire_cert_v1.approved_native_sgdelta ());
-      Hashtbl.iter
-        (fun h v -> Hashtbl.replace merged_delta h v)
-        extra_delta;
+      vampire_merge_reconstruction_delta merged_delta extra_delta;
       base_expander (vampire_extra_delta_expander merged_delta proof)
+
+let vampire_expand_returned_tm ?extra_delta cxtm source_map tm =
+  match vampire_expand_returned_proof ?extra_delta cxtm source_map (PLam (tm, Hyp 0)) with
+  | PLam (expanded, _) -> expanded
+  | _ -> tm
 
 let vampire_certificate_only_symbol_in_tm live_symbols extra_symbols tm =
   let rec tm_symbol = function
@@ -991,12 +994,67 @@ let vampire_certificate_only_symbol_in_tm live_symbols extra_symbols tm =
 
 let vampire_live_safe_extra_delta live_symbols extra_symbols extra_delta =
   let filtered = Hashtbl.create (Hashtbl.length extra_delta) in
-  Hashtbl.iter
-    (fun name (arity, body) ->
-       match vampire_certificate_only_symbol_in_tm live_symbols extra_symbols body with
-       | Some _ -> ()
-       | None -> Hashtbl.replace filtered name (arity, body))
-    extra_delta;
+  let debug = Sys.getenv_opt "MEGALODON_CERT_DEBUG_LIVE_SAFE_DELTA" = Some "1" in
+  let add_filtered_definition name arity body =
+    Hashtbl.replace filtered name (arity, body)
+  in
+  let rec unsafe_symbol_in_tm = function
+    | TmH name
+        when Hashtbl.mem extra_symbols name
+             && not (Hashtbl.mem live_symbols name)
+             && not (Hashtbl.mem filtered name) ->
+        Some name
+    | TmH _ | DB _ | Prim _ -> None
+    | TpAp (body, _) -> unsafe_symbol_in_tm body
+    | Ap (left, right) ->
+        begin match unsafe_symbol_in_tm left with
+        | Some _ as result -> result
+        | None -> unsafe_symbol_in_tm right
+        end
+    | Lam (_, body) | All (_, body) -> unsafe_symbol_in_tm body
+    | Imp (left, right) ->
+        begin match unsafe_symbol_in_tm left with
+        | Some _ as result -> result
+        | None -> unsafe_symbol_in_tm right
+        end
+  in
+  let changed = ref true in
+  while !changed do
+    changed := false;
+    Hashtbl.iter
+      (fun name (arity, body) ->
+         if not (Hashtbl.mem filtered name) then
+           match unsafe_symbol_in_tm body with
+           | Some _ -> ()
+           | None ->
+               if debug then
+                 begin
+                   Printf.printf
+                     "Vampire native live-safe delta kept %s: %s\n"
+                     name
+                     (tm_to_str body);
+                   flush stdout
+                 end;
+               add_filtered_definition name arity body;
+               changed := true)
+      extra_delta
+  done;
+  if debug then
+    begin
+      Hashtbl.iter
+        (fun name (_, body) ->
+           if not (Hashtbl.mem filtered name) then
+             match unsafe_symbol_in_tm body with
+             | Some symbol ->
+                 Printf.printf
+                   "Vampire native live-safe delta skipped %s because body contains certificate-only symbol %s: %s\n"
+                   name
+                   symbol
+                   (tm_to_str body)
+             | None -> ())
+        extra_delta;
+      flush stdout
+    end;
   filtered
 
 let vampire_certificate_only_symbol_in_proof live_symbols extra_delta extra_symbols proof =
@@ -1285,6 +1343,38 @@ let vampire_core_source_proofs source_audit =
        | _ -> true)
     source_audit.Vampire_source_context.source_proofs
 
+let vampire_source_context_variable_names cxtm =
+  let rec collect index = function
+    | [] -> []
+    | (_, (_, Some _)) :: rest -> collect index rest
+    | (name, (_, None)) :: rest ->
+        (index, name) :: collect (index + 1) rest
+  in
+  collect 0 cxtm
+
+let vampire_reify_source_context_variables cxtm tm =
+  let source_variables = vampire_source_context_variable_names cxtm in
+  let rec lookup index = function
+    | [] -> None
+    | (source_index, name) :: rest ->
+        if source_index = index then Some name else lookup index rest
+  in
+  let rec reify depth = function
+    | DB index when index >= depth ->
+        begin match lookup (index - depth) source_variables with
+        | Some name -> TmH name
+        | None -> DB index
+        end
+    | DB _ as tm -> tm
+    | TmH _ | Prim _ as tm -> tm
+    | TpAp (body, tp) -> TpAp (reify depth body, tp)
+    | Ap (left, right) -> Ap (reify depth left, reify depth right)
+    | Lam (tp, body) -> Lam (tp, reify (depth + 1) body)
+    | Imp (left, right) -> Imp (reify depth left, reify depth right)
+    | All (tp, body) -> All (tp, reify (depth + 1) body)
+  in
+  reify 0 tm
+
 let vampire_core_external_hypotheses cert cxtm source_map source_audit cxpf =
   let native_source_bindings =
     Vampire_cert_v1.native_certificate_source_bindings_native_context
@@ -1302,19 +1392,25 @@ let vampire_core_external_hypotheses cert cxtm source_map source_audit cxpf =
     | Some binding -> binding.Vampire_cert_v1.core_native_source_proposition
     | None -> fallback
   in
-  let external_hypotheses = Array.of_list (List.map snd cxpf) in
+  let source_context_proposition proposition =
+    vampire_reify_source_context_variables cxtm proposition
+  in
+  let external_hypotheses =
+    Array.of_list (List.map (fun (_, proposition) -> source_context_proposition proposition) cxpf)
+  in
   List.iter
     (fun (step, source_proof) ->
        match source_proof with
        | Vampire_source_context.LocalHyp (index, proposition)
            when index >= 0 && index < Array.length external_hypotheses ->
-           let proposition =
-             native_source_proposition step proposition
-           in
-           if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
-             prerr_endline
-               ("Vampire native source external local hypothesis "
-                ^ step
+          let proposition =
+            native_source_proposition step proposition
+            |> source_context_proposition
+          in
+          if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+            prerr_endline
+              ("Vampire native source external local hypothesis "
+               ^ step
                 ^ " -> __"
                 ^ string_of_int index
                 ^ " : "
@@ -1618,6 +1714,67 @@ let vampire_debug_bad_proof_application proof_delta symbol_table cx hyps proof =
     if String.length text <= 500 then text
     else String.sub text 0 500 ^ "..."
   in
+  let tm_symbols tm =
+    let seen = Hashtbl.create 17 in
+    let rec collect = function
+      | TmH name ->
+          if not (Hashtbl.mem seen name) then Hashtbl.add seen name ()
+      | TpAp (body, _) -> collect body
+      | Ap (left, right) ->
+          collect left;
+          collect right
+      | Lam (_, body) | All (_, body) -> collect body
+      | Imp (left, right) ->
+          collect left;
+          collect right
+      | DB _ | Prim _ -> ()
+    in
+    collect tm;
+    Hashtbl.fold (fun name () acc -> name :: acc) seen []
+    |> List.sort String.compare
+  in
+  let delta_note expected actual dl =
+    let names = tm_symbols expected @ tm_symbols actual |> List.sort_uniq String.compare in
+    let names =
+      if List.length names > 16 then
+        let rec take n = function
+          | _ when n = 0 -> []
+          | [] -> []
+          | x :: xs -> x :: take (n - 1) xs
+        in
+        take 16 names @ ["..."]
+      else
+        names
+    in
+    let name_notes =
+      List.map
+        (fun name ->
+           name
+           ^ ":delta="
+           ^ (if Hashtbl.mem proof_delta name then "yes" else "no")
+           ^ ",symbol="
+           ^ (if Hashtbl.mem symbol_table name then "yes" else "no"))
+        names
+      |> String.concat "; "
+    in
+    let conv0 =
+      match conv expected actual proof_delta [] with
+      | Some _ -> "yes"
+      | None -> "no"
+    in
+    let convdl =
+      match conv expected actual proof_delta dl with
+      | Some _ -> "yes"
+      | None -> "no"
+    in
+    "; conv0="
+    ^ conv0
+    ^ "; convdl="
+    ^ convdl
+    ^ "; symbols=["
+    ^ name_notes
+    ^ "]"
+  in
   let rec find path cxtm cxpf proof =
     match proof with
     | PPfAp (left, right) ->
@@ -1629,28 +1786,31 @@ let vampire_debug_bad_proof_application proof_delta symbol_table cx hyps proof =
             | None ->
                 begin
                   try
-                    let left_prop, _ =
+                    let left_prop, dl1 =
                       extr_propofpf proof_delta symbol_table cxtm cxpf left []
                     in
                     match tm_beta_eta_norm left_prop with
                     | Imp (expected, _) ->
                         begin
                           try
-                            let right_prop, _ =
-                              extr_propofpf proof_delta symbol_table cxtm cxpf right []
+                            let right_prop, dl2 =
+                              extr_propofpf proof_delta symbol_table cxtm cxpf right dl1
                             in
-                            if tm_beta_eta_norm expected <> tm_beta_eta_norm right_prop then
-                              Some
-                                (path
-                                 ^ ": implication argument mismatch; expected "
-                                 ^ short_tm expected
-                                 ^ "; actual "
-                                 ^ short_tm right_prop
-                                 ^ "; left proof "
-                                 ^ short_pf left
-                                 ^ "; right proof "
-                                 ^ short_pf right)
-                            else None
+                            begin match conv expected right_prop proof_delta dl2 with
+                            | Some _ -> None
+                            | None ->
+                                Some
+                                  (path
+                                   ^ ": implication argument mismatch; expected "
+                                   ^ short_tm expected
+                                   ^ "; actual "
+                                   ^ short_tm right_prop
+                                   ^ "; left proof "
+                                   ^ short_pf left
+                                   ^ "; right proof "
+                                   ^ short_pf right
+                                   ^ delta_note expected right_prop dl2)
+                            end
                           with exn ->
                             Some
                               (path
@@ -1773,10 +1933,7 @@ let vampire_check_current_goal_proof ?source_map ?extra_delta ?extra_symbols cla
   begin match extra_delta with
   | None -> ()
   | Some extra_delta ->
-      Hashtbl.iter
-        (fun h v ->
-           Hashtbl.replace proof_delta h v)
-        extra_delta
+      vampire_merge_reconstruction_delta proof_delta extra_delta
   end;
   let symbol_table =
     match source_map with
@@ -1792,12 +1949,21 @@ let vampire_check_current_goal_proof ?source_map ?extra_delta ?extra_symbols cla
         extra_symbols
   end;
   let live_delta = vampire_source_context_delta_with_locals cxtm in
-  let live_symbol_table = Hashtbl.copy sigtmof in
+  let live_symbol_table =
+    match source_map with
+    | None -> Hashtbl.copy sigtmof
+    | Some source_map -> vampire_source_context_symbol_table_with_source_map source_map
+  in
   let empty_extra_delta = Hashtbl.create 1 in
   let certificate_delta =
     match extra_delta with
     | Some extra_delta -> extra_delta
     | None -> empty_extra_delta
+  in
+  let certificate_hyps =
+    List.map
+      (vampire_expand_returned_tm ?extra_delta cxtm source_map)
+      hyps
   in
   let live_extra_delta =
     match extra_delta, extra_symbols with
@@ -1808,6 +1974,11 @@ let vampire_check_current_goal_proof ?source_map ?extra_delta ?extra_symbols cla
   in
   let proof_expander =
     vampire_expand_returned_proof ?extra_delta:live_extra_delta cxtm source_map
+  in
+  let live_hyps =
+    List.map
+      (vampire_expand_returned_tm ?extra_delta:live_extra_delta cxtm source_map)
+      hyps
   in
   let live_check proof =
     try
@@ -1823,7 +1994,7 @@ let vampire_check_current_goal_proof ?source_map ?extra_delta ?extra_symbols cla
           | Some _ -> None
           | None ->
               let (actual, dl) =
-                extr_propofpf live_delta live_symbol_table cx hyps proof []
+                extr_propofpf live_delta live_symbol_table cx live_hyps proof []
               in
               begin match
                 vampire_certificate_only_symbol_in_tm
@@ -1835,7 +2006,7 @@ let vampire_check_current_goal_proof ?source_map ?extra_delta ?extra_symbols cla
               | None ->
               begin match conv actual claimtm live_delta dl with
               | Some _ ->
-                  begin match check_propofpf live_delta live_symbol_table cx hyps proof claimtm [] with
+                  begin match check_propofpf live_delta live_symbol_table cx live_hyps proof claimtm [] with
                   | Some _ -> Some proof
                   | None -> None
                   end
@@ -1844,15 +2015,15 @@ let vampire_check_current_goal_proof ?source_map ?extra_delta ?extra_symbols cla
               end
           end
       | None ->
-          let (actual, dl) =
-            extr_propofpf live_delta live_symbol_table cx hyps proof []
-          in
-          match conv actual claimtm live_delta dl with
-          | Some _ ->
-              begin match check_propofpf live_delta live_symbol_table cx hyps proof claimtm [] with
-              | Some _ -> Some proof
-              | None -> None
-              end
+        let (actual, dl) =
+          extr_propofpf live_delta live_symbol_table cx live_hyps proof []
+        in
+        match conv actual claimtm live_delta dl with
+        | Some _ ->
+            begin match check_propofpf live_delta live_symbol_table cx live_hyps proof claimtm [] with
+            | Some _ -> Some proof
+            | None -> None
+            end
           | None -> None
       end
     with _ -> None
@@ -1862,7 +2033,7 @@ let vampire_check_current_goal_proof ?source_map ?extra_delta ?extra_symbols cla
     | [] -> None
     | proof_for_check :: rest ->
         try
-          let (actual,dl) = extr_propofpf proof_delta symbol_table cx hyps proof_for_check [] in
+          let (actual,dl) = extr_propofpf proof_delta symbol_table cx certificate_hyps proof_for_check [] in
           match conv actual claimtm proof_delta dl with
           | Some _ ->
               let expanded_variants =
@@ -1887,7 +2058,7 @@ let vampire_check_current_goal_proof ?source_map ?extra_delta ?extra_symbols cla
                         live_delta
                         live_symbol_table
                         cx
-                        hyps
+                        live_hyps
                         claimtm
                         expanded_variants;
                       begin match extra_symbols with
@@ -1909,7 +2080,7 @@ let vampire_check_current_goal_proof ?source_map ?extra_delta ?extra_symbols cla
                       end;
                       begin match
                         vampire_debug_bad_proof_application
-                          live_delta live_symbol_table cx hyps expanded
+                          live_delta live_symbol_table cx live_hyps expanded
                       with
                       | Some detail ->
                           Printf.printf
@@ -1942,9 +2113,9 @@ let vampire_check_current_goal_proof ?source_map ?extra_delta ?extra_symbols cla
                   !lineno
                   !charno
                   msg;
-                begin match
-                  vampire_debug_bad_proof_application
-                    proof_delta symbol_table cx hyps proof_for_check
+                  begin match
+                    vampire_debug_bad_proof_application
+                    proof_delta symbol_table cx certificate_hyps proof_for_check
                 with
                 | Some detail ->
                     Printf.printf
@@ -1985,10 +2156,7 @@ let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxp
   begin match extra_delta with
   | None -> ()
   | Some extra_delta ->
-      Hashtbl.iter
-        (fun h v ->
-           Hashtbl.replace proof_delta h v)
-        extra_delta
+      vampire_merge_reconstruction_delta proof_delta extra_delta
   end;
   let symbol_table =
     match source_map with
@@ -2004,12 +2172,21 @@ let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxp
         extra_symbols
   end;
   let live_delta = vampire_source_context_delta_with_locals cxtm in
-  let live_symbol_table = Hashtbl.copy sigtmof in
+  let live_symbol_table =
+    match source_map with
+    | None -> Hashtbl.copy sigtmof
+    | Some source_map -> vampire_source_context_symbol_table_with_source_map source_map
+  in
   let empty_extra_delta = Hashtbl.create 1 in
   let certificate_delta =
     match extra_delta with
     | Some extra_delta -> extra_delta
     | None -> empty_extra_delta
+  in
+  let certificate_hyps =
+    List.map
+      (vampire_expand_returned_tm ?extra_delta cxtm source_map)
+      hyps
   in
   let live_extra_delta =
     match extra_delta, extra_symbols with
@@ -2020,6 +2197,11 @@ let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxp
   in
   let proof_expander =
     vampire_expand_returned_proof ?extra_delta:live_extra_delta cxtm source_map
+  in
+  let live_hyps =
+    List.map
+      (vampire_expand_returned_tm ?extra_delta:live_extra_delta cxtm source_map)
+      hyps
   in
   let live_check expanded =
     match extra_symbols with
@@ -2036,7 +2218,7 @@ let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxp
         | None ->
             try
               let (actual, dl) =
-                extr_propofpf live_delta live_symbol_table cx hyps expanded []
+                extr_propofpf live_delta live_symbol_table cx live_hyps expanded []
               in
               begin match
                 vampire_certificate_only_symbol_in_tm
@@ -2048,7 +2230,7 @@ let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxp
               | None ->
                   begin match conv actual expected live_delta dl with
                   | Some _ ->
-                      begin match check_propofpf live_delta live_symbol_table cx hyps expanded expected [] with
+                      begin match check_propofpf live_delta live_symbol_table cx live_hyps expanded expected [] with
                       | Some _ -> Some expanded
                       | None -> None
                       end
@@ -2063,7 +2245,7 @@ let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxp
     | [] -> None
     | proof_for_check :: rest ->
         try
-          let (actual,dl) = extr_propofpf proof_delta symbol_table cx hyps proof_for_check [] in
+          let (actual,dl) = extr_propofpf proof_delta symbol_table cx certificate_hyps proof_for_check [] in
           match conv actual expected proof_delta dl with
           | Some _ ->
               let expanded_variants =
@@ -2088,7 +2270,7 @@ let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxp
                         live_delta
                         live_symbol_table
                         cx
-                        hyps
+                        live_hyps
                         expected
                         expanded_variants;
                       begin match extra_symbols with
@@ -2110,7 +2292,7 @@ let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxp
                       end;
                       begin match
                         vampire_debug_bad_proof_application
-                          live_delta live_symbol_table cx hyps expanded
+                          live_delta live_symbol_table cx live_hyps expanded
                       with
                       | Some detail ->
                           Printf.printf
@@ -2145,7 +2327,7 @@ let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxp
                   msg;
                 begin match
                   vampire_debug_bad_proof_application
-                    proof_delta symbol_table cx hyps proof_for_check
+                    proof_delta symbol_table cx certificate_hyps proof_for_check
                 with
                 | Some detail ->
                     Printf.printf
@@ -2186,10 +2368,7 @@ let vampire_actual_prop_of_proof ?source_map ?extra_delta ?extra_symbols cxtm cx
   begin match extra_delta with
   | None -> ()
   | Some extra_delta ->
-      Hashtbl.iter
-        (fun h v ->
-           Hashtbl.replace proof_delta h v)
-        extra_delta
+      vampire_merge_reconstruction_delta proof_delta extra_delta
   end;
   let symbol_table =
     match source_map with
@@ -2204,6 +2383,11 @@ let vampire_actual_prop_of_proof ?source_map ?extra_delta ?extra_symbols cxtm cx
            if not (Hashtbl.mem symbol_table h) then Hashtbl.add symbol_table h v)
         extra_symbols
   end;
+  let hyps =
+    List.map
+      (vampire_expand_returned_tm ?extra_delta cxtm source_map)
+      hyps
+  in
   let rec try_variants = function
     | [] -> None
     | proof_for_check :: rest ->
@@ -2394,9 +2578,7 @@ let vampire_xm_cps_elim_to ?source_map ?extra_delta ?extra_symbols target cxtm c
   begin match extra_delta with
   | None -> ()
   | Some extra_delta ->
-      Hashtbl.iter
-        (fun h v -> Hashtbl.replace proof_delta h v)
-        extra_delta
+      vampire_merge_reconstruction_delta proof_delta extra_delta
   end;
   match vampire_cps_target proposition with
   | Some cps_target ->
@@ -2457,9 +2639,7 @@ let vampire_xm_native_refutation_elim_to
   begin match extra_delta with
   | None -> ()
   | Some extra_delta ->
-      Hashtbl.iter
-        (fun h v -> Hashtbl.replace proof_delta h v)
-        extra_delta
+      vampire_merge_reconstruction_delta proof_delta extra_delta
   end;
   let convertible left right =
     match conv left right proof_delta [] with
