@@ -16646,23 +16646,33 @@ let native_core_skolem_refutation_cps_proof
         let term_replacements_under_binder =
           (epsilon_witness, DB 0) :: term_replacements_under_binder
         in
+        let continuation_body =
+          eliminate
+            (term_depth + 1)
+            (proof_depth + 1)
+            term_replacements_under_binder
+            replacements_under_binder
+            fallback_replacements_under_binder
+            rest
+            body
+            (tmshift 0 1 result)
+            (Hyp 0)
+            result_to_target_builder
+          |> proof_with_replacements
+               term_replacements_under_binder
+               replacements_under_binder
+               fallback_replacements_under_binder
+        in
         let continuation =
           TLam
             (tp,
-	             PLam
-	               (body_prop,
-	                eliminate
-	                  (term_depth + 1)
-	                  (proof_depth + 1)
-	                  term_replacements_under_binder
-	                  replacements_under_binder
-	                  fallback_replacements_under_binder
-                  rest
-	                  body
-	                  (tmshift 0 1 result)
-	                  (Hyp 0)
-	                  result_to_target_builder))
-	        in
+		             PLam
+		               (body_prop,
+		                continuation_body))
+		        in
+        debug_witness_pf ("exists-source-proof " ^ witness) proof;
+        debug_witness_tm ("exists-target-prop " ^ witness) target_prop;
+        debug_witness_pf ("exists-continuation-only " ^ witness) continuation;
 	        let candidate = PPfAp (PTmAp (proof, target_prop), continuation) in
 	        debug_witness_pf ("exists-continuation " ^ witness) candidate;
 	        candidate
@@ -21029,11 +21039,11 @@ let elaborate_preprocess_refutation_native
          try
            let introduced_witness_symbols =
              subst
-             |> List.map
-                  (function
-                    | _, TmH symbol -> symbol
-                    | _ -> "")
-             |> List.filter (fun symbol -> symbol <> "")
+             |> List.filter_map
+                  (fun (_, witness) ->
+                     match native_core_flatten_value_application witness with
+                     | TmH symbol, _ -> Some symbol
+                     | _ -> None)
            in
            let split_replacements =
              avatar_definition_table
@@ -21157,7 +21167,7 @@ let elaborate_preprocess_refutation_native
                (id ^ ": native preprocess Skolem CPS skipped: " ^ Printexc.to_string exn);
            current)
       proof
-      (List.rev !skolem_cps_entries)
+      !skolem_cps_entries
   in
   let proof =
     let split_replacements =
