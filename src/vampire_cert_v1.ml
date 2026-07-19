@@ -9366,6 +9366,9 @@ let native_core_kernel_v1_skolem_branch_contract cert id index prefix =
                        "_predicate";
                    skolem_branch_choice_body =
                      required_tm "_body";
+                   skolem_branch_choice_witness_term =
+                     native_core_kernel_v1_tm_field
+                       cert id (choice_prefix ^ "_witness_term");
                  })
       in
       let normalized_branch_formula tm =
@@ -9444,7 +9447,41 @@ let native_core_kernel_v1_skolem_branch_contract cert id index prefix =
              error
                (Printf.sprintf
                   "%s: typed Skolem branch contract %d choice predicate does not match its body"
-                  id index))
+                  id index);
+           begin match
+             choice.Vampire_kernel_syntax.skolem_branch_choice_witness_term
+           with
+           | Some witness_term ->
+               let rec witness_head = function
+                 | Ap (head, _) | TpAp (head, _) -> witness_head head
+                 | head -> head
+               in
+               begin match witness_head witness_term with
+               | TmH head ->
+                   let expected_names =
+                     native_core_symbol_name_aliases
+                       choice.Vampire_kernel_syntax.skolem_branch_choice_symbol
+                   in
+                   let actual_names =
+                     native_core_symbol_name_aliases head
+                   in
+                   if not
+                        (List.exists
+                           (fun actual -> List.mem actual expected_names)
+                           actual_names) then
+                     error
+                       (Printf.sprintf
+                          "%s: typed Skolem branch contract %d choice witness term head does not match symbol %s"
+                          id index
+                          choice.Vampire_kernel_syntax.skolem_branch_choice_symbol)
+               | _ ->
+                   error
+                     (Printf.sprintf
+                        "%s: typed Skolem branch contract %d choice witness term is not headed by a symbol"
+                        id index)
+               end
+           | None -> ()
+           end)
         branch_choices;
       Some
         {
@@ -17271,18 +17308,42 @@ let native_core_skolem_refutation_cps_proof
           matching_single_witness_branch_contract witness source result
         with
         | Some branch ->
+            let branch_choice_witness_term =
+              branch.Vampire_kernel_syntax.skolem_branch_choices
+              |> List.find_map
+                   (fun choice ->
+                      let choice_names =
+                        native_core_symbol_name_aliases
+                          choice.Vampire_kernel_syntax.skolem_branch_choice_symbol
+                      in
+                      let witness_names =
+                        native_core_symbol_name_aliases witness
+                      in
+                      if List.exists
+                           (fun name -> List.mem name choice_names)
+                           witness_names then
+                        choice.Vampire_kernel_syntax.skolem_branch_choice_witness_term
+                      else
+                        None)
+            in
             let target_witness =
-              match List.assoc_opt witness witness_terms with
+              match branch_choice_witness_term with
               | Some witness_term -> witness_term
-              | None -> TmH witness
+              | None ->
+                  match List.assoc_opt witness witness_terms with
+                  | Some witness_term -> witness_term
+                  | None -> TmH witness
             in
             if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
               prerr_endline
                 (Printf.sprintf
-                   "%s: native preprocess Skolem CPS branch contract #%d publishes witness %s"
+                   "%s: native preprocess Skolem CPS branch contract #%d publishes witness %s%s"
                    id
                    branch.Vampire_kernel_syntax.skolem_branch_index
-                   witness);
+                   witness
+                   (match branch_choice_witness_term with
+                    | Some _ -> " using contract witness term"
+                    | None -> ""));
             register_branch_witness_replacement
               branch
               target_witness

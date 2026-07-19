@@ -393,6 +393,7 @@ choice records:
 - `skolem_macro_edge_N_contract_branch_choice_M_type`
 - `skolem_macro_edge_N_contract_branch_choice_M_predicate`
 - `skolem_macro_edge_N_contract_branch_choice_M_body`
+- `skolem_macro_edge_N_contract_branch_choice_M_witness_term` (optional)
 
 The current intended shape is a single direct branch source
 `vampire_exists_prop (fun x => body)`, where `symbol` is the Skolem symbol

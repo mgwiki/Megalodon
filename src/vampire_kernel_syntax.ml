@@ -38,6 +38,7 @@ type skolem_branch_choice = {
   skolem_branch_choice_type : Syntax.tp;
   skolem_branch_choice_predicate : Syntax.tm;
   skolem_branch_choice_body : Syntax.tm;
+  skolem_branch_choice_witness_term : Syntax.tm option;
 }
 
 type skolem_contract = {
