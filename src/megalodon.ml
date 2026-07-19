@@ -720,6 +720,15 @@ let vampire_source_context_delta_with_source_map ?cxtm source_map =
   | Some cxtm -> vampire_source_context_add_local_type_aliases delta cxtm source_map
   | None -> delta
 
+let vampire_merge_reconstruction_delta proof_delta extra_delta =
+  Hashtbl.iter
+    (fun h v ->
+       if not (Hashtbl.mem proof_delta h) then
+         Hashtbl.add proof_delta h v
+       else if not (valid_id_p h) then
+         Hashtbl.replace proof_delta h v)
+    extra_delta
+
 let vampire_parse_thf_type text =
   let len = String.length text in
   let rec skip i =
@@ -2647,10 +2656,7 @@ let vampire_reconstruct_goal_from_proved_prop ?source_map ?extra_delta ?extra_sy
       begin match extra_delta with
       | None -> ()
       | Some extra_delta ->
-          Hashtbl.iter
-            (fun h v ->
-               if not (Hashtbl.mem proof_delta h) then Hashtbl.add proof_delta h v)
-            extra_delta
+          vampire_merge_reconstruction_delta proof_delta extra_delta
       end;
       let proposition_sides = vampire_equality_sides proposition in
       let claim_sides = vampire_equality_sides claimtm in
@@ -3019,10 +3025,7 @@ let vampire_reconstruct_goal_from_supplied_refutation
   begin match extra_delta with
   | None -> ()
   | Some extra_delta ->
-      Hashtbl.iter
-        (fun h v ->
-           if not (Hashtbl.mem proof_delta h) then Hashtbl.add proof_delta h v)
-        extra_delta
+      vampire_merge_reconstruction_delta proof_delta extra_delta
   end;
   match conv source_target claimtm proof_delta [] with
   | None -> None
@@ -3305,10 +3308,7 @@ let vampire_guided_negated_conjecture_reconstruction
   begin match extra_delta with
   | None -> ()
   | Some extra_delta ->
-      Hashtbl.iter
-        (fun h v ->
-           if not (Hashtbl.mem proof_delta h) then Hashtbl.add proof_delta h v)
-        extra_delta
+      vampire_merge_reconstruction_delta proof_delta extra_delta
   end;
   let debug = Sys.getenv_opt "MEGALODON_CERT_DEBUG_GUIDED" = Some "1" in
   let target_matches_goal target =
