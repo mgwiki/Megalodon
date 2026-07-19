@@ -8658,6 +8658,38 @@ let native_core_proof_variables ?(exclude_names=[]) cert =
   if native_core_has_function_definitions cert then []
   else native_core_declared_variables ~exclude_names cert
 
+let native_core_source_local_variables ?(exclude_names=[]) source_map cert =
+  let local_names =
+    source_map
+    |> List.filter_map
+         (fun entry ->
+            if entry.source_map_kind = "local_type" then
+              native_core_ident_opt entry.source_map_source_name
+            else
+              None)
+    |> List.sort_uniq compare
+  in
+  if local_names = [] then
+    []
+  else
+    native_core_declared_variables ~exclude_names cert
+    |> List.filter (fun (name, _) -> List.mem name local_names)
+
+let native_core_proof_variables_for_source
+    ?(exclude_names=[])
+    source_map
+    cert =
+  let variables =
+    native_core_proof_variables ~exclude_names cert
+  in
+  let local_variables =
+    native_core_source_local_variables ~exclude_names source_map cert
+  in
+  if variables = [] then
+    local_variables
+  else
+    List.sort_uniq compare (variables @ local_variables)
+
 let native_core_step_variables cert id =
   let variable_sort_pair sort =
     match String.index_opt sort ':' with
@@ -15406,6 +15438,20 @@ let native_core_replace_witness_symbols_in_pf replacements proof =
   in
   replace_pf 0 proof
 
+let native_core_replace_witness_symbols_in_delta replacements delta =
+  if replacements = [] then
+    delta
+  else
+    let replaced = Hashtbl.create (Hashtbl.length delta) in
+    Hashtbl.iter
+      (fun name (arity, body) ->
+         Hashtbl.replace
+           replaced
+           name
+           (arity, native_core_replace_witness_symbols_in_tm replacements body))
+      delta;
+    replaced
+
 let native_core_replace_terms_in_tm replacements tm =
   let normalize tm =
     tm
@@ -18786,7 +18832,12 @@ let native_certificate_source_bindings
     ?(external_definition_names=[])
     cert =
   ignore (check_certificate_strict cert);
-  let variables = native_core_proof_variables ~exclude_names:external_definition_names cert in
+  let variables =
+    native_core_proof_variables_for_source
+      ~exclude_names:external_definition_names
+      source_map
+      cert
+  in
   let type_from_thf_decl_formula formula =
     try
       let colon = String.index formula ':' in
@@ -18972,7 +19023,12 @@ let native_certificate_source_bindings_native_context
     ?(external_definition_names=[])
     cert =
   ignore (check_certificate_strict cert);
-  let variables = native_core_proof_variables ~exclude_names:external_definition_names cert in
+  let variables =
+    native_core_proof_variables_for_source
+      ~exclude_names:external_definition_names
+      source_map
+      cert
+  in
   let symbol_table = native_core_symbol_table cert in
   let typed_steps =
     List.map
@@ -19050,7 +19106,12 @@ let elaborate_core_resolution_refutation_native
     cert =
   let core_steps = validate_certificate_core_fragment cert in
   ignore (check_certificate_strict cert);
-  let variables = native_core_proof_variables ~exclude_names:external_definition_names cert in
+  let variables =
+    native_core_proof_variables_for_source
+      ~exclude_names:external_definition_names
+      source_map
+      cert
+  in
   let symbol_table = native_core_symbol_table cert in
   let proof_delta, raw_definition_delta = native_core_certificate_sgdelta cert symbol_table in
   let typed_steps =
@@ -19673,7 +19734,12 @@ let elaborate_preprocess_refutation_native
     ?(external_definition_names=[])
     cert =
   ignore (check_certificate_strict cert);
-  let variables = native_core_proof_variables ~exclude_names:external_definition_names cert in
+  let variables =
+    native_core_proof_variables_for_source
+      ~exclude_names:external_definition_names
+      source_map
+      cert
+  in
   let symbol_table = native_core_symbol_table cert in
   begin match external_symbol_table with
   | None -> ()
@@ -22041,12 +22107,17 @@ let elaborate_preprocess_refutation_native
   in
   let closed_prop = native_core_close_tm variables body_prop in
   let closed_proof = native_core_close_pf variables body_proof in
+  let exported_delta =
+    definition_delta
+    |> native_core_replace_witness_symbols_in_delta
+         (!skolem_witness_replacements |> List.sort_uniq compare)
+  in
   {
     core_native_proposition =
       List.fold_right (fun (_, tp) prop -> All (tp, prop)) variables closed_prop;
     core_native_proof =
       List.fold_right (fun (_, tp) proof -> TLam (tp, proof)) variables closed_proof;
-    core_native_delta_table = definition_delta;
+    core_native_delta_table = exported_delta;
     core_native_symbol_table = symbol_table;
     core_native_steps = List.length cert.steps;
     core_native_source_bindings = !source_bindings;
