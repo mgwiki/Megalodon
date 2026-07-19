@@ -3284,6 +3284,10 @@ let vampire_constructive_goal_search
           debug_constructive
           && Sys.getenv_opt "MEGALODON_CERT_DEBUG_CHURCH_AND" = Some "1"
         in
+        let rec add_prop_binders count context =
+          if count <= 0 then context
+          else add_prop_binders (count - 1) (("", (Prop, None)) :: context)
+        in
         let rec hypothesis_proof term_offset proof_offset leaf index = function
           | [] -> None
           | proposition :: rest ->
@@ -3292,11 +3296,27 @@ let vampire_constructive_goal_search
               else
                 hypothesis_proof term_offset proof_offset leaf (index + 1) rest
         in
+        let derived_leaf_proof term_offset proof_offset leaf =
+          let shifted_hyps =
+            List.map (fun proposition -> tmshift 0 term_offset proposition) hyps
+          in
+          match
+            prove
+              (depth - 1)
+              (add_prop_binders term_offset cxtm)
+              shifted_hyps
+              leaf
+          with
+          | None -> None
+          | Some proof -> Some (pfshift 0 proof_offset proof)
+        in
         let rec build term_offset proof_offset proposition =
           match church_and_pair proposition with
           | None ->
               let result =
-                hypothesis_proof term_offset proof_offset proposition 0 hyps
+                match hypothesis_proof term_offset proof_offset proposition 0 hyps with
+                | Some _ as result -> result
+                | None -> derived_leaf_proof term_offset proof_offset proposition
               in
               if result = None && debug_church_and then
                 begin
