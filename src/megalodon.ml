@@ -1484,15 +1484,10 @@ let vampire_expanded_equality_proof tp left right eq_proof =
           (PTmAp (pfshift 0 1 (pftmshift 0 1 eq_proof), DB 0),
            Hyp 0)))
 
-let vampire_loaded_prop_ext_expander ?delta proof =
+let vampire_loaded_prop_ext_expander ?delta:_ proof =
   match Hashtbl.find_opt sigknh "prop_ext" with
   | None -> proof
   | Some prop_ext_hash ->
-      let known_available hash =
-        match delta with
-        | Some delta -> Hashtbl.mem delta hash
-        | None -> Hashtbl.mem sigdelta hash
-      in
       let rec expand = function
         | PPfAp
             (PPfAp
@@ -1501,25 +1496,17 @@ let vampire_loaded_prop_ext_expander ?delta proof =
             when h = prop_ext_hash || h = Vampire_cert_v1.native_core_prop_ext_hash ->
             let left_to_right = expand left_to_right in
             let right_to_left = expand right_to_left in
+            let iff_proof =
+              vampire_iff_intro_proof
+                left
+                right
+                left_to_right
+                right_to_left
+            in
             let eq_proof =
-              match Hashtbl.find_opt sigknh "prop_ext_2" with
-              | Some prop_ext_2_hash when known_available prop_ext_2_hash ->
-                  PPfAp
-                    (PPfAp
-                       (PTmAp (PTmAp (Known prop_ext_2_hash, left), right),
-                        left_to_right),
-                     right_to_left)
-              | Some _ | None ->
-                  let iff_proof =
-                    vampire_iff_intro_proof
-                      left
-                      right
-                      left_to_right
-                      right_to_left
-                  in
-                  PPfAp
-                    (PTmAp (PTmAp (Known prop_ext_hash, left), right),
-                     iff_proof)
+              PPfAp
+                (PTmAp (PTmAp (Known prop_ext_hash, left), right),
+                 iff_proof)
             in
             if h = Vampire_cert_v1.native_core_prop_ext_hash then
               vampire_expanded_equality_proof Prop left right eq_proof
