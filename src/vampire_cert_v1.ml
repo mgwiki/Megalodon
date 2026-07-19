@@ -17022,16 +17022,37 @@ let native_core_skolem_refutation_cps_proof
                    term_depth
                    replacements fallback_replacements source_left result_left
                with
-               | Some (selected_replacements, _, _) ->
-                   PPfAp
-                     (rebuild_left_to_target_builder
-                        term_depth (proof_depth + 1)
-                        term_replacements selected_replacements fallback_replacements,
-                      Hyp 0)
-               | None ->
-                   error
-                     (id ^ ": native preprocess Skolem CPS unchanged disjunction branch does not match result")
-               end)
+	               | Some (selected_replacements, _, _) ->
+	                   PPfAp
+	                     (rebuild_left_to_target_builder
+	                        term_depth (proof_depth + 1)
+	                        term_replacements selected_replacements fallback_replacements,
+	                      Hyp 0)
+	               | None ->
+	                   begin
+	                     try
+	                       let source_formula =
+	                         raw_formula_with_replacements
+	                           term_depth replacements fallback_replacements source_left
+	                       in
+	                       let result_formula =
+	                         raw_formula_with_replacements
+	                           term_depth replacements fallback_replacements result_left
+	                       in
+	                       let transported =
+	                         skolem_formula_transport
+	                           `Forward source_formula result_formula (Hyp 0)
+	                       in
+	                       PPfAp
+	                         (rebuild_left_to_target_builder
+	                            term_depth (proof_depth + 1)
+	                            term_replacements replacements fallback_replacements,
+	                          transported)
+	                     with Error _ | Failure _ ->
+	                       error
+	                         (id ^ ": native preprocess Skolem CPS unchanged disjunction branch does not match result")
+	                   end
+	               end)
         in
 	        let right_branch =
 	          PLam
@@ -17061,16 +17082,37 @@ let native_core_skolem_refutation_cps_proof
                    term_depth
                    replacements fallback_replacements source_right result_right
                with
-               | Some (selected_replacements, _, _) ->
-                   PPfAp
-                     (rebuild_right_to_target_builder
-                        term_depth (proof_depth + 1)
-                        term_replacements selected_replacements fallback_replacements,
-                      Hyp 0)
-               | None ->
-                   error
-                     (id ^ ": native preprocess Skolem CPS unchanged disjunction branch does not match result")
-               end)
+	               | Some (selected_replacements, _, _) ->
+	                   PPfAp
+	                     (rebuild_right_to_target_builder
+	                        term_depth (proof_depth + 1)
+	                        term_replacements selected_replacements fallback_replacements,
+	                      Hyp 0)
+	               | None ->
+	                   begin
+	                     try
+	                       let source_formula =
+	                         raw_formula_with_replacements
+	                           term_depth replacements fallback_replacements source_right
+	                       in
+	                       let result_formula =
+	                         raw_formula_with_replacements
+	                           term_depth replacements fallback_replacements result_right
+	                       in
+	                       let transported =
+	                         skolem_formula_transport
+	                           `Forward source_formula result_formula (Hyp 0)
+	                       in
+	                       PPfAp
+	                         (rebuild_right_to_target_builder
+	                            term_depth (proof_depth + 1)
+	                            term_replacements replacements fallback_replacements,
+	                          transported)
+	                     with Error _ | Failure _ ->
+	                       error
+	                         (id ^ ": native preprocess Skolem CPS unchanged disjunction branch does not match result")
+	                   end
+	               end)
         in
 	        let candidate =
 	          PPfAp
