@@ -34,8 +34,8 @@ VAMPIRE=/path/to/vampire \
 tests/vampire_reconstruction/run_live_hammer_prefix_no_incomplete.sh
 ```
 
-It copies the prefix of `examples/hammer/100thms_12_h.mg` through `or3I3` to
-`/project/tmp`, rewrites the eight early `aby.` commands to `vampire.`, and
+It copies the prefix of `examples/hammer/100thms_12_h.mg` through `or3E` to
+`/project/tmp`, rewrites the nine early `aby.` commands to `vampire.`, and
 checks the prefix without `-allowincompleteqed`. It passes
 `-trustdeclaredaxioms`, which makes source-level `Axiom` declarations trusted
 library assumptions for Qed dependency checking. This flag is explicit so the
@@ -45,20 +45,18 @@ unindexed/unowned axioms.
 Useful overrides:
 
 ```sh
-PREFIX_END_LINE=205 EXPECTED_RECONSTRUCTED=9 WALL_SECONDS=120 \
+PREFIX_END_LINE=201 EXPECTED_RECONSTRUCTED=8 WALL_SECONDS=120 \
 VAMPIRE=/path/to/vampire \
 tests/vampire_reconstruction/run_live_hammer_prefix_no_incomplete.sh
 ```
 
-The default gate now reconstructs the prefix through `or3I3`. The next theorem,
-`or3E`, produces a real Vampire certificate quickly but remains the next slow
-native-reconstruction frontier. Standalone strict structural checking of its
-native S-expression certificate is fast; the expensive part is the later
-source-context/native proof-term path for the AVATAR-heavy certificate. That
-certificate has multiple `avatar_split`, `avatar_definition`,
-`split_dependency`, and SAT/RUP-backed `avatar_refutation` records. Keep
-`or3E` as an opt-in probe rather than part of the default fast gate until the
-AVATAR native proof path is cheaper and more complete.
+The default gate now reconstructs the prefix through `or3E`. The `or3E`
+certificate is AVATAR-heavy, but the command closes through a checked
+source-level Church-disjunction eliminator before the expensive generic
+constructive search. The next source-command frontier is after line 205,
+where the hammer file starts using explicit `aby` arguments such as
+`aby and3I.`; this harness intentionally rewrites only bare `aby.` commands
+until explicit proof-command arguments are supported by the native path.
 
 This suite checks Megalodon's TH0 hammer obligations against Vampire proof
 output.

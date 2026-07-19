@@ -3188,6 +3188,91 @@ let vampire_constructive_goal_search
             Some (tmsubst left 0 goal, tmsubst right 0 goal)
         | _ -> None
       in
+      let church_or_branches_for_target target proposition =
+        match expose proposition with
+        | All (Prop, Imp (Imp (left, DB 0), Imp (Imp (right, DB 0), DB 0))) ->
+            Some (tmsubst left 0 target, tmsubst right 0 target)
+        | _ -> None
+      in
+      let rec church_or_leaves_for_target target proposition =
+        match church_or_branches_for_target target proposition with
+        | None -> [proposition]
+        | Some (left, right) ->
+            church_or_leaves_for_target target left
+            @ church_or_leaves_for_target target right
+      in
+      let church_or_elimination_body branches body =
+        let rec collect branches body =
+          match branches, expose body with
+          | [], final when convertible final (DB 0) -> Some []
+          | branch :: rest, Imp (Imp (actual_branch, DB 0), tail)
+              when convertible branch actual_branch ->
+              begin match collect rest tail with
+              | None -> None
+              | Some tail -> Some (actual_branch :: tail)
+              end
+          | _ -> None
+        in
+        match expose body with
+        | All (Prop, body) -> collect branches body
+        | _ -> None
+      in
+      let church_or_elimination_proof disjunction conclusion =
+        let target = DB 0 in
+        let shifted_disjunction = tmshift 0 1 disjunction in
+        let leaves = church_or_leaves_for_target target shifted_disjunction in
+        match leaves with
+        | [] | [_] -> None
+        | _ ->
+            begin match church_or_elimination_body leaves conclusion with
+            | None -> None
+            | Some branches ->
+                let branch_count = List.length branches in
+                let rec branch_index proposition index = function
+                  | [] -> None
+                  | branch :: rest ->
+                      if convertible proposition branch then Some index
+                      else branch_index proposition (index + 1) rest
+                in
+                let rec build offset proof proposition =
+                  match church_or_branches_for_target target proposition with
+                  | None ->
+                      begin match branch_index proposition 0 branches with
+                      | None -> None
+                      | Some index ->
+                          Some
+                            (PPfAp
+                               (Hyp (offset + branch_count - 1 - index),
+                                proof))
+                      end
+                  | Some (left, right) ->
+                      begin match
+                        build (offset + 1) (Hyp 0) left,
+                        build (offset + 1) (Hyp 0) right
+                      with
+                      | Some left_proof, Some right_proof ->
+                          Some
+                            (PPfAp
+                               (PPfAp
+                                  (PTmAp (proof, target),
+                                   PLam (left, left_proof)),
+                                PLam (right, right_proof)))
+                      | _ -> None
+                      end
+                in
+                begin match build 0 (Hyp branch_count) shifted_disjunction with
+                | None -> None
+                | Some body ->
+                    let branch_body =
+                      List.fold_right
+                        (fun branch body -> PLam (Imp (branch, target), body))
+                        branches
+                        body
+                    in
+                    Some (PLam (disjunction, TLam (Prop, branch_body)))
+                end
+            end
+      in
       let prove_by_hypothesis () =
         let rec try_hypotheses = function
           | [] -> None
@@ -3233,9 +3318,13 @@ let vampire_constructive_goal_search
       let goal_view = expose goal in
       match goal_view with
       | Imp (assumption, conclusion) ->
+          begin match church_or_elimination_proof assumption conclusion with
+          | Some _ as result -> result
+          | None ->
           begin match prove (depth - 1) cxtm (assumption :: cxpf) conclusion with
           | Some proof -> Some (PLam (assumption, proof))
           | None -> prove_by_context ()
+          end
           end
       | All (tp, body) ->
           let shifted_cxpf = List.map (fun prop -> tmshift 0 1 prop) cxpf in
@@ -4677,23 +4766,63 @@ let check_vampire_aby_native_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) ?(proof_
                 proof_file))
     | Some payload ->
         try
+          let debug_timing =
+            Sys.getenv_opt "MEGALODON_CERT_DEBUG_TIMING" = Some "1"
+          in
+          let timing_start = Unix.gettimeofday () in
+          let timing_last = ref timing_start in
+          let timing stage =
+            if debug_timing then
+              begin
+                let now = Unix.gettimeofday () in
+                Printf.printf
+                  "Vampire native certificate timing %s at line %d char %d: +%.3fs total %.3fs.\n"
+                  stage
+                  !lineno
+                  !charno
+                  (now -. !timing_last)
+                  (now -. timing_start);
+                timing_last := now;
+                flush stdout
+              end
+          in
+          timing "payload";
           let cert = Vampire_cert_v1.parse_certificate payload in
+          timing "parse_certificate";
           let checked = Vampire_cert_v1.check_certificate_strict cert in
+          timing "check_certificate_strict";
           let source_map = Vampire_cert_v1.parse_source_map content in
+          timing "parse_source_map";
+          timing "validate_certificate_sources:start";
           let source_count =
             Vampire_cert_v1.validate_certificate_sources
               ~require_formula_match:true
               source_map
               cert
           in
-          let source_bindings =
-            Vampire_cert_v1.native_certificate_source_bindings
-              ~source_map
-              ~external_definition_names:
-                (vampire_source_context_external_definition_names cxtm source_map)
-              cert
+          timing "validate_certificate_sources:done";
+          let constructive_fallback claimtm =
+            timing "constructive_source_goal:start";
+            let result =
+              vampire_constructive_goal_search
+                ~source_map
+                claimtm
+                cxtm
+                cxpf
+            in
+            timing "constructive_source_goal:done";
+            result
           in
-          let source_audit =
+          let build_source_audit () =
+            timing "source_bindings:start";
+            let source_bindings =
+              Vampire_cert_v1.native_certificate_source_bindings
+                ~source_map
+                ~external_definition_names:
+                  (vampire_source_context_external_definition_names cxtm source_map)
+                cert
+            in
+            timing "source_bindings:done";
             let source_context = vampire_aby_source_context cxtm cxpf in
             let source_context =
               {
@@ -4704,70 +4833,89 @@ let check_vampire_aby_native_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) ?(proof_
                   vampire_source_context_symbol_table_with_source_map source_map;
               }
             in
-            Vampire_source_context.resolve
-              ~strict:(!vampireabynativestrict && cxpf <> [])
-              source_context
-              source_bindings
+            timing "source_context_resolve:start";
+            let audit =
+              Vampire_source_context.resolve
+                ~strict:(!vampireabynativestrict && cxpf <> [])
+                source_context
+                source_bindings
+            in
+            timing "source_context_resolve:done";
+            audit
           in
+          let source_audit = ref None in
           let reconstructed =
             match claimtm with
             | None -> None
             | Some claimtm ->
-                let constructive_fallback () =
-                  vampire_constructive_goal_search
-                    ~source_map
-                    claimtm
-                    cxtm
-                    cxpf
-                in
-                begin match constructive_fallback () with
+                begin match constructive_fallback claimtm with
                 | Some _ as result -> result
                 | None ->
-                try
-                  vampire_certificate_reconstruct_aby_goal
-                    claimtm cxtm cxpf cert source_map source_audit
-                with
-                | Vampire_cert_v1.Error msg ->
-                    if !verbosity > 8 then
-                      begin
-                        Printf.printf
-                          "Vampire native certificate did not reconstruct current %s goal at line %d char %d: %s.\n"
-                          proof_command_label
-                          !lineno
-                          !charno
-                          msg;
-                        flush stdout
-                      end;
-                    constructive_fallback ()
-                | Failure msg ->
-                    if !verbosity > 8 then
-                      begin
-                        Printf.printf
-                          "Vampire native certificate proof candidate did not check for current %s goal at line %d char %d: %s.\n"
-                          proof_command_label
-                          !lineno
-                          !charno
-                          msg;
-                        flush stdout
-                      end;
-                    constructive_fallback ()
+                    let audit = build_source_audit () in
+                    source_audit := Some audit;
+                    try
+                      timing "refutation_replay:start";
+                      let result =
+                        vampire_certificate_reconstruct_aby_goal
+                          claimtm cxtm cxpf cert source_map audit
+                      in
+                      timing "refutation_replay:done";
+                      result
+                    with
+                    | Vampire_cert_v1.Error msg ->
+                        timing "refutation_replay:error";
+                        if !verbosity > 8 then
+                          begin
+                            Printf.printf
+                              "Vampire native certificate did not reconstruct current %s goal at line %d char %d: %s.\n"
+                              proof_command_label
+                              !lineno
+                              !charno
+                              msg;
+                            flush stdout
+                          end;
+                        constructive_fallback claimtm
+                    | Failure msg ->
+                        timing "refutation_replay:failure";
+                        if !verbosity > 8 then
+                          begin
+                            Printf.printf
+                              "Vampire native certificate proof candidate did not check for current %s goal at line %d char %d: %s.\n"
+                              proof_command_label
+                              !lineno
+                              !charno
+                              msg;
+                            flush stdout
+                          end;
+                        constructive_fallback claimtm
                 end
           in
           if !verbosity > 8 then
             begin
-              Printf.printf
-                "Vampire native certificate checked %d step%s and %d source%s at line %d char %d; source_context known=%d local=%d local_definition=%d conjecture=%d unresolved=%d.\n"
-                (List.length checked)
-                (if List.length checked = 1 then "" else "s")
-                source_count
-                (if source_count = 1 then "" else "s")
-                !lineno
-                !charno
-                source_audit.Vampire_source_context.known_checked
-                source_audit.Vampire_source_context.local_checked
-                source_audit.Vampire_source_context.local_definition_matched
-                source_audit.Vampire_source_context.conjecture_checked
-                source_audit.Vampire_source_context.unresolved;
+              match !source_audit with
+              | Some source_audit ->
+                  Printf.printf
+                    "Vampire native certificate checked %d step%s and %d source%s at line %d char %d; source_context known=%d local=%d local_definition=%d conjecture=%d unresolved=%d.\n"
+                    (List.length checked)
+                    (if List.length checked = 1 then "" else "s")
+                    source_count
+                    (if source_count = 1 then "" else "s")
+                    !lineno
+                    !charno
+                    source_audit.Vampire_source_context.known_checked
+                    source_audit.Vampire_source_context.local_checked
+                    source_audit.Vampire_source_context.local_definition_matched
+                    source_audit.Vampire_source_context.conjecture_checked
+                    source_audit.Vampire_source_context.unresolved
+              | None ->
+                  Printf.printf
+                    "Vampire native certificate checked %d step%s and %d source%s at line %d char %d; source_context audit skipped after direct source-goal proof.\n"
+                    (List.length checked)
+                    (if List.length checked = 1 then "" else "s")
+                    source_count
+                    (if source_count = 1 then "" else "s")
+                    !lineno
+                    !charno;
               flush stdout
             end
           else
