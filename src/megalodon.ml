@@ -3371,6 +3371,71 @@ let vampire_constructive_goal_search
                      proof)
             end
       in
+      let equality_term tp left right =
+        Ap (Ap (TpAp (TmH !eqPoly, tp), left), right)
+      in
+      let equality_hypothesis_proof tp left right =
+        let rec find index = function
+          | [] -> None
+          | proposition :: rest ->
+              if convertible proposition (equality_term tp left right) then
+                Some (Hyp index)
+              else
+                find (index + 1) rest
+        in
+        find 0 cxpf
+      in
+      let equality_transitivity_proof goal =
+        match vampire_equality_sides (expose goal) with
+        | None -> None
+        | Some (tp, left, right) ->
+            let rec try_middle index = function
+              | [] -> None
+              | (_, (middle_tp, _)) :: rest ->
+                  if middle_tp = tp then
+                    let middle = DB index in
+                    begin match
+                      equality_hypothesis_proof tp left middle,
+                      equality_hypothesis_proof tp middle right
+                    with
+                    | Some left_to_middle, Some middle_to_right ->
+                        let left1 = tmshift 0 1 left in
+                        let right1 = tmshift 0 1 right in
+                        let right3 = tmshift 0 2 right1 in
+                        let left_to_middle =
+                          pfshift 0 1 (pftmshift 0 1 left_to_middle)
+                        in
+                        let middle_to_right =
+                          pfshift 0 1 (pftmshift 0 1 middle_to_right)
+                        in
+                        let q_left_right = Ap (Ap (DB 0, left1), right1) in
+                        let q_u_right =
+                          Lam (tp, Lam (tp, Ap (Ap (DB 2, DB 1), right3)))
+                        in
+                        let q_right_v =
+                          Lam (tp, Lam (tp, Ap (Ap (DB 2, right3), DB 0)))
+                        in
+                        let q_middle_right =
+                          PPfAp (PTmAp (left_to_middle, q_u_right), Hyp 0)
+                        in
+                        let q_right_middle =
+                          PPfAp (PTmAp (middle_to_right, DB 0), q_middle_right)
+                        in
+                        Some
+                          (TLam
+                             (Ar (tp, Ar (tp, Prop)),
+                              PLam
+                                (q_left_right,
+                                 PPfAp
+                                   (PTmAp (left_to_middle, q_right_v),
+                                    q_right_middle))))
+                    | _ -> try_middle (index + 1) rest
+                    end
+                  else
+                    try_middle (index + 1) rest
+            in
+            try_middle 0 cxtm
+      in
       let prove_by_hypothesis () =
         let rec try_hypotheses = function
           | [] -> None
@@ -3411,7 +3476,11 @@ let vampire_constructive_goal_search
       let prove_by_context () =
         match prove_by_hypothesis () with
         | Some _ as result -> result
-        | None -> prove_by_church_or_hypothesis ()
+        | None ->
+            begin match equality_transitivity_proof goal with
+            | Some _ as result -> result
+            | None -> prove_by_church_or_hypothesis ()
+            end
       in
       let goal_view = expose goal in
       match goal_view with
