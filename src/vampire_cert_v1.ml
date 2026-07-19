@@ -15866,6 +15866,48 @@ let native_core_pf_choice_witness_detail proof =
   in
   pf_detail "root" proof
 
+let native_core_pf_first_choice_witness_term proof =
+  let rec tm_detail path enclosing = function
+    | TmH name when List.mem name native_core_choice_witness_symbols ->
+        Some (path, enclosing)
+    | TmH _ | DB _ | Prim _ -> None
+    | TpAp (body, _) as tm -> tm_detail (path ^ ".tp") tm body
+    | Ap (left, right) as tm ->
+        begin match tm_detail (path ^ ".left") tm left with
+        | Some _ as found -> found
+        | None -> tm_detail (path ^ ".right") tm right
+        end
+    | Lam (_, body) | All (_, body) as tm ->
+        tm_detail (path ^ ".body") tm body
+    | Imp (left, right) as tm ->
+        begin match tm_detail (path ^ ".left") tm left with
+        | Some _ as found -> found
+        | None -> tm_detail (path ^ ".right") tm right
+        end
+  in
+  let tm_detail path tm = tm_detail path tm tm in
+  let rec pf_detail path = function
+    | PTpAp (body, _) -> pf_detail (path ^ ".tp") body
+    | PTmAp (body, tm) ->
+        begin match pf_detail (path ^ ".proof") body with
+        | Some _ as found -> found
+        | None -> tm_detail (path ^ ".term") tm
+        end
+    | PPfAp (left, right) ->
+        begin match pf_detail (path ^ ".left") left with
+        | Some _ as found -> found
+        | None -> pf_detail (path ^ ".right") right
+        end
+    | PLam (prop, body) ->
+        begin match tm_detail (path ^ ".prop") prop with
+        | Some _ as found -> found
+        | None -> pf_detail (path ^ ".body") body
+        end
+    | TLam (_, body) -> pf_detail (path ^ ".body") body
+    | Hyp _ | Known _ -> None
+  in
+  pf_detail "root" proof
+
 let native_core_pf_choice_known_detail proof =
   let choice_knowns =
     [
@@ -22017,6 +22059,10 @@ let elaborate_preprocess_refutation_native
         in
         List.fold_right (fun prop proof -> PLam (prop, proof)) tail body
   in
+  let skolem_branch_debug_enabled () =
+    Sys.getenv_opt "MEGALODON_CERT_BRANCH_DEBUG" = Some "1"
+    || Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1"
+  in
   let register_cps_branch_witness_replacement
       id parent_step_variables result_step_variables branch target_witness
       epsilon_witness =
@@ -22057,7 +22103,7 @@ let elaborate_preprocess_refutation_native
       if native_core_tm_scoped_under
            (List.length variables)
            closed_witness then begin
-        if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+        if skolem_branch_debug_enabled () then
           prerr_endline
             (id
              ^ ": native preprocess Skolem CPS staged branch witness definition "
@@ -22067,7 +22113,7 @@ let elaborate_preprocess_refutation_native
         staged_skolem_branch_witness_replacements :=
           (id, replacement_names, closed_witness)
           :: !staged_skolem_branch_witness_replacements
-      end else if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+      end else if skolem_branch_debug_enabled () then
         prerr_endline
           (id
            ^ ": native preprocess Skolem CPS kept context-dependent branch witness "
@@ -22128,7 +22174,7 @@ let elaborate_preprocess_refutation_native
                 in
                 register_closed_witness raw_name name closed_witness
             | None ->
-                if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+                if skolem_branch_debug_enabled () then
                   prerr_endline
                     (id
                      ^ ": native preprocess Skolem CPS deferred dependent branch witness definition for "
@@ -22431,11 +22477,61 @@ let elaborate_preprocess_refutation_native
                               replacement_name
                               !skolem_witness_replacements)
                     replacement_names
-                end else if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
-                  prerr_endline
-                    (id
-                     ^ ": native preprocess Skolem CPS did not promote non-exact branch witness replacements "
-                     ^ String.concat "," replacement_names))
+                end else begin
+                  if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+                    prerr_endline
+                      (id
+                       ^ ": native preprocess Skolem CPS did not promote non-exact branch witness replacements "
+                       ^ String.concat "," replacement_names);
+                  if skolem_branch_debug_enabled () then begin
+                    let short_tm tm =
+                      let text = tm_to_str tm in
+                      if String.length text <= 260 then text
+                      else String.sub text 0 260 ^ "..."
+                    in
+                    begin match native_core_pf_first_choice_witness_term candidate with
+                    | Some (path, actual_choice) ->
+                        let shift_matches =
+                          [-3; -2; -1; 0; 1; 2; 3]
+                          |> List.filter_map
+                               (fun delta ->
+                                  try
+                                    let shifted =
+                                      tmshift 0 delta closed_witness
+                                      |> tm_beta_eta_norm
+                                    in
+                                    if shifted
+                                       = (actual_choice |> tm_beta_eta_norm) then
+                                      Some (string_of_int delta)
+                                    else
+                                      None
+                                  with _ -> None)
+                        in
+                        prerr_endline
+                          (id
+                           ^ ": native preprocess Skolem CPS first choice term for non-exact branch witness at "
+                           ^ path);
+                        prerr_endline
+                          (id
+                           ^ ": native preprocess Skolem CPS staged witness sample "
+                           ^ short_tm closed_witness);
+                        prerr_endline
+                          (id
+                           ^ ": native preprocess Skolem CPS actual choice sample "
+                           ^ short_tm actual_choice);
+                        prerr_endline
+                          (id
+                           ^ ": native preprocess Skolem CPS staged/actual shift matches "
+                           ^ (match shift_matches with
+                              | [] -> "none"
+                              | matches -> String.concat "," matches))
+                    | None ->
+                        prerr_endline
+                          (id
+                           ^ ": native preprocess Skolem CPS found no choice term while diagnosing non-exact branch witness")
+                    end
+                  end
+                end)
              staged_branch_replacements_for_entry;
            let fail_fast_skolem_cps () =
              Sys.getenv_opt "MEGALODON_CERT_FAIL_FAST_SKOLEM_CPS" = Some "1"
