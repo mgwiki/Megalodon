@@ -1339,6 +1339,7 @@ let vampire_core_source_proofs source_audit =
   List.filter
     (fun (step, _) ->
        match List.assoc_opt step source_audit.Vampire_source_context.resolved with
+       | Some (Vampire_source_context.LocalHyp _) -> false
        | Some (Vampire_source_context.Definitional _) -> false
        | _ -> true)
     source_audit.Vampire_source_context.source_proofs
