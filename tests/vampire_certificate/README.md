@@ -696,6 +696,10 @@ as `STALE_SKOLEM_NO_SOURCE`; they should be regenerated before being used as
 evidence for the current Skolem proof-term path.
 The checker phase is strict and bounded by `CHECK_TIMEOUT` seconds per case
 (default `30`) so one slow cached proof cannot stall the whole frontier run.
+Older cached certificates whose Skolem or rectification proof objects still
+use unnamed `ALL`/`LAM` binders instead of current `VLAMV` metadata are
+classified as `STALE_UNNAMED_BINDERS`; those should be regenerated with the
+current Vampire branch before being treated as reconstruction blockers.
 
 To check the current live Vampire path for nested Skolem proof terms, use:
 

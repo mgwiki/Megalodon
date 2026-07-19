@@ -39,6 +39,7 @@ fi
 
 classify_error() {
   local err_file=$1
+  local native_file=$2
   local msg
   msg=$(tail -1 "$err_file" | tr '\t' ' ')
   if [[ "$msg" =~ refuses\ certificate-derived\ Known\ primitive\ ([^[:space:]\;]+) ]]; then
@@ -48,7 +49,12 @@ classify_error() {
   elif [[ "$msg" =~ skolemization\ result\ does\ not\ match\ source\ body ]]; then
     printf 'SKOLEM_SOURCE_BODY_MISMATCH'
   elif [[ "$msg" =~ formula\ orientation\ supports\ only ]]; then
-    printf 'FORMULA_ORIENTATION_UNSUPPORTED'
+    if rg -q 'skolem_formula|rectify_formula' "$native_file" \
+        && ! rg -q 'VLAMV' "$native_file"; then
+      printf 'STALE_UNNAMED_BINDERS'
+    else
+      printf 'FORMULA_ORIENTATION_UNSUPPORTED'
+    fi
   elif [[ "$msg" =~ rectify_formula ]]; then
     printf 'RECTIFY_UNSUPPORTED'
   elif [[ "$msg" =~ no\ proof-term\ rule\ for\ ([a-z_]+) ]]; then
@@ -101,7 +107,7 @@ run_one() {
     status=TIMEOUT
     err="checker timed out after ${CHECK_TIMEOUT}s"
   else
-    status=$(classify_error "$case_dir/check.err")
+    status=$(classify_error "$case_dir/check.err" "$native")
     err=$(tail -1 "$case_dir/check.err" | tr '\t' ' ')
   fi
   printf '%s\t%s\t%s\n' "$base" "$status" "$err" > "$case_dir/result.tsv"
