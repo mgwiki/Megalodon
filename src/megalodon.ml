@@ -3385,6 +3385,16 @@ let vampire_constructive_goal_search
         in
         find 0 cxpf
       in
+      let equality_symmetry_proof goal =
+        match vampire_equality_sides (expose goal) with
+        | None -> None
+        | Some (tp, left, right) ->
+            begin match equality_hypothesis_proof tp right left with
+            | None -> None
+            | Some proof ->
+                Some (vampire_positive_equality_symmetry_proof tp right left proof)
+            end
+      in
       let equality_transitivity_proof goal =
         match vampire_equality_sides (expose goal) with
         | None -> None
@@ -3477,9 +3487,13 @@ let vampire_constructive_goal_search
         match prove_by_hypothesis () with
         | Some _ as result -> result
         | None ->
-            begin match equality_transitivity_proof goal with
+            begin match equality_symmetry_proof goal with
             | Some _ as result -> result
-            | None -> prove_by_church_or_hypothesis ()
+            | None ->
+                begin match equality_transitivity_proof goal with
+                | Some _ as result -> result
+                | None -> prove_by_church_or_hypothesis ()
+                end
             end
       in
       let goal_view = expose goal in
