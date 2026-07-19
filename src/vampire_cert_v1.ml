@@ -21160,7 +21160,227 @@ let elaborate_preprocess_refutation_native
          ^ ": "
          ^ Printexc.to_string exn)
   end;
+  let preprocess_proof_checks_against_prop label prop proof =
+    let short_tm tm =
+      let text = tm_to_str tm in
+      if String.length text <= 500 then text
+      else String.sub text 0 500 ^ "..."
+    in
+    let short_pf pf =
+      let text = pf_to_str pf in
+      if String.length text <= 500 then text
+      else String.sub text 0 500 ^ "..."
+    in
+    let debug_failure msg =
+      if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
+        prerr_endline ("native preprocess " ^ label ^ " proof debug: " ^ msg);
+        prerr_endline ("native preprocess " ^ label ^ " expected: " ^ short_tm prop);
+        begin
+          try
+            let actual, _ =
+              extr_propofpf proof_delta symbol_table variable_types closed_source_context proof []
+            in
+            prerr_endline ("native preprocess " ^ label ^ " actual: " ^ short_tm actual)
+          with exn ->
+            prerr_endline
+              ("native preprocess " ^ label ^ " actual unavailable: "
+               ^ Printexc.to_string exn)
+        end;
+        prerr_endline ("native preprocess " ^ label ^ " proof: " ^ short_pf proof)
+      end
+    in
+    try
+      native_core_reject_certificate_knowns label label proof;
+      match check_propofpf proof_delta symbol_table variable_types closed_source_context proof prop [] with
+      | Some _ -> true
+      | None ->
+          debug_failure "wrong proposition";
+          false
+    with Failure msg ->
+      debug_failure msg;
+      false
+    | Error _ as exn -> raise exn
+    | exn ->
+        debug_failure (Printexc.to_string exn);
+        false
+  in
+  let nested_imp props target =
+    List.fold_right (fun prop body -> Imp (prop, body)) props target
+  in
+  let reindex_outer_proof_assumptions assumption_count proof =
+    let rec reindex proof_depth = function
+      | Hyp index
+          when index >= proof_depth
+               && index < proof_depth + assumption_count ->
+          let offset = index - proof_depth in
+          Hyp (proof_depth + assumption_count - 1 - offset)
+      | PTpAp (body, tp) -> PTpAp (reindex proof_depth body, tp)
+      | PTmAp (body, tm) -> PTmAp (reindex proof_depth body, tm)
+      | PPfAp (left, right) ->
+          PPfAp (reindex proof_depth left, reindex proof_depth right)
+      | PLam (prop, body) -> PLam (prop, reindex (proof_depth + 1) body)
+      | TLam (tp, body) -> TLam (tp, reindex proof_depth body)
+      | Hyp _ | Known _ as proof -> proof
+    in
+    reindex 0 proof
+  in
+  let close_tail_result_assumptions props continuation_body =
+    match props with
+    | [] -> continuation_body
+    | _head :: tail ->
+        let body =
+          reindex_outer_proof_assumptions
+            (List.length props)
+            continuation_body
+        in
+        List.fold_right (fun prop proof -> PLam (prop, proof)) tail body
+  in
+  let try_grouped_skolem_cps_discharge () =
+    let entries = !skolem_cps_entries in
+    if List.length entries <= 1 then
+      None
+    else
+      let ids =
+        entries
+        |> List.map
+             (fun (id, _, _, _, _, _, _, _, _, _, _, _) -> id)
+      in
+      try
+        match
+          shadow_skolem_final_refutation_many
+            (List.map skolem_cps_entry_assumption entries)
+        with
+        | None -> None
+        | Some group_body ->
+            let rec discharge remaining continuation_body =
+              match remaining with
+              | [] ->
+                  if preprocess_proof_checks_against_prop
+                       "grouped Skolem CPS final"
+                       native_core_false
+                       continuation_body then
+                    Some continuation_body
+                  else
+                    None
+              | (id, source_formula, subst, result, parent_step_variables,
+                 result_step_variables, result_checked_prop,
+                 result_assumption_step_variables, result_assumption_prop,
+                 parent_proof, result_proof, skolem_proof_object) :: rest ->
+                  let props =
+                    remaining
+                    |> List.map
+                         (fun (_id, _source_formula, _subst, _result,
+                               _parent_step_variables, _result_step_variables,
+                               _result_checked_prop,
+                               _result_assumption_step_variables,
+                               result_assumption_prop,
+                               _parent_proof, _result_proof,
+                               _skolem_proof_object) ->
+                            result_assumption_prop)
+                  in
+                  let target_prop =
+                    nested_imp
+                      (List.tl props)
+                      native_core_false
+                    |> tm_beta_eta_norm
+                  in
+                  let result_to_target_body =
+                    close_tail_result_assumptions props continuation_body
+                  in
+                  let split_replacements =
+                    avatar_definition_table
+                    |> Hashtbl.to_seq_values
+                    |> List.of_seq
+                    |> List.map
+                         (fun (split_name, _component_literals, component_prop, _definition_proof) ->
+                            (split_name,
+                             component_prop
+                             |> native_core_normalize_bool_constants
+                             |> tm_beta_eta_norm))
+                    |> List.sort_uniq compare
+                  in
+                  let candidate =
+                    native_core_skolem_refutation_cps_proof
+                      ~abstract_result_proof:abstract_skolem_result_by_prop
+                      ~result_to_target_body
+                      ~result_assumption_prop
+                      ~result_assumption_step_variables
+                      ?skolem_proof_object
+                      ~split_replacements
+                      id variables parent_step_variables result_step_variables
+                      source_formula subst result result_checked_prop parent_proof
+                      result_proof continuation_body target_prop
+                  in
+                  let current_witness_symbols =
+                    skolem_cps_entry_witness_symbols
+                      (id, source_formula, subst, result, parent_step_variables,
+                       result_step_variables, result_checked_prop,
+                       result_assumption_step_variables, result_assumption_prop,
+                       parent_proof, result_proof, skolem_proof_object)
+                  in
+                  let has_choice_witness =
+                    native_core_pf_contains_choice_witness candidate
+                  in
+                  let has_current_witness =
+                    native_core_pf_contains_term_symbol
+                      current_witness_symbols
+                      candidate
+                  in
+                  let candidate_checks =
+                    (not has_choice_witness)
+                    && preprocess_proof_checks_against_prop
+                         ("grouped Skolem CPS " ^ id)
+                         target_prop
+                         candidate
+                  in
+                  if has_choice_witness then begin
+                    if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+                      prerr_endline
+                        (id ^ ": native preprocess grouped Skolem CPS candidate still leaks certificate-local choices");
+                    None
+                  end else if candidate_checks then begin
+                    if has_current_witness
+                       && Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+                      prerr_endline
+                        (id ^ ": native preprocess grouped Skolem CPS candidate keeps current witness only in checked local proof structure");
+                    match rest with
+                    | [] -> discharge [] candidate
+                    | (_, _, _, _, _, _, _, _, next_prop, _, _, _) :: _ ->
+                        begin match candidate with
+                        | PLam (prop, body)
+                            when tm_beta_eta_norm prop = tm_beta_eta_norm next_prop ->
+                            discharge rest body
+                        | _ ->
+                            if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+                              prerr_endline
+                                (id ^ ": native preprocess grouped Skolem CPS could not peel next continuation");
+                            None
+                        end
+                  end else
+                    None
+            in
+            begin match discharge entries group_body with
+            | Some proof ->
+                if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+                  prerr_endline
+                    ("native preprocess grouped Skolem CPS discharged "
+                     ^ String.concat ", " ids);
+                Some proof
+            | None -> None
+            end
+      with (Error _ | Failure _) as exn ->
+        if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+          prerr_endline
+            ("native preprocess grouped Skolem CPS skipped for "
+             ^ String.concat ", " ids
+             ^ ": "
+             ^ Printexc.to_string exn);
+        None
+  in
   let proof =
+    match try_grouped_skolem_cps_discharge () with
+    | Some proof -> proof
+    | None ->
     List.fold_left
       (fun current
            (id, source_formula, subst, result, parent_step_variables,
