@@ -642,6 +642,21 @@ let vampire_source_context_delta_with_locals cxtm =
     cxtm;
   delta
 
+let vampire_source_map_entry_aliases entry =
+  let add_name name names =
+    if name = "" || List.mem name names then names else name :: names
+  in
+  let add_hash_name name names =
+    if name = "" || name.[0] = '#' then names
+    else add_name ("#" ^ name) names
+  in
+  []
+  |> add_name entry.Vampire_cert_v1.source_map_tptp_name
+  |> add_name entry.Vampire_cert_v1.source_map_source_name
+  |> add_hash_name entry.Vampire_cert_v1.source_map_tptp_name
+  |> add_hash_name entry.Vampire_cert_v1.source_map_source_name
+  |> List.rev
+
 let vampire_source_context_add_source_map_aliases delta source_map =
   let add_term_alias alias source_name =
     if alias <> "" && source_name <> "" then
@@ -653,12 +668,12 @@ let vampire_source_context_add_source_map_aliases delta source_map =
     (fun entry ->
        let kind = entry.Vampire_cert_v1.source_map_kind in
        let hash = entry.Vampire_cert_v1.source_map_hash in
-       add_term_alias
-         entry.Vampire_cert_v1.source_map_tptp_name
-         entry.Vampire_cert_v1.source_map_source_name;
-       add_term_alias
-         entry.Vampire_cert_v1.source_map_source_name
-         entry.Vampire_cert_v1.source_map_source_name;
+       List.iter
+         (fun alias ->
+            add_term_alias
+              alias
+              entry.Vampire_cert_v1.source_map_source_name)
+         (vampire_source_map_entry_aliases entry);
        if (kind = "def" || kind = "definition" || kind = "local_definition")
           && hash <> "" then
          match Hashtbl.find_opt delta hash with
@@ -669,16 +684,9 @@ let vampire_source_context_add_source_map_aliases delta source_map =
                  Hashtbl.replace delta live_hash definition
              | None -> ()
              end;
-             if entry.Vampire_cert_v1.source_map_tptp_name <> "" then
-               Hashtbl.replace
-                 delta
-                 entry.Vampire_cert_v1.source_map_tptp_name
-                 definition;
-             if entry.Vampire_cert_v1.source_map_source_name <> "" then
-               Hashtbl.replace
-                 delta
-                 entry.Vampire_cert_v1.source_map_source_name
-                 definition)
+             List.iter
+               (fun alias -> Hashtbl.replace delta alias definition)
+               (vampire_source_map_entry_aliases entry))
     source_map;
   delta
 
@@ -700,16 +708,10 @@ let vampire_source_context_add_local_type_aliases delta cxtm source_map =
              local_terms
          with
          | Some (_, index, _) ->
-           if entry.Vampire_cert_v1.source_map_tptp_name <> "" then
-             Hashtbl.replace
-               delta
-               entry.Vampire_cert_v1.source_map_tptp_name
-               (0, DB index);
-           if entry.Vampire_cert_v1.source_map_source_name <> "" then
-             Hashtbl.replace
-               delta
-               entry.Vampire_cert_v1.source_map_source_name
-               (0, DB index)
+           List.iter
+             (fun alias ->
+                Hashtbl.replace delta alias (0, DB index))
+             (vampire_source_map_entry_aliases entry)
        | None -> ())
     source_map;
   delta
@@ -794,10 +796,9 @@ let vampire_source_context_symbol_table_with_source_map source_map =
     (fun entry ->
        begin match vampire_source_map_type_decl entry with
        | Some tp ->
-           if entry.Vampire_cert_v1.source_map_tptp_name <> "" then
-             Hashtbl.replace symbols entry.Vampire_cert_v1.source_map_tptp_name (0, tp);
-           if entry.Vampire_cert_v1.source_map_source_name <> "" then
-             Hashtbl.replace symbols entry.Vampire_cert_v1.source_map_source_name (0, tp)
+           List.iter
+             (fun alias -> Hashtbl.replace symbols alias (0, tp))
+             (vampire_source_map_entry_aliases entry)
        | None -> ()
        end;
        let add_symbol_alias alias source_name =
@@ -810,12 +811,12 @@ let vampire_source_context_symbol_table_with_source_map source_map =
                end
            | None -> ()
        in
-       add_symbol_alias
-         entry.Vampire_cert_v1.source_map_tptp_name
-         entry.Vampire_cert_v1.source_map_source_name;
-       add_symbol_alias
-         entry.Vampire_cert_v1.source_map_source_name
-         entry.Vampire_cert_v1.source_map_source_name)
+       List.iter
+         (fun alias ->
+            add_symbol_alias
+              alias
+              entry.Vampire_cert_v1.source_map_source_name)
+         (vampire_source_map_entry_aliases entry))
     source_map;
   symbols
 
