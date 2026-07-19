@@ -17026,6 +17026,41 @@ let native_core_skolem_refutation_cps_proof
         let left_witnesses, right_witnesses =
           split_witnesses left_count [] witnesses
         in
+        let branch_outer_witness_fallbacks branch_source branch_witnesses =
+          match branch_source, branch_witnesses with
+          | Ap (TmH "vampire_exists_prop", Lam (tp, body)), witness :: _ ->
+              let replacements_under_binder =
+                (witness, dependent_witness_symbol_replacement witness (DB 0))
+                :: List.map (fun (name, tm) -> (name, tmshift 0 1 tm)) replacements
+              in
+              let fallback_replacements_under_binder =
+                List.map
+                  (fun (name, tm) -> (name, tmshift 0 1 tm))
+                  fallback_replacements
+              in
+              let body_prop =
+                native_core_formula_prop body
+                |> native_core_replace_witness_symbols_in_tm
+                     (replacements_under_binder @ fallback_replacements_under_binder)
+                |> native_core_close_tm
+                     ~depth:(List.length replacements_under_binder)
+                     variables
+                |> native_core_normalize_bool_constants
+                |> tm_beta_eta_norm
+              in
+              let epsilon_witness =
+                Ap (TmH (native_core_eps_symbol tp), Lam (tp, body_prop))
+                |> native_core_normalize_bool_constants
+                |> tm_beta_eta_norm
+              in
+              [witness, dependent_witness_symbol_replacement witness epsilon_witness]
+          | _ -> []
+        in
+        let fallback_replacements =
+          branch_outer_witness_fallbacks source_left left_witnesses
+          @ branch_outer_witness_fallbacks source_right right_witnesses
+          @ fallback_replacements
+        in
 		        let source_left_prop = formula_prop_with_replacements ~close_depth:term_depth ~fallback_replacements replacements source_left in
 		        let source_right_prop = formula_prop_with_replacements ~close_depth:term_depth ~fallback_replacements replacements source_right in
 		        debug_witness_tm "or source_left_prop" source_left_prop;
@@ -21291,7 +21326,12 @@ let elaborate_preprocess_refutation_native
             let rec discharge remaining continuation_body =
               match remaining with
               | [] ->
-                  if preprocess_proof_checks_against_prop
+                  if native_core_pf_contains_choice_witness continuation_body then begin
+                    if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+                      prerr_endline
+                        "native preprocess grouped Skolem CPS final proof still leaks certificate-local choices";
+                    None
+                  end else if preprocess_proof_checks_against_prop
                        "grouped Skolem CPS final"
                        native_core_false
                        continuation_body then
@@ -21363,18 +21403,16 @@ let elaborate_preprocess_refutation_native
                       candidate
                   in
                   let candidate_checks =
-                    (not has_choice_witness)
-                    && preprocess_proof_checks_against_prop
+                    preprocess_proof_checks_against_prop
                          ("grouped Skolem CPS " ^ id)
                          target_prop
                          candidate
                   in
-                  if has_choice_witness then begin
-                    if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+                  if candidate_checks then begin
+                    if has_choice_witness
+                       && Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
                       prerr_endline
-                        (id ^ ": native preprocess grouped Skolem CPS candidate still leaks certificate-local choices");
-                    None
-                  end else if candidate_checks then begin
+                        (id ^ ": native preprocess grouped Skolem CPS candidate keeps choices for later group entries");
                     if has_current_witness
                        && Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
                       prerr_endline
