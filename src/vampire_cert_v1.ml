@@ -8735,6 +8735,7 @@ let native_core_generated_skolem_symbols cert =
               @ collect "skolem_contract_introduced_")
   in
   step_symbols @ kernel_v1_symbols
+  |> List.concat_map native_core_symbol_name_aliases
   |> List.sort_uniq compare
 
 let native_core_avatar_definition_names cert =
@@ -10490,6 +10491,16 @@ let native_core_tm_scoped_under context_depth tm =
   in
   scoped 0 tm
 
+let native_core_dependent_witness_definition variables dependencies epsilon_witness =
+  native_core_close_tm (variables @ dependencies) epsilon_witness
+  |> tm_beta_eta_norm
+  |> fun body ->
+      List.fold_right
+        (fun (_, tp) body -> Lam (tp, body))
+        dependencies
+        body
+  |> tm_beta_eta_norm
+
 let native_core_close_pf variables proof =
   let rec close depth = function
     | Hyp i -> Hyp i
@@ -11688,10 +11699,72 @@ let native_core_certificate_sgdelta cert symbol_table =
           add all_index context right rest
       | _ -> subst
     in
+    let consume_quantifier kind tp quantifiers =
+      match quantifiers with
+      | quantifier :: rest
+          when quantifier.native_kernel_quantifier_kind = kind
+               && quantifier.native_kernel_quantifier_variable.native_kernel_variable_type = tp ->
+          Some quantifier.native_kernel_quantifier_variable, rest
+      | _ -> None, quantifiers
+    in
+    let rec add_with_quantifiers context quantifiers source subst =
+      match source, subst with
+      | Ap (TmH "vampire_exists_prop", Lam (tp, body)), _ ->
+          let _, quantifiers = consume_quantifier "exists" tp quantifiers in
+          begin match choose_witness context body subst with
+          | Some (witness, rest) ->
+              add_definition context tp body witness;
+              add_with_quantifiers
+                context
+                quantifiers
+                (tmsubst body 0 witness)
+                rest
+          | None -> subst, quantifiers
+          end
+      | All (tp, body), _ ->
+          let variable, quantifiers =
+            match consume_quantifier "forall" tp quantifiers with
+            | Some variable, rest -> variable, rest
+            | None, rest ->
+                { native_kernel_variable_name = variable_name (List.length context) tp;
+                  native_kernel_variable_type = tp },
+                rest
+          in
+          add_with_quantifiers
+            (context @
+             [(variable.native_kernel_variable_name,
+               variable.native_kernel_variable_type)])
+            quantifiers
+            body
+            subst
+      | Ap (Ap (TmH ("vampire_or" | "vampire_and"), left), right), _ ->
+          let rest, quantifiers =
+            add_with_quantifiers context quantifiers left subst
+          in
+          add_with_quantifiers context quantifiers right rest
+      | Imp (left, right), _ ->
+          let rest, quantifiers =
+            add_with_quantifiers context quantifiers left subst
+          in
+          add_with_quantifiers context quantifiers right rest
+      | Ap (left, right), _ ->
+          let rest, quantifiers =
+            add_with_quantifiers context quantifiers left subst
+          in
+          add_with_quantifiers context quantifiers right rest
+      | (TpAp (body, _) | Lam (_, body)), _ ->
+          add_with_quantifiers context quantifiers body subst
+      | _ -> subst, quantifiers
+    in
     let add_skolem_definitions_from_parent_formulas () =
       let parse_tm_field key =
         match native_core_metadata_step_extra_field cert id "kernel_v1" key with
         | Some value -> Some (parse_tm (parse_sexpr value))
+        | None -> None
+      in
+      let parse_tp_field key =
+        match native_core_metadata_step_extra_field cert id "kernel_v1" key with
+        | Some value -> Some (parse_tp (parse_sexpr value))
         | None -> None
       in
       let introduced_count =
@@ -11719,16 +11792,86 @@ let native_core_certificate_sgdelta cert symbol_table =
         | Lam (_, body) | All (_, body) -> contains_tm (tmshift 0 1 needle) body
         | TmH _ | DB _ | Prim _ -> false
       in
-      let parent_definition_source formula =
-        let context, body = peel_foralls 0 [] formula in
-        match body with
-        | Imp (Ap (TmH "vampire_exists_prop", Lam (witness_tp, exists_body)), target_body) ->
-            Some (context, witness_tp, exists_body, target_body)
-        | _ -> None
+      let parent_definition_sources parent_index formula =
+        let quantifiers =
+          native_core_kernel_v1_quantifier_fields
+            cert id ("parent_" ^ string_of_int parent_index ^ "_formula")
+        in
+        let consume_quantifier kind tp quantifiers =
+          match quantifiers with
+          | quantifier :: rest
+              when quantifier.native_kernel_quantifier_kind = kind
+                   && quantifier.native_kernel_quantifier_variable.native_kernel_variable_type = tp ->
+              Some quantifier.native_kernel_quantifier_variable, rest
+          | _ -> None, quantifiers
+        in
+        let rec collect context quantifiers formula =
+          let exists_candidate target = function
+            | Ap (TmH "vampire_exists_prop", Lam (witness_tp, exists_body)) ->
+                [context, witness_tp, exists_body, target]
+            | _ -> []
+          in
+          match formula with
+          | All (tp, body) ->
+              let variable, quantifiers =
+                match consume_quantifier "forall" tp quantifiers with
+                | Some variable, rest -> variable, rest
+                | None, rest ->
+                    { native_kernel_variable_name =
+                        variable_name (List.length context) tp;
+                      native_kernel_variable_type = tp },
+                    rest
+              in
+              collect
+                (context @
+                 [(variable.native_kernel_variable_name,
+                   variable.native_kernel_variable_type)])
+                quantifiers
+                body
+          | Ap (TmH "vampire_exists_prop", Lam (tp, body)) ->
+              let _, quantifiers = consume_quantifier "exists" tp quantifiers in
+              collect context quantifiers body
+          | Imp (left, right) ->
+              let direct =
+                exists_candidate right left
+              in
+              let left_sources, quantifiers = collect context quantifiers left in
+              let right_sources, quantifiers = collect context quantifiers right in
+              direct @ left_sources @ right_sources, quantifiers
+          | Ap (Ap (TmH ("vampire_or" | "vampire_and"), left), right) ->
+              let direct =
+                exists_candidate formula left @ exists_candidate formula right
+              in
+              let left_sources, quantifiers = collect context quantifiers left in
+              let right_sources, quantifiers = collect context quantifiers right in
+              direct @ left_sources @ right_sources, quantifiers
+          | Ap (left, right) ->
+              let left_sources, quantifiers = collect context quantifiers left in
+              let right_sources, quantifiers = collect context quantifiers right in
+              left_sources @ right_sources, quantifiers
+          | TpAp (body, _) | Lam (_, body) ->
+              collect context quantifiers body
+          | _ -> [], quantifiers
+        in
+        match quantifiers with
+        | [] ->
+            let context, body = peel_foralls 0 [] formula in
+            begin match body with
+            | Imp (Ap (TmH "vampire_exists_prop", Lam (witness_tp, exists_body)), target_body) ->
+                [context, witness_tp, exists_body, target_body]
+            | _ -> fst (collect context [] body)
+            end
+          | _ -> fst (collect [] quantifiers formula)
       in
       let witnesses =
         List.init introduced_count (fun index ->
-          parse_tm_field ("introduced_" ^ string_of_int index ^ "_witness_term"))
+          match parse_tm_field ("introduced_" ^ string_of_int index ^ "_witness_term") with
+          | None -> None
+          | Some witness ->
+              Some
+                (witness,
+                 parse_tp_field
+                   ("introduced_" ^ string_of_int index ^ "_replaced_var_sort_sexpr")))
         |> List.filter_map (fun x -> x)
       in
       for index = 0 to introduced_count - 1 do
@@ -11736,24 +11879,33 @@ let native_core_certificate_sgdelta cert symbol_table =
           parse_tm_field ("parent_" ^ string_of_int (index + 1) ^ "_formula")
         with
         | Some parent_formula ->
-            begin match parent_definition_source parent_formula with
-            | Some (context, witness_tp, body, target_body) ->
+            parent_definition_sources (index + 1) parent_formula
+            |> List.iter
+                 (fun (context, witness_tp, body, target_body) ->
                 begin match
                   witnesses
                   |> List.find_opt
-                       (fun witness ->
+                       (fun (witness, witness_sort) ->
+                          (match witness_sort with
+                           | Some sort -> sort = witness_tp
+                           | None -> true)
+                          &&
                           let closed_witness = native_core_close_tm context witness in
                           contains_tm closed_witness target_body)
                 with
-                | Some witness -> add_definition context witness_tp body witness
+                | Some (witness, _) -> add_definition context witness_tp body witness
                 | None -> ()
-                end
-            | None -> ()
-            end
+                end)
         | _ -> ()
       done
     in
-    ignore (add 0 [] source subst);
+    let source_quantifiers =
+      native_core_kernel_v1_quantifier_fields cert id "source_formula"
+    in
+    if source_quantifiers = [] then
+      ignore (add 0 [] source subst)
+    else
+      ignore (add_with_quantifiers [] source_quantifiers source subst);
     add_skolem_definitions_from_parent_formulas ()
   in
   let add_skolem_definition id symbol source =
@@ -11842,7 +11994,10 @@ let native_core_expand_generated_skolems_tm ?(ambient_shift=0) cert definitions 
     let head, args = native_core_flatten_value_application mapped in
     match head with
     | TmH h when is_generated h ->
-        begin match Hashtbl.find_opt definitions h with
+        begin match
+          native_core_symbol_name_aliases h
+          |> List.find_map (fun alias -> Hashtbl.find_opt definitions alias)
+        with
         | Some (0, body) ->
             if List.length args < leading_lam_count 0 body then mapped
             else tm depth (apply_definition (tmshift 0 (ambient_shift + depth) body) args)
@@ -21702,7 +21857,7 @@ let elaborate_preprocess_refutation_native
                       let _, args =
                         native_core_flatten_value_application target_witness
                       in
-                      let dependency_types =
+                      let dependencies =
                         args
                         |> List.map
                              (fun arg ->
@@ -21710,35 +21865,32 @@ let elaborate_preprocess_refutation_native
                                 | TmH raw_dependency ->
                                     begin match native_core_ident_opt raw_dependency with
                                     | Some dependency ->
-                                        List.assoc_opt
-                                          dependency
-                                          (variables @ parent_step_variables @ result_step_variables)
+                                        Option.map
+                                          (fun tp -> (dependency, tp))
+                                          (List.assoc_opt
+                                             dependency
+                                             (variables @ parent_step_variables @ result_step_variables))
                                     | None -> None
                                     end
                                 | _ -> None)
                       in
-                      let rec collect_types = function
+                      let rec collect_dependencies = function
                         | [] -> Some []
-                        | Some tp :: rest ->
-                            begin match collect_types rest with
-                            | Some rest -> Some (tp :: rest)
+                        | Some dependency :: rest ->
+                            begin match collect_dependencies rest with
+                            | Some rest -> Some (dependency :: rest)
                             | None -> None
                             end
                         | None :: _ -> None
                       in
-                      match collect_types dependency_types with
+                      match collect_dependencies dependencies with
                       | None -> None
-                      | Some dependency_types ->
-                          let body =
-                            native_core_close_tm variables epsilon_witness
-                            |> tm_beta_eta_norm
-                          in
+                      | Some dependencies ->
                           Some
-                            (List.fold_right
-                               (fun tp body -> Lam (tp, tmshift 0 1 body))
-                               dependency_types
-                               body
-                             |> tm_beta_eta_norm)
+                            (native_core_dependent_witness_definition
+                               variables
+                               dependencies
+                               epsilon_witness)
                     in
                     begin match closed_witness with
                     | Some closed_witness
@@ -22663,7 +22815,7 @@ let elaborate_preprocess_refutation_native
     | TmH raw_name, args ->
         begin match native_core_ident_opt raw_name with
         | Some name when List.mem name introduced_names ->
-            let dependency_types =
+            let dependencies =
               args
               |> List.map
                    (fun arg ->
@@ -22671,34 +22823,32 @@ let elaborate_preprocess_refutation_native
                       | TmH raw_dependency ->
                           begin match native_core_ident_opt raw_dependency with
                           | Some dependency ->
-                              List.assoc_opt
-                                dependency
-                                (variables @ parent_step_variables
-                                 @ result_step_variables)
+                              Option.map
+                                (fun tp -> (dependency, tp))
+                                (List.assoc_opt
+                                   dependency
+                                   (variables @ parent_step_variables
+                                    @ result_step_variables))
                           | None -> None
                           end
                       | _ -> None)
             in
-            let rec collect_types = function
+            let rec collect_dependencies = function
               | [] -> Some []
-              | Some tp :: rest ->
-                  begin match collect_types rest with
-                  | Some rest -> Some (tp :: rest)
+              | Some dependency :: rest ->
+                  begin match collect_dependencies rest with
+                  | Some rest -> Some (dependency :: rest)
                   | None -> None
                   end
               | None :: _ -> None
             in
-            begin match collect_types dependency_types with
-            | Some dependency_types ->
-                let body =
-                  native_core_close_tm variables epsilon_witness
-                  |> tm_beta_eta_norm
-                in
+            begin match collect_dependencies dependencies with
+            | Some dependencies ->
                 let closed_witness =
-                  List.fold_right
-                    (fun tp body -> Lam (tp, tmshift 0 1 body))
-                    dependency_types
-                    body
+                  native_core_dependent_witness_definition
+                    variables
+                    dependencies
+                    epsilon_witness
                   |> tm_beta_eta_norm
                 in
                 register_closed_witness raw_name name closed_witness
