@@ -16277,6 +16277,210 @@ let native_core_skolem_refutation_cps_proof
 		      end
 		    end
 		  in
+  let short_skolem_transport_tm tm =
+    let text = tm_to_str tm in
+    if String.length text <= 300 then text else String.sub text 0 300 ^ "..."
+  in
+  let rec skolem_formula_transport_at path direction source target proof =
+    let source_prop =
+      native_core_formula_prop source
+      |> native_core_normalize_bool_constants
+      |> tm_beta_eta_norm
+    in
+    let target_prop =
+      native_core_formula_prop target
+      |> native_core_normalize_bool_constants
+      |> tm_beta_eta_norm
+    in
+    if source_prop = target_prop then
+      proof
+    else
+      match source, target with
+      | All (source_tp, source_body), All (target_tp, target_body)
+          when source_tp = target_tp ->
+          TLam
+            (source_tp,
+             skolem_formula_transport_at
+               (path ^ ".forall")
+               direction
+               source_body
+               target_body
+               (PTmAp (pftmshift 0 1 proof, DB 0)))
+      | Imp (source_left, source_right), Imp (target_left, target_right) ->
+          begin match direction with
+          | `Forward ->
+              PLam
+                (native_core_formula_prop target_left,
+                 let source_left_proof =
+                   skolem_formula_transport_at
+                     (path ^ ".imp.left")
+                     `Backward
+                     source_left
+                     target_left
+                     (Hyp 0)
+                 in
+                 let source_right_proof =
+                   PPfAp (pfshift 0 1 proof, source_left_proof)
+                 in
+                 skolem_formula_transport_at
+                   (path ^ ".imp.right")
+                   `Forward
+                   source_right
+                   target_right
+                   source_right_proof)
+          | `Backward ->
+              PLam
+                (native_core_formula_prop source_left,
+                 let target_left_proof =
+                   skolem_formula_transport_at
+                     (path ^ ".imp.left")
+                     `Forward
+                     source_left
+                     target_left
+                     (Hyp 0)
+                 in
+                 let target_right_proof =
+                   PPfAp (pfshift 0 1 proof, target_left_proof)
+                 in
+                 skolem_formula_transport_at
+                   (path ^ ".imp.right")
+                   `Backward
+                   source_right
+                   target_right
+                   target_right_proof)
+          end
+      | Ap (Ap (TmH "vampire_and", source_left), source_right),
+        Ap (Ap (TmH "vampire_and", target_left), target_right) ->
+          begin match direction with
+          | `Forward ->
+              let source_left_prop = native_core_formula_prop source_left in
+              let source_right_prop = native_core_formula_prop source_right in
+              let target_left_prop = native_core_formula_prop target_left in
+              let target_right_prop = native_core_formula_prop target_right in
+              let source_left_proof =
+                native_core_and_elim_left source_left_prop source_right_prop proof
+              in
+              let source_right_proof =
+                native_core_and_elim_right source_left_prop source_right_prop proof
+              in
+              native_core_and_intro
+                target_left_prop
+                target_right_prop
+                (skolem_formula_transport_at
+                   (path ^ ".and.left")
+                   `Forward source_left target_left source_left_proof)
+                (skolem_formula_transport_at
+                   (path ^ ".and.right")
+                   `Forward source_right target_right source_right_proof)
+          | `Backward ->
+              let source_left_prop = native_core_formula_prop source_left in
+              let source_right_prop = native_core_formula_prop source_right in
+              let target_left_prop = native_core_formula_prop target_left in
+              let target_right_prop = native_core_formula_prop target_right in
+              let target_left_proof =
+                native_core_and_elim_left target_left_prop target_right_prop proof
+              in
+              let target_right_proof =
+                native_core_and_elim_right target_left_prop target_right_prop proof
+              in
+              native_core_and_intro
+                source_left_prop
+                source_right_prop
+                (skolem_formula_transport_at
+                   (path ^ ".and.left")
+                   `Backward source_left target_left target_left_proof)
+                (skolem_formula_transport_at
+                   (path ^ ".and.right")
+                   `Backward source_right target_right target_right_proof)
+          end
+      | Ap (Ap (TmH "vampire_or", source_left), source_right),
+        Ap (Ap (TmH "vampire_or", target_left), target_right) ->
+          begin match direction with
+          | `Forward ->
+              let source_left_prop = native_core_formula_prop source_left in
+              let source_right_prop = native_core_formula_prop source_right in
+              let target_left_prop = native_core_formula_prop target_left in
+              let target_right_prop = native_core_formula_prop target_right in
+              let target_prop = native_core_or target_left_prop target_right_prop in
+              let left_branch =
+                PLam
+                  (source_left_prop,
+                   native_core_or_intro_left
+                     target_left_prop
+                     target_right_prop
+                     (skolem_formula_transport_at
+                        (path ^ ".or.left")
+                        `Forward source_left target_left (Hyp 0)))
+              in
+              let right_branch =
+                PLam
+                  (source_right_prop,
+                   native_core_or_intro_right
+                     target_left_prop
+                     target_right_prop
+                     (skolem_formula_transport_at
+                        (path ^ ".or.right")
+                        `Forward source_right target_right (Hyp 0)))
+              in
+              PPfAp (PPfAp (PTmAp (proof, target_prop), left_branch), right_branch)
+          | `Backward ->
+              let source_left_prop = native_core_formula_prop source_left in
+              let source_right_prop = native_core_formula_prop source_right in
+              let target_left_prop = native_core_formula_prop target_left in
+              let target_right_prop = native_core_formula_prop target_right in
+              let source_prop = native_core_or source_left_prop source_right_prop in
+              let left_branch =
+                PLam
+                  (target_left_prop,
+                   native_core_or_intro_left
+                     source_left_prop
+                     source_right_prop
+                     (skolem_formula_transport_at
+                        (path ^ ".or.left")
+                        `Backward source_left target_left (Hyp 0)))
+              in
+              let right_branch =
+                PLam
+                  (target_right_prop,
+                   native_core_or_intro_right
+                     source_left_prop
+                     source_right_prop
+                     (skolem_formula_transport_at
+                        (path ^ ".or.right")
+                        `Backward source_right target_right (Hyp 0)))
+              in
+              PPfAp (PPfAp (PTmAp (proof, source_prop), left_branch), right_branch)
+          end
+      | _ ->
+          begin match
+            native_core_equality_sides source,
+            native_core_equality_sides target
+          with
+          | Some (source_tp, source_left, source_right),
+            Some (target_tp, target_left, target_right)
+              when source_tp = target_tp
+                   && source_left = target_right
+                   && source_right = target_left ->
+              begin match direction with
+              | `Forward ->
+                  native_core_positive_eq_symmetry
+                    source_tp source_left source_right proof
+              | `Backward ->
+                  native_core_positive_eq_symmetry
+                    target_tp target_left target_right proof
+              end
+          | _ ->
+              error
+                (id ^ ": native preprocess Skolem CPS formula transport supports only matching structure and equality symmetry at "
+                 ^ path
+                 ^ "; source="
+                 ^ short_skolem_transport_tm source
+                 ^ "; target="
+                 ^ short_skolem_transport_tm target)
+          end
+  and skolem_formula_transport direction source target proof =
+    skolem_formula_transport_at "root" direction source target proof
+  in
 			  let result_to_target_builder term_depth proof_depth term_replacements replacements fallback_replacements =
 	    let result_prop =
 	      formula_prop_with_replacements
@@ -16919,7 +17123,7 @@ let native_core_skolem_refutation_cps_proof
             fallback_replacements
             proof
         in
-        let equality_oriented_result_proof =
+        let transported_result_proof =
           if source_prop = expected_result_prop then
             None
           else
@@ -16939,25 +17143,21 @@ let native_core_skolem_refutation_cps_proof
                 result
               |> native_core_replace_terms_in_tm term_replacements
             in
-            match
-              native_core_equality_sides source_formula,
-              native_core_equality_sides result_formula
-            with
-            | Some (source_tp, source_left, source_right),
-              Some (result_tp, result_left, result_right)
-                when source_tp = result_tp
-                     && source_left = result_right
-                     && source_right = result_left ->
-                Some
-                  (native_core_positive_eq_symmetry
-                     source_tp
-                     source_left
-                     source_right
-                     source_proof_with_replacements)
-            | _ -> None
+            try
+              Some
+                (skolem_formula_transport
+                   `Forward
+                   source_formula
+                   result_formula
+                   source_proof_with_replacements)
+            with Error msg ->
+              if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+                prerr_endline
+                  (id ^ ": native preprocess Skolem CPS formula transport skipped: " ^ msg);
+              None
         in
         if source_prop <> expected_result_prop
-           && equality_oriented_result_proof = None then begin
+           && transported_result_proof = None then begin
           if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
             prerr_endline ("native preprocess Skolem CPS source base: " ^ tm_to_str source_prop);
             prerr_endline ("native preprocess Skolem CPS result base: " ^ tm_to_str expected_result_prop);
@@ -17044,7 +17244,7 @@ let native_core_skolem_refutation_cps_proof
             (id ^ ": native preprocess Skolem CPS source body does not match the Skolem result")
         end;
         let result_checked_proof =
-          match equality_oriented_result_proof with
+          match transported_result_proof with
           | Some proof -> proof
           | None -> source_proof_with_replacements
         in
