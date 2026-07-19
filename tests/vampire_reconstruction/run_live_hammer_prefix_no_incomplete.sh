@@ -7,8 +7,8 @@ export TMPDIR
 
 MEGALODON=${MEGALODON:-"$ROOT/bin/megalodon"}
 SOURCE_FILE=${SOURCE_FILE:-"$ROOT/examples/hammer/100thms_12_h.mg"}
-PREFIX_END_LINE=${PREFIX_END_LINE:-205}
-EXPECTED_RECONSTRUCTED=${EXPECTED_RECONSTRUCTED:-9}
+PREFIX_END_LINE=${PREFIX_END_LINE:-246}
+EXPECTED_RECONSTRUCTED=${EXPECTED_RECONSTRUCTED:-17}
 MEGALODON_VAMPIRE_TIMEOUT=${MEGALODON_VAMPIRE_TIMEOUT:-10}
 WALL_SECONDS=${WALL_SECONDS:-180}
 WORK_DIR=${WORK_DIR:-"$(mktemp -d "$TMPDIR/live_hammer_prefix_no_incomplete.XXXXXX")"}
@@ -55,10 +55,10 @@ fi
 
 prefix_file="$WORK_DIR/hammer_prefix_no_incomplete.mg"
 awk -v end_line="$PREFIX_END_LINE" 'NR<=end_line {print}' "$SOURCE_FILE" |
-  sed 's/^aby\.$/vampire./' >"$prefix_file"
+  sed -E 's/^aby(.*)\.$/vampire\1./' >"$prefix_file"
 
 expected_reconstructed=$EXPECTED_RECONSTRUCTED
-actual_vampire_commands=$(rg -c '^vampire\.$' "$prefix_file" || true)
+actual_vampire_commands=$(rg -c '^vampire( .*)?\.$' "$prefix_file" || true)
 if [[ "$actual_vampire_commands" != "$expected_reconstructed" ]]; then
   echo "expected $expected_reconstructed generated vampire commands, got $actual_vampire_commands" >&2
   exit 1

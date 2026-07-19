@@ -3273,6 +3273,84 @@ let vampire_constructive_goal_search
                 end
             end
       in
+      let church_and_pair proposition =
+        match expose proposition with
+        | All (Prop, Imp (Imp (left, Imp (right, DB 0)), DB 0)) ->
+            Some (left, right)
+        | _ -> None
+      in
+      let church_and_intro_from_hyps hyps goal =
+        let debug_church_and =
+          debug_constructive
+          && Sys.getenv_opt "MEGALODON_CERT_DEBUG_CHURCH_AND" = Some "1"
+        in
+        let rec hypothesis_proof term_offset proof_offset leaf index = function
+          | [] -> None
+          | proposition :: rest ->
+              if convertible leaf (tmshift 0 term_offset proposition) then
+                Some (Hyp (proof_offset + index))
+              else
+                hypothesis_proof term_offset proof_offset leaf (index + 1) rest
+        in
+        let rec build term_offset proof_offset proposition =
+          match church_and_pair proposition with
+          | None ->
+              let result =
+                hypothesis_proof term_offset proof_offset proposition 0 hyps
+              in
+              if result = None && debug_church_and then
+                begin
+                  Printf.printf
+                    "Vampire native Church-and intro leaf miss at line %d char %d: term_offset=%d proof_offset=%d leaf=%s hyps=[%s].\n"
+                    !lineno
+                    !charno
+                    term_offset
+                    proof_offset
+                    (tm_to_str proposition)
+                    (String.concat "; " (List.map tm_to_str hyps));
+                  flush stdout
+                end;
+              result
+          | Some (left, right) ->
+              begin match
+                build (term_offset + 1) (proof_offset + 1) left,
+                build (term_offset + 1) (proof_offset + 1) right
+              with
+              | Some left_proof, Some right_proof ->
+                  Some
+                    (TLam
+                       (Prop,
+                        PLam
+                          (Imp (left, Imp (right, DB 0)),
+                           PPfAp (PPfAp (Hyp 0, left_proof), right_proof))))
+              | _ -> None
+              end
+        in
+        build 0 0 goal
+      in
+      let church_and_intro_chain_proof goal =
+        let rec split assumptions tm =
+          match expose tm with
+          | Imp (assumption, conclusion) ->
+              split (assumption :: assumptions) conclusion
+          | conclusion -> (List.rev assumptions, conclusion)
+        in
+        match cxpf, split [] goal with
+        | _, ([], _) -> None
+        | _ :: _, _ -> None
+        | [], (_, conclusion) when church_and_pair conclusion = None -> None
+        | [], (assumptions, conclusion) ->
+            let body_hyps = List.rev assumptions @ cxpf in
+            begin match church_and_intro_from_hyps body_hyps conclusion with
+            | None -> None
+            | Some proof ->
+                Some
+                  (List.fold_right
+                     (fun assumption proof -> PLam (assumption, proof))
+                     assumptions
+                     proof)
+            end
+      in
       let prove_by_hypothesis () =
         let rec try_hypotheses = function
           | [] -> None
@@ -3318,12 +3396,16 @@ let vampire_constructive_goal_search
       let goal_view = expose goal in
       match goal_view with
       | Imp (assumption, conclusion) ->
+          begin match church_and_intro_chain_proof goal with
+          | Some _ as result -> result
+          | None ->
           begin match church_or_elimination_proof assumption conclusion with
           | Some _ as result -> result
           | None ->
           begin match prove (depth - 1) cxtm (assumption :: cxpf) conclusion with
           | Some proof -> Some (PLam (assumption, proof))
           | None -> prove_by_context ()
+          end
           end
           end
       | All (tp, body) ->
