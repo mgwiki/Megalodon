@@ -42,6 +42,12 @@ classify_error() {
   local native_file=$2
   local msg
   msg=$(tail -1 "$err_file" | tr '\t' ' ')
+  if rg -q 'skolem_formula|rectify_formula' "$native_file" \
+      && ! rg -q 'VLAMV' "$native_file" \
+      && [[ "$msg" =~ (formula\ orientation\ supports\ only|ill-formed\ proof\ term|Not_found) ]]; then
+    printf 'STALE_UNNAMED_BINDERS'
+    return 0
+  fi
   if [[ "$msg" =~ refuses\ certificate-derived\ Known\ primitive\ ([^[:space:]\;]+) ]]; then
     printf 'TRANSITIONAL_%s' "${BASH_REMATCH[1]}"
   elif [[ "$msg" =~ skolemization\ needs\ an\ explicit\ source\ formula ]]; then
@@ -49,12 +55,7 @@ classify_error() {
   elif [[ "$msg" =~ skolemization\ result\ does\ not\ match\ source\ body ]]; then
     printf 'SKOLEM_SOURCE_BODY_MISMATCH'
   elif [[ "$msg" =~ formula\ orientation\ supports\ only ]]; then
-    if rg -q 'skolem_formula|rectify_formula' "$native_file" \
-        && ! rg -q 'VLAMV' "$native_file"; then
-      printf 'STALE_UNNAMED_BINDERS'
-    else
-      printf 'FORMULA_ORIENTATION_UNSUPPORTED'
-    fi
+    printf 'FORMULA_ORIENTATION_UNSUPPORTED'
   elif [[ "$msg" =~ rectify_formula ]]; then
     printf 'RECTIFY_UNSUPPORTED'
   elif [[ "$msg" =~ no\ proof-term\ rule\ for\ ([a-z_]+) ]]; then
