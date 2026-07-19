@@ -370,14 +370,14 @@ if ! rg -q 'source context audited total=3 known_checked=1 known_missing=0 known
   echo "native certificate v1 source-context audit did not resolve a real hash-backed known" >&2
   exit 1
 fi
-if ! rg -q 'local_checked=0 local_missing=2 local_mismatch=0' \
+if ! rg -q 'local_checked=2 local_missing=0 local_mismatch=0' \
     "$WORK_DIR/native_cert_v1_source_context_checked.log"; then
-  echo "native certificate v1 source-context audit did not expose unresolved local facts" >&2
+  echo "native certificate v1 source-context audit did not synthesize standalone local facts" >&2
   exit 1
 fi
-if ! rg -q 'source context issues count=2 sample=local_missing:u2:local_fact:local_not_p:,local_missing:u3:local_fact:local_p:' \
+if ! rg -q 'source context issues count=0 sample=\.' \
     "$WORK_DIR/native_cert_v1_source_context_checked.log"; then
-  echo "native certificate v1 source-context audit did not report local source issue details" >&2
+  echo "native certificate v1 source-context audit reported unexpected local source issues" >&2
   exit 1
 fi
 
@@ -393,14 +393,14 @@ if ! rg -q 'Vampire certificate v1 native core proof term checked 4 steps' \
   echo "native certificate v1 core checker did not accept a context-resolved source proof" >&2
   exit 1
 fi
-if ! rg -q 'Vampire certificate v1 native core source assumptions remaining 2' \
+if ! rg -q 'Vampire certificate v1 native core source assumptions remaining 0' \
     "$WORK_DIR/native_cert_v1_source_context_core_pf.log"; then
-  echo "native certificate v1 core checker did not discharge the hash-backed source proof from assumptions" >&2
+  echo "native certificate v1 core checker did not discharge the source-context proofs from assumptions" >&2
   exit 1
 fi
-if ! rg -q 'Vampire certificate v1 native core source assumptions remaining by kind known=0 local=2 definition=0 generated=0 conjecture=0 unresolved=0' \
+if ! rg -q 'Vampire certificate v1 native core source assumptions remaining by kind known=0 local=0 definition=0 generated=0 conjecture=0 unresolved=0' \
     "$WORK_DIR/native_cert_v1_source_context_core_pf.log"; then
-  echo "native certificate v1 core checker did not classify remaining local source assumptions" >&2
+  echo "native certificate v1 core checker did not consume standalone local source assumptions" >&2
   exit 1
 fi
 
@@ -467,12 +467,12 @@ if ! rg -q 'source context audited total=3 known_checked=1 known_missing=0 known
   echo "native certificate v1 theorem source-context audit did not resolve a source-map theorem hash through the original theorem name" >&2
   exit 1
 fi
-if ! rg -q 'source context issues count=2 sample=local_missing:u2:local_fact:local_not_p:,local_missing:u3:local_fact:local_p:' \
+if ! rg -q 'source context issues count=0 sample=\.' \
     "$WORK_DIR/native_cert_v1_source_context_theorem_core_pf.log"; then
   echo "native certificate v1 theorem source-context audit reported unexpected issue details" >&2
   exit 1
 fi
-if ! rg -q 'Vampire certificate v1 native core source assumptions remaining by kind known=0 local=2 definition=0 generated=0 conjecture=0 unresolved=0' \
+if ! rg -q 'Vampire certificate v1 native core source assumptions remaining by kind known=0 local=0 definition=0 generated=0 conjecture=0 unresolved=0' \
     "$WORK_DIR/native_cert_v1_source_context_theorem_core_pf.log"; then
   echo "native certificate v1 theorem source-context core checker did not discharge the name-resolved theorem proof" >&2
   exit 1
@@ -526,7 +526,7 @@ if ! rg -q 'source context audited total=2 known_checked=1 known_missing=0 known
   echo "native certificate v1 equality-symmetry source-context audit did not synthesize the reversed known equality" >&2
   exit 1
 fi
-if ! rg -q 'source context issues count=1 sample=local_missing:u1:local_fact:local_not_eq:' \
+if ! rg -q 'source context issues count=0 sample=\.' \
     "$WORK_DIR/native_cert_v1_source_context_eqsym_core_pf.log"; then
   echo "native certificate v1 equality-symmetry source-context audit reported unexpected issue details" >&2
   exit 1
@@ -712,6 +712,52 @@ fi
 if ! rg -q 'Vampire certificate v1 native preprocess final conjecture proof term checked\.' \
     "$WORK_DIR/native_cert_v1_known_goal_source_context_preprocess_pf.log"; then
   echo "native certificate v1 preprocess checker did not compose the checked refutation into the final conjecture" >&2
+  exit 1
+fi
+
+standalone_local_goal_th0="$WORK_DIR/native_cert_v1_standalone_local_goal.th0.p"
+standalone_local_goal_cert="$WORK_DIR/native_cert_v1_standalone_local_goal.sexp"
+cat > "$standalone_local_goal_th0" <<'EOF_STANDALONE_LOCAL_GOAL_TH0'
+% megalodon_origin ((file "native_cert_v1_standalone_local_goal.mg") (line "1") (char "1") (kind "standalone_local_goal_source_context_smoke"))
+% megalodon_source_map (type "p" "p" "")
+thf(p,type,(p : $o)).
+% megalodon_source_map (local_fact "lp" "Hp" "")
+thf(lp,axiom,p).
+% megalodon_source_map (negated_conjecture "ng" "goal_p" "")
+thf(ng,negated_conjecture,~p).
+EOF_STANDALONE_LOCAL_GOAL_TH0
+cat > "$standalone_local_goal_cert" <<'EOF_STANDALONE_LOCAL_GOAL_CERT'
+(certificate vampire-megalodon 1
+  (problem "standalone-local-goal-source-context")
+  (symbol_declaration "Variable p:prop.")
+  (input "u1" (source axiom "lp") (clause (pos (TMH "p"))))
+  (formula_input "u2" (source negated_conjecture "ng")
+    (neg (TMH "p")))
+  (cnf_literal "u3"
+    (parent "u2")
+    (result
+      (clause
+        (neg (TMH "p")))))
+  (resolve "u4" (parents "u1" "u3") (pivot 0 0) (result (clause)))
+  (contradiction "u5" "u4"))
+EOF_STANDALONE_LOCAL_GOAL_CERT
+
+bin/megalodon \
+  -vampirecertv1sourcecontextstrict \
+  -vampirecertv1preprocesspfcheck \
+  -vampirecertv1strict \
+  -vampirecertv1 "$standalone_local_goal_cert" \
+  -vampirecertv1source "$standalone_local_goal_th0" \
+  "$dummy" >"$WORK_DIR/native_cert_v1_standalone_local_goal_preprocess_pf.log"
+
+if ! rg -q 'source context audited total=2 known_checked=0 known_missing=0 known_mismatch=0 local_checked=1 local_missing=0 local_mismatch=0' \
+    "$WORK_DIR/native_cert_v1_standalone_local_goal_preprocess_pf.log"; then
+  echo "native certificate v1 standalone source-context audit did not synthesize the local source hypothesis" >&2
+  exit 1
+fi
+if ! rg -q 'Vampire certificate v1 native preprocess source assumptions remaining by kind known=0 local=0 definition=0 generated=0 conjecture=1 unresolved=0' \
+    "$WORK_DIR/native_cert_v1_standalone_local_goal_preprocess_pf.log"; then
+  echo "native certificate v1 standalone preprocess checker did not consume the synthesized local source hypothesis" >&2
   exit 1
 fi
 

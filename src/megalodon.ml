@@ -10558,6 +10558,23 @@ let audit_vampire_cert_v1_source_context cert source_map =
       ~external_definition_names
       cert
   in
+  let standalone_local_hypotheses =
+    let rec add seen acc = function
+      | [] -> List.rev acc
+      | binding :: rest ->
+          if binding.Vampire_cert_v1.core_native_source_map_kind = "local_fact"
+             && binding.Vampire_cert_v1.core_native_source_name <> ""
+             && not (List.mem binding.Vampire_cert_v1.core_native_source_name seen)
+          then
+            add
+              (binding.Vampire_cert_v1.core_native_source_name :: seen)
+              ((binding.Vampire_cert_v1.core_native_source_name,
+                binding.Vampire_cert_v1.core_native_source_proposition) :: acc)
+              rest
+          else add seen acc rest
+    in
+    add [] [] bindings
+  in
   let context =
     {
       Vampire_source_context.proof_delta =
@@ -10567,7 +10584,7 @@ let audit_vampire_cert_v1_source_context cert source_map =
       term_context = [];
       local_term_projection = [];
       local_terms = [];
-      local_hypotheses = [];
+      local_hypotheses = standalone_local_hypotheses;
       local_definitions = [];
     }
   in
@@ -10629,7 +10646,8 @@ let audit_vampire_cert_v1_source_context cert source_map =
     raise
       (Vampire_cert_v1.Error
          "strict source-context audit failed: at least one source did not resolve to a checked proof in the loaded Megalodon context");
-  audit.Vampire_source_context.source_proofs
+  let external_hypotheses = List.map snd standalone_local_hypotheses in
+  audit.Vampire_source_context.source_proofs, external_hypotheses
 
 let check_vampire_cert_v1_file fn =
   try
@@ -10647,6 +10665,7 @@ let check_vampire_cert_v1_file fn =
     let source_map_for_emit = ref [] in
     let source_origin_for_emit = ref None in
     let source_proofs_for_native = ref [] in
+    let source_external_hypotheses_for_native = ref [] in
     begin match !vampirecertv1source with
     | None ->
         if !vampirecertv1corepfcheck || !vampirecertv1preprocesspfcheck then
@@ -10693,8 +10712,13 @@ let check_vampire_cert_v1_file fn =
           source_count
           (if source_count = 1 then "" else "s");
         if !vampirecertv1sourcecontext || !vampirecertv1sourcecontextstrict then
-          source_proofs_for_native :=
-            audit_vampire_cert_v1_source_context cert source_map;
+          begin
+            let source_proofs, external_hypotheses =
+              audit_vampire_cert_v1_source_context cert source_map
+            in
+            source_proofs_for_native := source_proofs;
+            source_external_hypotheses_for_native := external_hypotheses
+          end;
         if !vampirecertv1sourceaudit then
           Printf.printf
             "Vampire certificate v1 source obligations audited total=%d formula_checked=%d formula_unsupported=%d formula_missing=%d equality_checked=%d set_reflexivity_checked=%d true_checked=%d.\n"
@@ -10751,7 +10775,7 @@ let check_vampire_cert_v1_file fn =
               (native_certificate_sgdelta native)
               (native_certificate_sgtmof native)
               cxtm
-              []
+              !source_external_hypotheses_for_native
               proof
               prop
               []
@@ -10769,6 +10793,7 @@ let check_vampire_cert_v1_file fn =
         Vampire_cert_v1.elaborate_core_resolution_refutation_native
           ~source_map:!source_map_for_emit
           ~source_proofs:!source_proofs_for_native
+          ~external_hypotheses:!source_external_hypotheses_for_native
           ~external_delta_table:
             (vampire_source_context_delta_with_source_map !source_map_for_emit)
           ~external_definition_names
@@ -10822,6 +10847,7 @@ let check_vampire_cert_v1_file fn =
         Vampire_cert_v1.elaborate_preprocess_refutation_native
           ~source_map:!source_map_for_emit
           ~source_proofs:!source_proofs_for_native
+          ~external_hypotheses:!source_external_hypotheses_for_native
           ~external_delta_table:
             (vampire_source_context_delta_with_source_map !source_map_for_emit)
           ~external_definition_names
