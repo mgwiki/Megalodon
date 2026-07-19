@@ -694,6 +694,8 @@ diagnostic, not a passing gate. The older cached Skolem cases mostly predate
 the current Vampire `VLAMV`/explicit-source Skolem output and are now reported
 as `STALE_SKOLEM_NO_SOURCE`; they should be regenerated before being used as
 evidence for the current Skolem proof-term path.
+The checker phase is strict and bounded by `CHECK_TIMEOUT` seconds per case
+(default `30`) so one slow cached proof cannot stall the whole frontier run.
 
 To check the current live Vampire path for nested Skolem proof terms, use:
 

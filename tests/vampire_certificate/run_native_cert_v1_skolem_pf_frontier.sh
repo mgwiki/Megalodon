@@ -9,6 +9,7 @@ MEGALODON=${MEGALODON:-"$ROOT/bin/megalodon"}
 CASES_DIR=${CASES_DIR:-"$ROOT/tests/vampire_certificate/closed_cases"}
 WORK_DIR=${WORK_DIR:-"$(mktemp -d "$TMPDIR/native_cert_v1_skolem_pf_frontier.XXXXXX")"}
 JOBS=${JOBS:-10}
+CHECK_TIMEOUT=${CHECK_TIMEOUT:-30}
 MIN_SKOLEM=${MIN_SKOLEM:-10}
 MIN_FRONTIER_CASES=${MIN_FRONTIER_CASES:-10}
 
@@ -56,6 +57,8 @@ classify_error() {
     printf 'WRONG_PROPOSITION'
   elif [[ "$msg" =~ ill-formed\ proof\ term ]]; then
     printf 'ILL_FORMED_PROOF_TERM'
+  elif [[ "$msg" =~ timed\ out ]]; then
+    printf 'TIMEOUT'
   else
     printf 'PF_FAIL'
   fi
@@ -78,8 +81,9 @@ run_one() {
     return 0
   fi
 
-  if "$MEGALODON" \
+  if timeout "$CHECK_TIMEOUT"s "$MEGALODON" \
       -vampirecertv1preprocesspfcheck \
+      -vampirecertv1strict \
       -vampirecertv1 "$native" \
       -vampirecertv1source "$source" \
       "$case_dir/dummy.mg" > "$case_dir/check.out" 2> "$case_dir/check.err"; then
@@ -91,13 +95,19 @@ run_one() {
     return 0
   fi
 
+  local rc=$?
   local status err
-  status=$(classify_error "$case_dir/check.err")
-  err=$(tail -1 "$case_dir/check.err" | tr '\t' ' ')
+  if [[ "$rc" -eq 124 ]]; then
+    status=TIMEOUT
+    err="checker timed out after ${CHECK_TIMEOUT}s"
+  else
+    status=$(classify_error "$case_dir/check.err")
+    err=$(tail -1 "$case_dir/check.err" | tr '\t' ' ')
+  fi
   printf '%s\t%s\t%s\n' "$base" "$status" "$err" > "$case_dir/result.tsv"
 }
 
-export MEGALODON CASES_DIR WORK_DIR
+export MEGALODON CASES_DIR WORK_DIR CHECK_TIMEOUT
 export -f classify_error run_one
 
 xargs -r -P "$JOBS" -n 1 bash -c 'run_one "$1"' bash < "$frontier_cases"
