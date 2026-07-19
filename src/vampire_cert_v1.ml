@@ -21135,8 +21135,6 @@ let elaborate_preprocess_refutation_native
           let preserved_contract_step_variables =
             match skolem_contract with
             | None -> []
-            | Some _ when result_formula_has_free_variable_metadata ->
-                base_result_assumption_step_variables
             | Some contract ->
                 let top_level_preserved =
                   contract.Vampire_kernel_syntax.skolem_parent_instantiations
