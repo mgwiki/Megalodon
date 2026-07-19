@@ -52,10 +52,10 @@ if ! supports_megalodon_proof "$VAMPIRE"; then
 fi
 
 prefix_file="$WORK_DIR/hammer_prefix_no_incomplete.mg"
-awk 'NR<=178 {print}' "$SOURCE_FILE" |
+awk 'NR<=185 {print}' "$SOURCE_FILE" |
   sed 's/^aby\.$/vampire./' >"$prefix_file"
 
-expected_reconstructed=3
+expected_reconstructed=4
 actual_vampire_commands=$(rg -c '^vampire\.$' "$prefix_file" || true)
 if [[ "$actual_vampire_commands" != "$expected_reconstructed" ]]; then
   echo "expected $expected_reconstructed generated vampire commands, got $actual_vampire_commands" >&2

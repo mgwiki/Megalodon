@@ -34,8 +34,8 @@ VAMPIRE=/path/to/vampire \
 tests/vampire_reconstruction/run_live_hammer_prefix_no_incomplete.sh
 ```
 
-It copies the prefix of `examples/hammer/100thms_12_h.mg` through `andER` to
-`/project/tmp`, rewrites the three early `aby.` commands to `vampire.`, and
+It copies the prefix of `examples/hammer/100thms_12_h.mg` through `and3I` to
+`/project/tmp`, rewrites the four early `aby.` commands to `vampire.`, and
 checks the prefix without `-allowincompleteqed`. It passes
 `-trustdeclaredaxioms`, which makes source-level `Axiom` declarations trusted
 library assumptions for Qed dependency checking. This flag is explicit so the
