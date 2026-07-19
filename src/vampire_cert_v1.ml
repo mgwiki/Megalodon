@@ -15173,6 +15173,7 @@ let native_core_skolem_formula_proof
     ?(helper_formulas=[])
     ?(normalize_formula_for_match=(fun _ tm -> tm))
     ?(register_witness_replacement=(fun _ _ -> ()))
+    ?(parent_instantiations=[])
     id variables parent_step_variables result_step_variables substitution source target proof =
   let source = native_core_close_tm (variables @ result_step_variables) source in
   let target = native_core_close_tm (variables @ result_step_variables) target in
@@ -15193,6 +15194,17 @@ let native_core_skolem_formula_proof
     |> Option.map
          (fun (_, witness) ->
             native_core_close_tm (variables @ result_step_variables) witness)
+  in
+  let instantiation_for_parent_variable name tp =
+    parent_instantiations
+    |> List.find_opt
+         (fun instantiation ->
+            instantiation.Vampire_kernel_syntax.skolem_parent_inst_variable = name
+            && instantiation.Vampire_kernel_syntax.skolem_parent_inst_type = tp)
+    |> Option.map
+         (fun instantiation ->
+            native_core_close_tm (variables @ result_step_variables)
+              instantiation.Vampire_kernel_syntax.skolem_parent_inst_term)
   in
   let fallback_result_variable tp =
     let rec find index = function
@@ -15220,14 +15232,18 @@ let native_core_skolem_formula_proof
            match db_for_result_variable name tp with
            | Some tm -> tm
            | None ->
-               begin match substitution_for_parent_variable name tp with
+               begin match instantiation_for_parent_variable name tp with
                | Some tm -> tm
                | None ->
-                   begin match fallback_variable tp with
+                   begin match substitution_for_parent_variable name tp with
                    | Some tm -> tm
                    | None ->
-                       error
-                         (id ^ ": native core proof-term skolemization cannot instantiate dropped parent variable " ^ name)
+                       begin match fallback_variable tp with
+                       | Some tm -> tm
+                       | None ->
+                           error
+                             (id ^ ": native core proof-term skolemization cannot instantiate dropped parent variable " ^ name)
+                       end
                    end
                end
          in
@@ -19248,6 +19264,11 @@ let elaborate_core_resolution_refutation_native
               native_core_skolem_formula_proof
                 ~normalize_formula_for_match:normalize_generated_skolems
                 ~register_witness_replacement
+                ?parent_instantiations:
+                  (Option.map
+                     (fun contract ->
+                        contract.Vampire_kernel_syntax.skolem_parent_instantiations)
+                     skolem_contract)
                 id variables parent_step_variables result_step_variables
                 subst source_formula result parent_proof
             with (Error _ | Failure _) as exn ->
@@ -19257,6 +19278,11 @@ let elaborate_core_resolution_refutation_native
                   ~helper_formulas
                   ~normalize_formula_for_match:normalize_generated_skolems
                   ~register_witness_replacement
+                  ?parent_instantiations:
+                    (Option.map
+                       (fun contract ->
+                          contract.Vampire_kernel_syntax.skolem_parent_instantiations)
+                       skolem_contract)
                   id variables parent_step_variables result_step_variables
                   subst source_formula result parent_proof
           in
@@ -20568,6 +20594,11 @@ let elaborate_preprocess_refutation_native
               native_core_skolem_formula_proof
                 ~normalize_formula_for_match:normalize_generated_skolems
                 ~register_witness_replacement
+                ?parent_instantiations:
+                  (Option.map
+                     (fun contract ->
+                        contract.Vampire_kernel_syntax.skolem_parent_instantiations)
+                     skolem_contract)
                 id variables parent_step_variables result_step_variables
                 subst source_formula result parent_proof
             with (Error _ | Failure _) as exn ->
@@ -20577,6 +20608,11 @@ let elaborate_preprocess_refutation_native
                   ~helper_formulas
                   ~normalize_formula_for_match:normalize_generated_skolems
                   ~register_witness_replacement
+                  ?parent_instantiations:
+                    (Option.map
+                       (fun contract ->
+                          contract.Vampire_kernel_syntax.skolem_parent_instantiations)
+                       skolem_contract)
                   id variables parent_step_variables result_step_variables
                   subst source_formula result parent_proof
           in
