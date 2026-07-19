@@ -25,6 +25,12 @@ type skolem_parent_instantiation = {
   skolem_parent_inst_role : string;
 }
 
+type skolem_branch_proposition = {
+  skolem_branch_prop_index : int;
+  skolem_branch_prop_role : string;
+  skolem_branch_prop_formula : Syntax.tm;
+}
+
 type skolem_contract = {
   skolem_source_children : skolem_formula_child list;
   skolem_result_children : skolem_formula_child list;
@@ -44,6 +50,7 @@ type skolem_branch_contract = {
   skolem_branch_parent_step_variables : (string * Syntax.tp) list;
   skolem_branch_parent_instantiations : skolem_parent_instantiation list;
   skolem_branch_introduced_witnesses : skolem_introduced_witness list;
+  skolem_branch_propositions : skolem_branch_proposition list;
 }
 
 type skolem_proof_object = {

@@ -9248,6 +9248,82 @@ let native_core_kernel_v1_skolem_branch_contract cert id index prefix =
         ("branch contract " ^ string_of_int index)
         parent_step_variables
         parent_instantiations;
+      let branch_propositions =
+        match
+          native_core_kernel_v1_int_field
+            cert id (prefix ^ "_contract_branch_proposition_count")
+        with
+        | None -> []
+        | Some count ->
+            if count < 0 then
+              error
+                (id ^ ": kernel_v1 metadata field "
+                 ^ prefix ^ "_contract_branch_proposition_count is negative");
+            List.init count
+              (fun prop_index ->
+                 let prop_prefix =
+                   prefix ^ "_contract_branch_proposition_"
+                   ^ string_of_int prop_index
+                 in
+                 let role =
+                   native_core_kernel_v1_required_field
+                     cert id (prop_prefix ^ "_role")
+                 in
+                 let formula =
+                   match
+                     native_core_kernel_v1_tm_field
+                       cert id (prop_prefix ^ "_formula")
+                   with
+                   | Some formula -> formula
+                   | None ->
+                       error
+                         (id ^ ": kernel_v1 metadata requires "
+                          ^ prop_prefix ^ "_formula")
+                 in
+                 { Vampire_kernel_syntax.skolem_branch_prop_index = prop_index;
+                   skolem_branch_prop_role = role;
+                   skolem_branch_prop_formula = formula })
+      in
+      let branch_source_formula =
+        native_core_kernel_v1_tm_field
+          cert id (prefix ^ "_contract_source_formula")
+      in
+      let branch_target_formula =
+        native_core_kernel_v1_tm_field
+          cert id (prefix ^ "_contract_target_formula")
+      in
+      let normalized_branch_formula tm =
+        tm_beta_eta_norm tm
+      in
+      List.iter
+        (fun proposition ->
+           let check_expected label = function
+             | Some expected
+                 when normalized_branch_formula expected
+                      <> normalized_branch_formula
+                           proposition
+                             .Vampire_kernel_syntax.skolem_branch_prop_formula ->
+                 error
+                   (Printf.sprintf
+                      "%s: typed Skolem branch contract %d proposition role %s does not match branch %s formula"
+                      id index
+                      proposition
+                        .Vampire_kernel_syntax.skolem_branch_prop_role
+                      label)
+             | _ -> ()
+           in
+           match
+             proposition.Vampire_kernel_syntax.skolem_branch_prop_role
+           with
+           | "source" -> check_expected "source" branch_source_formula
+           | "target" -> check_expected "target" branch_target_formula
+           | "" ->
+               error
+                 (Printf.sprintf
+                    "%s: typed Skolem branch contract %d has an empty branch proposition role"
+                    id index)
+           | _ -> ())
+        branch_propositions;
       Some
         {
           Vampire_kernel_syntax.skolem_branch_index = index;
@@ -9260,15 +9336,12 @@ let native_core_kernel_v1_skolem_branch_contract cert id index prefix =
           skolem_branch_binder_count =
             native_core_kernel_v1_int_field
               cert id (prefix ^ "_contract_binder_count");
-          skolem_branch_source_formula =
-            native_core_kernel_v1_tm_field
-              cert id (prefix ^ "_contract_source_formula");
-          skolem_branch_target_formula =
-            native_core_kernel_v1_tm_field
-              cert id (prefix ^ "_contract_target_formula");
+          skolem_branch_source_formula = branch_source_formula;
+          skolem_branch_target_formula = branch_target_formula;
           skolem_branch_parent_step_variables = parent_step_variables;
           skolem_branch_parent_instantiations = parent_instantiations;
           skolem_branch_introduced_witnesses = introduced_witnesses;
+          skolem_branch_propositions = branch_propositions;
         }
 
 let native_core_skolem_macro_edges cert id =
@@ -16060,7 +16133,7 @@ let native_core_skolem_refutation_cps_proof
            in
            prerr_endline
              (Printf.sprintf
-                "%s: native preprocess Skolem CPS branch contract #%d unit=%s parent=%s binders=%s parent_instantiations=%d witnesses=%s source_exists=%d target_exists=%d source_symbols=%s target_symbols=%s"
+                "%s: native preprocess Skolem CPS branch contract #%d unit=%s parent=%s binders=%s parent_instantiations=%d witnesses=%s propositions=%d source_exists=%d target_exists=%d source_symbols=%s target_symbols=%s"
                 id
                 branch.Vampire_kernel_syntax.skolem_branch_index
                 (match branch.Vampire_kernel_syntax.skolem_branch_unit with
@@ -16075,6 +16148,8 @@ let native_core_skolem_refutation_cps_proof
                 (List.length
                    branch.Vampire_kernel_syntax.skolem_branch_parent_instantiations)
                 (witness_set_text (branch_witness_symbols branch))
+                (List.length
+                   branch.Vampire_kernel_syntax.skolem_branch_propositions)
                 source_exists
                 target_exists
                 (witness_set_text source_symbols)

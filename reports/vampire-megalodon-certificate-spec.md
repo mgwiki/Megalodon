@@ -366,6 +366,24 @@ Required data when added:
 
 The importer must not infer dependencies from generated names.
 
+Current migration fields for branching Skolemization use `branch_v1`
+contracts attached to Skolem macro edges. In addition to branch unit,
+parent index, binder count, parent instantiations, introduced witnesses, and
+source/target formulas, Vampire now emits explicit branch proposition roles:
+
+- `skolem_macro_edge_N_contract_branch_proposition_count`
+- `skolem_macro_edge_N_contract_branch_proposition_M_role`
+- `skolem_macro_edge_N_contract_branch_proposition_M_formula`
+
+The required roles at this stage are `source` and `target`; additional roles
+such as `source_child_body` or `target_child_arg_0` expose immediate
+decomposition points of the branch source/target formulas. Megalodon parses
+these records and fail-closed validates that the `source` and `target`
+propositions match the corresponding branch formulas. These records are not
+yet a complete proof object, but they are the next certificate surface needed
+to replace Megalodon-side guessing about which branch proposition each local
+proof variable proves.
+
 ## Deferred from the Clausal Kernel: AVATAR
 
 AVATAR is not part of the first clausal small-kernel milestone. It is handled
