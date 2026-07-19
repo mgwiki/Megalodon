@@ -13282,14 +13282,16 @@ let native_core_cnf_formula_clause_proof
     in
     find 0 result_step_variables
   in
-  let fallback_result_variable tp =
-    let rec find index = function
-      | [] -> None
+  let fallback_result_variables tp =
+    let rec collect index = function
+      | [] -> []
       | (_, candidate_tp) :: rest ->
-          if candidate_tp = tp then Some (DB (result_variable_count - index - 1))
-          else find (index + 1) rest
+          let tail = collect (index + 1) rest in
+          if candidate_tp = tp then
+            DB (result_variable_count - index - 1) :: tail
+          else tail
     in
-    find 0 result_step_variables
+    collect 0 result_step_variables
   in
   let fallback_declared_variable tp =
     variables
@@ -13297,9 +13299,9 @@ let native_core_cnf_formula_clause_proof
     |> Option.map (fun (name, _) -> TmH name)
   in
   let fallback_variable tp =
-    match fallback_result_variable tp with
-    | Some tm -> Some tm
-    | None ->
+    match fallback_result_variables tp with
+    | tm :: _ -> Some tm
+    | [] ->
         begin match fallback_declared_variable tp with
         | Some tm -> Some tm
         | None -> native_core_default_witness tp
@@ -13347,13 +13349,35 @@ let native_core_cnf_formula_clause_proof
           collect acc (item :: prefix) rest
     in
     let candidates = collect [] [] pending in
-    if candidates <> [] then candidates
-    else
-      match fallback_variable tp with
-      | Some tm -> [tm, pending]
-      | None ->
-          error
-            (id ^ ": native preprocess proof-term cnf_formula_clause cannot instantiate formula universal binder")
+    let fallback_candidates =
+      fallback_result_variables tp
+      |> List.map (fun tm -> (tm, pending))
+    in
+    let fallback_candidates =
+      match fallback_candidates with
+      | _ :: _ -> fallback_candidates
+      | [] ->
+          begin match fallback_declared_variable tp with
+          | Some tm -> [tm, pending]
+          | None ->
+              begin match native_core_default_witness tp with
+              | Some tm -> [tm, pending]
+              | None -> []
+              end
+          end
+    in
+    let combined = candidates @ fallback_candidates in
+    let rec unique seen = function
+      | [] -> []
+      | (tm, pending) :: rest ->
+          if List.mem tm seen then unique seen rest
+          else (tm, pending) :: unique (tm :: seen) rest
+    in
+    match unique [] combined with
+    | [] ->
+        error
+          (id ^ ": native preprocess proof-term cnf_formula_clause cannot instantiate formula universal binder")
+    | candidates -> candidates
   in
   let rec eliminate pending formula proof =
     let formula_prop = native_core_formula_prop formula in
