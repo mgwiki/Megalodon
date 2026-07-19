@@ -16061,7 +16061,7 @@ let native_core_skolem_refutation_cps_proof
         | [] -> None
         | symbol :: rest ->
             let replacements_with_override =
-              (symbol, DB 0) :: replacements
+              (symbol, dependent_witness_symbol_replacement symbol (DB 0)) :: replacements
             in
             let candidate_prop =
               formula_prop_with_ordered_replacements
@@ -17091,7 +17091,7 @@ let native_core_skolem_refutation_cps_proof
               | [] -> None
               | symbol :: rest ->
                   let replacements_with_override =
-                    (symbol, DB 0) :: replacements
+                    (symbol, dependent_witness_symbol_replacement symbol (DB 0)) :: replacements
                   in
                   let candidate_prop =
                     formula_prop_with_ordered_replacements
