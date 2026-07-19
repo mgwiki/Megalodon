@@ -2774,6 +2774,26 @@ let vampire_ordered_unique terms =
   in
   add [] [] terms
 
+let rec vampire_default_term_of_type = function
+  | Prop -> Some vampire_native_core_false_tm
+  | Set ->
+      begin match Hashtbl.find_opt sigtmh "Empty" with
+      | Some empty_hash -> Some (TmH empty_hash)
+      | None -> None
+      end
+  | Ar (domain, codomain) ->
+      begin match vampire_default_term_of_type codomain with
+      | Some body -> Some (Lam (domain, tmshift 0 1 body))
+      | None -> None
+      end
+  | TpVar _ -> None
+
+let vampire_context_terms_with_default cxtm target_tp =
+  let terms = vampire_context_terms_of_type cxtm target_tp in
+  match vampire_default_term_of_type target_tp with
+  | Some default -> vampire_ordered_unique (terms @ [default])
+  | None -> terms
+
 let vampire_source_map_local_terms_of_type cxtm source_map target_tp =
   let rec local_terms proof_index = function
     | [] -> []
@@ -2816,6 +2836,12 @@ let vampire_ordered_context_terms_of_type cxtm target_tp =
          @ candidates
          @ [TmH(!fal); vampire_native_core_false_tm])
   | _ -> candidates
+
+let vampire_ordered_context_terms_with_default cxtm target_tp =
+  let terms = vampire_ordered_context_terms_of_type cxtm target_tp in
+  match vampire_default_term_of_type target_tp with
+  | Some default -> vampire_ordered_unique (terms @ [default])
+  | None -> terms
 
 let vampire_ordered_local_terms_of_type cxtm target_tp =
   let rec scan i = function
@@ -3161,7 +3187,7 @@ let vampire_reconstruct_goal_from_supplied_refutation
                                     source_target;
                                     TmH (!fal);
                                     vampire_native_core_false_tm])
-                          | _ -> vampire_context_terms_of_type cxtm tp
+                          | _ -> vampire_context_terms_with_default cxtm tp
                         in
                         let rec try_terms = function
                         | [] -> None
@@ -3225,6 +3251,16 @@ let vampire_instantiate_source_binding binding tm =
     Vampire_cert_v1.core_native_source_proposition =
       tmsubst binding.Vampire_cert_v1.core_native_source_proposition 0 tm;
   }
+
+let vampire_instantiate_source_binding_if_quantified binding tp tm =
+  match binding.Vampire_cert_v1.core_native_source_proposition with
+  | All (binding_tp, body) when binding_tp = tp ->
+      {
+        binding with
+        Vampire_cert_v1.core_native_source_proposition =
+          tmsubst body 0 tm;
+      }
+  | _ -> binding
 
 let vampire_source_binding_is_negated_conjecture binding =
   binding.Vampire_cert_v1.core_native_certificate_source_kind = "negated_conjecture"
@@ -3308,7 +3344,8 @@ let vampire_instantiated_refutation_candidates ?source_map ?extra_symbols ?(cand
                     (PTmAp(proof,tm))
                     (tmsubst body 0 tm)
                     (List.map
-                       (fun binding -> vampire_instantiate_source_binding binding tm)
+                       (fun binding ->
+                          vampire_instantiate_source_binding_if_quantified binding tp tm)
                        source_bindings))
                (terms_for_type tp))
       | _ -> current
@@ -3444,12 +3481,13 @@ let vampire_guided_negated_conjecture_reconstruction
         | [] -> ()
         | tm :: rest ->
             let proof = PTmAp (proof, tm) in
-            let proposition =
+            let binding, proposition =
               match proposition with
-              | All (_, body) -> tmsubst body 0 tm
-              | _ -> proposition
+              | All (tp, body) ->
+                  (vampire_instantiate_source_binding_if_quantified binding tp tm,
+                   tmsubst body 0 tm)
+              | _ -> (binding, proposition)
             in
-            let binding = vampire_instantiate_source_binding binding tm in
             let target_info =
               match vampire_negated_conjecture_target binding with
               | Some target ->
@@ -3504,12 +3542,14 @@ let vampire_guided_negated_conjecture_reconstruction
                     (preferred_locals
                      @ matched_target_terms
                      @ [TmH (!fal); vampire_native_core_false_tm; claimtm])
-              | _ -> vampire_ordered_context_terms_of_type cxtm tp
+              | _ -> vampire_ordered_context_terms_with_default cxtm tp
             in
             let rec try_terms = function
               | [] -> None
               | tm :: rest ->
-                  let next_binding = vampire_instantiate_source_binding binding tm in
+                  let next_binding =
+                    vampire_instantiate_source_binding_if_quantified binding tp tm
+                  in
                   let next_preferred_locals =
                     match tp with
                     | Prop -> remove_term tm preferred_locals
@@ -3546,9 +3586,10 @@ let vampire_guided_negated_conjecture_reconstruction
         if debug then
           begin
             Printf.printf
-              "Vampire native guided negated-conjecture target matched current goal at depth %d.\ntarget: %s\n"
+              "Vampire native guided negated-conjecture target matched current goal at depth %d.\ntarget: %s\nproposition: %s\n"
               depth
-              (tm_to_str source_target);
+              (tm_to_str source_target)
+              (tm_to_str proposition);
             flush stdout
           end;
         vampire_reconstruct_goal_from_supplied_refutation
@@ -3613,6 +3654,30 @@ let vampire_source_application_proofs cxtm cxpf source_map expected source_proof
   let proof_delta = vampire_source_context_delta_with_source_map ~cxtm source_map in
   let symbol_table = vampire_source_context_symbol_table_with_source_map source_map in
   let debug = Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" in
+  let debug_source_apply = Sys.getenv_opt "MEGALODON_CERT_DEBUG_SOURCE_APPLY" = Some "1" in
+  if debug_source_apply then
+    begin
+      Printf.printf
+        "Vampire native source application expected at line %d char %d: %s\n"
+        !lineno
+        !charno
+        (tm_to_str expected);
+      List.iteri
+        (fun index tp ->
+           Printf.printf
+             "Vampire native source application cxtm[%d]: %s\n"
+             index
+             (tp_to_str tp))
+        cx;
+      List.iteri
+        (fun index prop ->
+           Printf.printf
+             "Vampire native source application cxpf[%d]: %s\n"
+             index
+             (tm_to_str prop))
+        hyps;
+      flush stdout
+    end;
   List.filter
     (fun source_proof ->
        try
@@ -3620,7 +3685,7 @@ let vampire_source_application_proofs cxtm cxpf source_map expected source_proof
          match conv actual expected proof_delta dl with
          | Some _ -> true
          | None ->
-             if debug then
+             if debug || debug_source_apply then
                begin
                  Printf.printf
                    "Vampire native source proof candidate rejected at line %d char %d: expected %s actual %s.\n"
@@ -3628,6 +3693,10 @@ let vampire_source_application_proofs cxtm cxpf source_map expected source_proof
                    !charno
                    (tm_to_str expected)
                    (tm_to_str actual);
+                 if debug_source_apply then
+                   Printf.printf
+                     "Vampire native source proof candidate term: %s\n"
+                     (pf_to_str source_proof);
                  flush stdout
                end;
              false
@@ -3646,7 +3715,18 @@ let vampire_source_application_proofs cxtm cxpf source_map expected source_proof
     source_proofs
 
 let vampire_apply_available_source_bindings ?extra_delta ?extra_symbols cxtm cxpf source_map source_audit proof proposition bindings =
+  let debug_source_apply = Sys.getenv_opt "MEGALODON_CERT_DEBUG_SOURCE_APPLY" = Some "1" in
   let rec apply proof proposition remaining =
+    if debug_source_apply then
+      begin
+        Printf.printf
+          "Vampire native apply source bindings state at line %d char %d: remaining=%d proposition=%s\n"
+          !lineno
+          !charno
+          (List.length remaining)
+          (tm_to_str proposition);
+        flush stdout
+      end;
     match remaining with
     | [] -> [(proof,proposition,[])]
     | binding :: rest ->
@@ -3662,6 +3742,17 @@ let vampire_apply_available_source_bindings ?extra_delta ?extra_symbols cxtm cxp
           with
           | Some source_proof, Imp(expected_prop,target_prop) ->
               let actual_prop = binding.Vampire_cert_v1.core_native_source_proposition in
+              if debug_source_apply then
+                begin
+                  Printf.printf
+                    "Vampire native considering source binding %s kind=%s expected=%s actual=%s target=%s\n"
+                    binding.Vampire_cert_v1.core_native_source_step
+                    binding.Vampire_cert_v1.core_native_source_map_kind
+                    (tm_to_str expected_prop)
+                    (tm_to_str actual_prop)
+                    (tm_to_str target_prop);
+                  flush stdout
+                end;
               let transport_proofs =
                 vampire_definition_transport_proofs
                   source_audit
@@ -3689,13 +3780,32 @@ let vampire_apply_available_source_bindings ?extra_delta ?extra_symbols cxtm cxp
                       | Some actual_target_prop ->
                           apply next_proof actual_target_prop rest
                       | None -> [])
-                   (vampire_source_application_proofs
-                      cxtm
+                  (vampire_source_application_proofs
+                     cxtm
                       cxpf
                       source_map
                       expected_prop
                       source_proofs))
-          | _ -> []
+          | Some _, _ ->
+              if debug_source_apply then
+                begin
+                  Printf.printf
+                    "Vampire native cannot apply source binding %s because current proposition is not an implication: %s\n"
+                    binding.Vampire_cert_v1.core_native_source_step
+                    (tm_to_str proposition);
+                  flush stdout
+                end;
+              []
+          | None, _ ->
+              if debug_source_apply then
+                begin
+                  Printf.printf
+                    "Vampire native has no source proof for binding %s kind=%s.\n"
+                    binding.Vampire_cert_v1.core_native_source_step
+                    binding.Vampire_cert_v1.core_native_source_map_kind;
+                  flush stdout
+                end;
+              []
         in
         applied @ skipped
   in
@@ -3907,6 +4017,51 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
     (vampire_debug_source_binding "Vampire native remaining source")
     remaining_bindings;
   let rec reconstruct_from_refutation () =
+    let debug_source_apply = Sys.getenv_opt "MEGALODON_CERT_DEBUG_SOURCE_APPLY" = Some "1" in
+    if debug_source_apply then
+      begin
+        Printf.printf
+          "Vampire native reconstruction entry at line %d char %d: remaining_bindings=%d core_prop=%s\n"
+          !lineno
+          !charno
+          (List.length remaining_bindings)
+          (tm_to_str native_core.Vampire_cert_v1.core_native_proposition);
+        List.iteri
+          (fun index (name, (tp, definition)) ->
+             Printf.printf
+               "Vampire native reconstruction cxtm[%d] %s : %s%s\n"
+               index
+               name
+               (tp_to_str tp)
+               (match definition with None -> "" | Some tm -> " := " ^ tm_to_str tm))
+          cxtm;
+        List.iteri
+          (fun index (name, prop) ->
+             Printf.printf
+               "Vampire native reconstruction cxpf[%d] %s : %s\n"
+               index
+               name
+               (tm_to_str prop))
+          cxpf;
+        List.iter
+          (fun binding ->
+             Printf.printf
+               "Vampire native reconstruction remaining binding %s kind=%s cert_kind=%s proposition=%s\n"
+               binding.Vampire_cert_v1.core_native_source_step
+               binding.Vampire_cert_v1.core_native_source_map_kind
+               binding.Vampire_cert_v1.core_native_certificate_source_kind
+               (tm_to_str binding.Vampire_cert_v1.core_native_source_proposition);
+             begin match vampire_negated_conjecture_target binding with
+             | Some target ->
+                 Printf.printf
+                   "Vampire native reconstruction remaining binding %s target=%s\n"
+                   binding.Vampire_cert_v1.core_native_source_step
+                   (tm_to_str target)
+             | None -> ()
+             end)
+          remaining_bindings;
+        flush stdout
+      end;
     let guided_result =
       match
         List.filter
@@ -3927,8 +4082,38 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
       | _ -> None
     in
     match guided_result with
-    | Some _ as result -> result
+    | Some _ as result ->
+        if debug_source_apply then
+          begin
+            Printf.printf
+              "Vampire native guided negated-conjecture reconstruction succeeded at line %d char %d.\n"
+              !lineno
+              !charno;
+            flush stdout
+          end;
+        result
     | None ->
+    if debug_source_apply then
+      begin
+        Printf.printf
+          "Vampire native guided negated-conjecture reconstruction failed at line %d char %d; trying source binding applications.\n"
+          !lineno
+          !charno;
+        flush stdout
+      end;
+    let source_binding_applications_possible =
+      match remaining_bindings with
+      | [binding]
+          when vampire_source_binding_is_negated_conjecture binding
+               && vampire_source_proof
+                    source_audit
+                    binding.Vampire_cert_v1.core_native_source_step = None ->
+          false
+      | _ -> true
+    in
+    if not source_binding_applications_possible then
+      None
+    else
     let rec try_candidates = function
       | [] -> None
       | (proof,proposition,candidate_remaining_bindings) :: rest ->

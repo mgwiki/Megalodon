@@ -8685,10 +8685,16 @@ let native_core_proof_variables_for_source
   let local_variables =
     native_core_source_local_variables ~exclude_names source_map cert
   in
-  if variables = [] then
-    local_variables
-  else
-    List.sort_uniq compare (variables @ local_variables)
+  let local_names = List.map fst local_variables in
+  let nonlocal_variables =
+    variables
+    |> List.filter (fun (name, _) -> not (List.mem name local_names))
+  in
+  let add_unique seen variable =
+    if List.exists (fun (name, _) -> name = fst variable) seen then seen
+    else seen @ [variable]
+  in
+  List.fold_left add_unique nonlocal_variables local_variables
 
 let native_core_source_local_alias_indices source_map variables =
   let variable_count = List.length variables in
