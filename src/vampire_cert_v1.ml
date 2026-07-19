@@ -7396,41 +7396,73 @@ let validate_kernel_v1_metadata_contracts cert =
                  ("primitive_parent_" ^ string_of_int equality_parent_index ^ "_substitution")
                  parse_substitution
              in
-             let target_literal =
-               begin match Hashtbl.find_opt step_by_id target_parent_id with
+             let parent_clause_from_kernel_reference role parent_index parent_id =
+               begin match Hashtbl.find_opt step_by_id parent_id with
                | Some parent_step ->
                    begin match step_clause_opt parent_step with
-                   | Some parent_clause ->
-                       nth target_literal_index parent_clause
-                         (id ^ " strict kernel_v1 superposition target literal")
+                   | Some parent_clause -> parent_clause
                    | None ->
                        error
-                         (id ^ ": strict certificate v1 kernel_v1 superposition target parent "
-                          ^ target_parent_id ^ " is not a clause-bearing step")
+                         (id ^ ": strict certificate v1 kernel_v1 superposition " ^ role
+                          ^ " parent " ^ parent_id ^ " is not a clause-bearing step")
                    end
                | None ->
-                   error
-                     (id ^ ": strict certificate v1 kernel_v1 superposition references missing target parent "
-                      ^ target_parent_id)
+                   let split_parent_id = parent_id ^ "_split_dependency" in
+                   begin match Hashtbl.find_opt step_by_id split_parent_id with
+                   | Some (SplitDependency (_, owner_id, _, split_clause))
+                       when owner_id = parent_id ->
+                       begin match field_value ("parent_" ^ string_of_int parent_index ^ "_clause") fields with
+                       | Some _ ->
+                           require_field_clause id fields
+                             ("parent_" ^ string_of_int parent_index ^ "_clause")
+                             split_clause;
+                           split_clause
+                       | None ->
+                           error
+                             (id ^ ": strict certificate v1 kernel_v1 superposition " ^ role
+                              ^ " parent " ^ parent_id
+                              ^ " is represented by split_dependency "
+                              ^ split_parent_id
+                              ^ " but parent_" ^ string_of_int parent_index
+                              ^ "_clause metadata is missing")
+                       end
+                   | Some (SplitDependency (_, owner_id, _, _)) ->
+                       error
+                         (id ^ ": strict certificate v1 kernel_v1 superposition " ^ role
+                          ^ " parent " ^ parent_id
+                          ^ " is missing and split_dependency "
+                          ^ split_parent_id
+                          ^ " is owned by " ^ owner_id)
+                   | Some _ ->
+                       error
+                         (id ^ ": strict certificate v1 kernel_v1 superposition " ^ role
+                          ^ " parent " ^ parent_id
+                          ^ " is missing and " ^ split_parent_id
+                          ^ " is not a split_dependency")
+                   | None ->
+                       error
+                         (id ^ ": strict certificate v1 kernel_v1 superposition references missing "
+                          ^ role ^ " parent " ^ parent_id)
+                   end
                end
              in
+             let target_literal =
+               parent_clause_from_kernel_reference
+                 "target"
+                 target_parent_index
+                 target_parent_id
+               |> fun parent_clause ->
+               nth target_literal_index parent_clause
+                 (id ^ " strict kernel_v1 superposition target literal")
+             in
              let equality_literal =
-               begin match Hashtbl.find_opt step_by_id equality_parent_id with
-               | Some parent_step ->
-                   begin match step_clause_opt parent_step with
-                   | Some parent_clause ->
-                       nth equality_literal_index parent_clause
-                         (id ^ " strict kernel_v1 superposition equality literal")
-                   | None ->
-                       error
-                         (id ^ ": strict certificate v1 kernel_v1 superposition equality parent "
-                          ^ equality_parent_id ^ " is not a clause-bearing step")
-                   end
-               | None ->
-                   error
-                     (id ^ ": strict certificate v1 kernel_v1 superposition references missing equality parent "
-                      ^ equality_parent_id)
-               end
+               parent_clause_from_kernel_reference
+                 "equality"
+                 equality_parent_index
+                 equality_parent_id
+               |> fun parent_clause ->
+               nth equality_literal_index parent_clause
+                 (id ^ " strict kernel_v1 superposition equality literal")
              in
              let target_substituted = subst_literal target_subst target_literal in
              let equality_substituted = subst_literal equality_subst equality_literal in
