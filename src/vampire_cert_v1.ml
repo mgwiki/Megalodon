@@ -15801,6 +15801,31 @@ let native_core_pf_choice_known_detail proof =
   in
   pf_detail "root" proof
 
+let native_core_registered_choice_witness_term_replacements replacements proof =
+  let candidate_terms =
+    replacements
+    |> List.filter_map
+         (fun (name, witness) ->
+            let witness =
+              witness
+              |> native_core_normalize_bool_constants
+              |> tm_beta_eta_norm
+            in
+            let witness_choice_symbols =
+              native_core_choice_witness_symbols
+              |> List.filter (fun symbol -> tm_contains_symbol symbol witness)
+            in
+            if native_core_pf_contains_exact_term witness proof
+               || (witness_choice_symbols <> []
+                   && native_core_pf_contains_term_symbol
+                        witness_choice_symbols proof) then
+              Some (witness, TmH name)
+            else
+              None)
+    |> List.sort_uniq compare
+  in
+  candidate_terms
+
 let native_core_abstract_shifted_subproof needle proof =
   let replaced = ref false in
   let rec replace term_depth proof_depth proof =
@@ -21978,6 +22003,29 @@ let elaborate_preprocess_refutation_native
                 candidate then begin
              let debug = Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" in
              let fail_fast = fail_fast_skolem_cps () in
+             let registered_choice_replacements =
+               native_core_registered_choice_witness_term_replacements
+                 (!skolem_witness_replacements |> List.sort_uniq compare)
+                 candidate
+             in
+             let cleaned_candidate =
+               if registered_choice_replacements = [] then
+                 None
+               else
+                 Some
+                   (native_core_replace_terms_in_pf
+                      registered_choice_replacements
+                      candidate)
+             in
+             let cleaned_candidate_checked =
+               match cleaned_candidate with
+               | Some cleaned
+                   when not (native_core_pf_contains_choice_witness cleaned)
+                        && not (native_core_pf_contains_term_symbol introduced_witness_symbols cleaned)
+                        && final_refutation_proof_checks cleaned ->
+                   Some cleaned
+               | _ -> None
+             in
              if debug || fail_fast then begin
                if native_core_pf_contains_choice_witness candidate then begin
                  if debug then begin
@@ -22022,7 +22070,7 @@ let elaborate_preprocess_refutation_native
                           ^ String.concat ", " names)
                    end
                  end;
-                 if fail_fast then
+                 if fail_fast && cleaned_candidate_checked = None then
                    error
                      (id
                       ^ ": native preprocess Skolem CPS candidate still contains certificate-local choice witnesses")
@@ -22037,13 +22085,20 @@ let elaborate_preprocess_refutation_native
                    | None -> ()
                    end
                  end;
-                 if fail_fast then
+                 if fail_fast && cleaned_candidate_checked = None then
                    error
                      (id
                       ^ ": native preprocess Skolem CPS candidate still contains introduced Skolem symbols")
                end
              end;
-             current
+             begin match cleaned_candidate_checked with
+             | Some cleaned ->
+                 if debug then
+                   prerr_endline
+                     (id ^ ": native preprocess Skolem CPS discharged registered choice witnesses");
+                 cleaned
+             | _ -> current
+             end
            end else if final_refutation_proof_checks candidate then begin
              if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
                prerr_endline
