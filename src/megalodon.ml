@@ -664,6 +664,11 @@ let vampire_source_context_add_source_map_aliases delta source_map =
          match Hashtbl.find_opt delta hash with
          | None -> ()
          | Some definition ->
+             begin match Hashtbl.find_opt sigtmh entry.Vampire_cert_v1.source_map_source_name with
+             | Some live_hash ->
+                 Hashtbl.replace delta live_hash definition
+             | None -> ()
+             end;
              if entry.Vampire_cert_v1.source_map_tptp_name <> "" then
                Hashtbl.replace
                  delta
