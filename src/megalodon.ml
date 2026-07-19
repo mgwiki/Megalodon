@@ -700,17 +700,17 @@ let vampire_source_context_add_local_type_aliases delta cxtm source_map =
              local_terms
          with
          | Some (_, index, _) ->
-             if entry.Vampire_cert_v1.source_map_tptp_name <> "" then
-               Hashtbl.replace
-                 delta
-                 entry.Vampire_cert_v1.source_map_tptp_name
-                 (0, DB index);
-             if entry.Vampire_cert_v1.source_map_source_name <> "" then
-               Hashtbl.replace
-                 delta
-                 entry.Vampire_cert_v1.source_map_source_name
-                 (0, DB index)
-         | None -> ())
+           if entry.Vampire_cert_v1.source_map_tptp_name <> "" then
+             Hashtbl.replace
+               delta
+               entry.Vampire_cert_v1.source_map_tptp_name
+               (0, DB index);
+           if entry.Vampire_cert_v1.source_map_source_name <> "" then
+             Hashtbl.replace
+               delta
+               entry.Vampire_cert_v1.source_map_source_name
+               (0, DB index)
+       | None -> ())
     source_map;
   delta
 
@@ -3858,6 +3858,8 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
         (vampire_core_external_hypotheses cert cxtm source_map source_audit cxpf)
       ~external_delta_table:
         (vampire_source_context_delta_with_source_map ~cxtm source_map)
+      ~external_symbol_table:
+        (vampire_source_context_symbol_table_with_source_map source_map)
       ~external_definition_names
       cert
   in

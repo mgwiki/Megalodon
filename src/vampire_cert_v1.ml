@@ -19638,11 +19638,21 @@ let elaborate_preprocess_refutation_native
     ?(source_proofs=[])
     ?(external_hypotheses=[])
     ?(external_delta_table=Hashtbl.create 0)
+    ?external_symbol_table
     ?(external_definition_names=[])
     cert =
   ignore (check_certificate_strict cert);
   let variables = native_core_proof_variables ~exclude_names:external_definition_names cert in
   let symbol_table = native_core_symbol_table cert in
+  begin match external_symbol_table with
+  | None -> ()
+  | Some external_symbol_table ->
+      Hashtbl.iter
+        (fun name value ->
+           if not (Hashtbl.mem symbol_table name) then
+             Hashtbl.add symbol_table name value)
+        external_symbol_table
+  end;
   let proof_delta, raw_definition_delta = native_core_certificate_sgdelta cert symbol_table in
   let typed_steps =
     List.map
@@ -21245,6 +21255,155 @@ let elaborate_preprocess_refutation_native
       if String.length text <= 500 then text
       else String.sub text 0 500 ^ "..."
     in
+    let first_tm_difference left right =
+      let rec find path left right =
+        if left = right then None
+        else
+          match left, right with
+          | TpAp (left_body, left_tp), TpAp (right_body, right_tp) ->
+              if left_tp <> right_tp then Some (path ^ ".type", left, right)
+              else find (path ^ ".tpap") left_body right_body
+          | Ap (left_fun, left_arg), Ap (right_fun, right_arg) ->
+              begin match find (path ^ ".fun") left_fun right_fun with
+              | Some _ as found -> found
+              | None -> find (path ^ ".arg") left_arg right_arg
+              end
+          | Lam (left_tp, left_body), Lam (right_tp, right_body)
+          | All (left_tp, left_body), All (right_tp, right_body) ->
+              if left_tp <> right_tp then Some (path ^ ".binder-type", left, right)
+              else find (path ^ ".body") left_body right_body
+          | Imp (left_a, left_b), Imp (right_a, right_b) ->
+              begin match find (path ^ ".left") left_a right_a with
+              | Some _ as found -> found
+              | None -> find (path ^ ".right") left_b right_b
+              end
+          | _ -> Some (path, left, right)
+      in
+      find "root" left right
+    in
+    let context_sample cxpf =
+      cxpf
+      |> List.mapi (fun index prop -> "__" ^ string_of_int index ^ ":" ^ short_tm prop)
+      |> fun props ->
+          let rec take n = function
+            | _ when n = 0 -> []
+            | [] -> []
+            | x :: xs -> x :: take (n - 1) xs
+          in
+          String.concat " | " (take 6 props)
+    in
+    let find_bad_application proof =
+      let rec find path cxtm cxpf proof =
+        match proof with
+        | PTmAp (left, tm) ->
+            begin match find (path ^ ".tmfun") cxtm cxpf left with
+            | Some _ as found -> found
+            | None ->
+                begin
+                  try
+                    let left_prop, _ =
+                      extr_propofpf proof_delta symbol_table cxtm cxpf left []
+                    in
+                    match tm_beta_eta_norm left_prop with
+                    | All (expected_tp, _) ->
+                        let actual_tp = extr_tpoftm symbol_table cxtm tm in
+                        if actual_tp = expected_tp then None
+                        else
+                          Some
+                            (path
+                             ^ ": term argument type mismatch; expected "
+                             ^ tp_to_str expected_tp
+                             ^ "; actual "
+                             ^ tp_to_str actual_tp
+                             ^ "; term ctx depth "
+                             ^ string_of_int (List.length cxtm)
+                             ^ "; proof ctx depth "
+                             ^ string_of_int (List.length cxpf)
+                             ^ "; proof ctx top "
+                             ^ context_sample cxpf
+                             ^ "; argument "
+                             ^ short_tm tm
+                             ^ "; left proof "
+                             ^ short_pf left)
+                    | non_forall ->
+                        Some
+                          (path
+                           ^ ": term application of non-forall proposition "
+                           ^ short_tm non_forall)
+                  with exn ->
+                    Some
+                      (path
+                       ^ ": could not inspect term application: "
+                       ^ Printexc.to_string exn)
+                end
+            end
+        | PPfAp (left, right) ->
+            begin match find (path ^ ".left") cxtm cxpf left with
+            | Some _ as found -> found
+            | None ->
+                begin match find (path ^ ".right") cxtm cxpf right with
+                | Some _ as found -> found
+                | None ->
+                    begin
+                      try
+                        let left_prop, _ =
+                          extr_propofpf proof_delta symbol_table cxtm cxpf left []
+                        in
+                        match tm_beta_eta_norm left_prop with
+                        | Imp (expected, _) ->
+                            let right_prop, _ =
+                              extr_propofpf proof_delta symbol_table cxtm cxpf right []
+                            in
+                            if tm_beta_eta_norm expected = tm_beta_eta_norm right_prop then
+                              None
+                            else
+                              let diff =
+                                match first_tm_difference expected right_prop with
+                                | None -> ""
+                                | Some (diff_path, diff_expected, diff_actual) ->
+                                    "; first diff "
+                                    ^ diff_path
+                                    ^ "; diff expected "
+                                    ^ short_tm diff_expected
+                                    ^ "; diff actual "
+                                    ^ short_tm diff_actual
+                              in
+                              Some
+                                (path
+                                 ^ ": proof argument mismatch; expected "
+                                 ^ short_tm expected
+                                 ^ "; actual "
+                                 ^ short_tm right_prop
+                                 ^ diff
+                                 ^ "; term ctx depth "
+                                 ^ string_of_int (List.length cxtm)
+                                 ^ "; proof ctx depth "
+                                 ^ string_of_int (List.length cxpf)
+                                 ^ "; proof ctx top "
+                                 ^ context_sample cxpf)
+                        | non_imp ->
+                            Some
+                              (path
+                               ^ ": proof application of non-implication proposition "
+                               ^ short_tm non_imp)
+                      with exn ->
+                        Some
+                          (path
+                           ^ ": could not inspect proof application: "
+                           ^ Printexc.to_string exn)
+                    end
+                end
+            end
+        | PLam (prop, body) -> find (path ^ ".plam") cxtm (prop :: cxpf) body
+        | TLam (tp, body) ->
+            let cxtm = tp :: cxtm in
+            let cxpf = List.map (fun prop -> tmshift 0 1 prop) cxpf in
+            find (path ^ ".tlam") cxtm cxpf body
+        | PTpAp (body, _) -> find (path ^ ".tp") cxtm cxpf body
+        | Hyp _ | Known _ -> None
+      in
+      find "root" variable_types closed_source_context proof
+    in
     let first_missing_symbol_in_tm tm =
       let rec find = function
         | TmH name ->
@@ -21309,6 +21468,12 @@ let elaborate_preprocess_refutation_native
             prerr_endline
               ("native preprocess " ^ label ^ " actual unavailable: "
                ^ Printexc.to_string exn)
+        end;
+        begin match find_bad_application proof with
+        | Some detail ->
+            prerr_endline
+              ("native preprocess " ^ label ^ " first bad application: " ^ detail)
+        | None -> ()
         end;
         prerr_endline ("native preprocess " ^ label ^ " proof: " ^ short_pf proof)
       end

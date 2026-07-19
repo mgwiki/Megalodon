@@ -227,6 +227,7 @@ val elaborate_preprocess_refutation_native :
   ?source_proofs:(string * Syntax.pf) list ->
   ?external_hypotheses:Syntax.tm list ->
   ?external_delta_table:(string, int * Syntax.tm) Hashtbl.t ->
+  ?external_symbol_table:(string, int * Syntax.tp) Hashtbl.t ->
   ?external_definition_names:string list ->
   certificate ->
   core_native_proof
