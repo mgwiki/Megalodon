@@ -22974,9 +22974,93 @@ let elaborate_preprocess_refutation_native
                  Some
 	                   (native_core_replace_terms_in_pf
 	                      registered_choice_replacements
-	                      candidate)
+                      candidate)
 	             in
-             let with_temporary_branch_choice_delta replacements f =
+             if debug then
+               prerr_endline
+                 (id
+                  ^ ": native preprocess Skolem CPS registered choice replacement count="
+                  ^ string_of_int (List.length registered_choice_replacements)
+	                  ^ " branch-choice candidate count="
+	                  ^ string_of_int
+	                      (List.length branch_choice_candidate_replacements));
+             let canonical_witness_name name =
+               if String.length name > 0 && name.[0] = '#' then
+                 String.sub name 1 (String.length name - 1)
+               else
+                 name
+             in
+             let expand_unique_registered_choice_terms cleaned =
+               let unresolved_names =
+                 candidate_witness_replacements
+                 |> List.filter_map
+                      (fun (name, witness) ->
+                         let witness =
+                           witness
+                           |> native_core_normalize_bool_constants
+                           |> tm_beta_eta_norm
+                         in
+                         let witness_choice_symbols =
+                           native_core_choice_witness_symbols
+                           |> List.filter
+                                (fun symbol -> tm_contains_symbol symbol witness)
+                         in
+                         if not
+                              (native_core_pf_contains_exact_term
+                                 witness
+                                 cleaned)
+                            && witness_choice_symbols <> []
+                            && native_core_pf_contains_term_symbol
+                                 witness_choice_symbols
+                                 cleaned then
+                           Some (canonical_witness_name name)
+                         else
+                           None)
+                 |> List.filter (fun name -> name <> "")
+                 |> List.sort_uniq String.compare
+               in
+               match unresolved_names with
+               | [name] ->
+                   let actual_choices =
+                     native_core_pf_choice_witness_terms_with_depth cleaned
+                     |> List.filter_map
+                          (fun (depth, actual_choice) ->
+                             try
+                               Some
+                                 (tmshift 0 (-depth) actual_choice
+                                  |> tm_beta_eta_norm)
+                             with _ -> None)
+                     |> List.sort_uniq compare
+                   in
+                   if actual_choices = [] then
+                     None
+                   else begin
+                     if debug then
+                       prerr_endline
+                         (id
+                          ^ ": native preprocess Skolem CPS trying unique registered choice expansion "
+                          ^ name
+                          ^ " over "
+                          ^ string_of_int (List.length actual_choices)
+                          ^ " local choice terms");
+                     let replacements =
+                       actual_choices
+                       |> List.map
+                            (fun actual_choice ->
+                               (actual_choice, TmH (canonical_witness_name name)))
+                     in
+                     Some (native_core_replace_terms_in_pf replacements cleaned)
+                   end
+               | [] -> None
+               | names ->
+                   if debug then
+                     prerr_endline
+                       (id
+                        ^ ": native preprocess Skolem CPS refused ambiguous registered choice expansion "
+                        ^ String.concat "," names);
+                   None
+             in
+	             let with_temporary_branch_choice_delta replacements f =
                let names =
                  replacements
                  |> List.map (fun (name, _, _, _) -> name)
@@ -23028,6 +23112,18 @@ let elaborate_preprocess_refutation_native
                        native_core_symbol_name_aliases replacement_name)
                |> List.sort_uniq String.compare
              in
+             let registered_witness_replacement_names =
+               candidate_witness_replacements
+               |> List.concat_map
+                    (fun (replacement_name, _definition) ->
+                       native_core_symbol_name_aliases replacement_name)
+               |> List.sort_uniq String.compare
+             in
+             let backed_witness_replacement_names =
+               contract_backed_branch_replacement_names
+               @ registered_witness_replacement_names
+               |> List.sort_uniq String.compare
+             in
              let unbacked_introduced_witness_symbols =
                introduced_witness_symbols
                |> List.filter
@@ -23035,22 +23131,75 @@ let elaborate_preprocess_refutation_native
                        not
                          (List.mem
                             name
-                            contract_backed_branch_replacement_names))
+                            backed_witness_replacement_names))
              in
              let cleaned_candidate_checked =
                with_temporary_branch_choice_delta
                  branch_choice_candidate_replacements
-                 (fun () ->
-                    match cleaned_candidate with
-                    | Some cleaned
-                        when not (native_core_pf_contains_choice_witness cleaned)
-                             && not
-                                  (native_core_pf_contains_term_symbol
-                                     unbacked_introduced_witness_symbols
-                                     cleaned)
-                             && final_refutation_proof_checks cleaned ->
-                        Some cleaned
-                    | _ -> None)
+	                 (fun () ->
+                    let check_cleaned cleaned =
+                      not (native_core_pf_contains_choice_witness cleaned)
+                      && not
+                           (native_core_pf_contains_term_symbol
+                              unbacked_introduced_witness_symbols
+                              cleaned)
+                      && final_refutation_proof_checks cleaned
+                    in
+	                    match cleaned_candidate with
+	                    | Some cleaned when check_cleaned cleaned ->
+	                        Some cleaned
+	                    | Some cleaned ->
+                        begin match
+                          expand_unique_registered_choice_terms cleaned
+                        with
+                        | Some expanded when check_cleaned expanded ->
+                            if debug then
+                              prerr_endline
+                                (id
+                                 ^ ": native preprocess Skolem CPS discharged unique registered choice expansion");
+                            Some expanded
+                        | Some expanded ->
+                            if debug then
+                              begin
+                                prerr_endline
+                                  (id
+                                   ^ ": native preprocess Skolem CPS unique registered choice expansion rejected; contains_choice="
+                                   ^ string_of_bool
+                                       (native_core_pf_contains_choice_witness
+                                          expanded)
+                                   ^ " contains_unbacked_introduced="
+                                   ^ string_of_bool
+                                       (native_core_pf_contains_term_symbol
+                                          unbacked_introduced_witness_symbols
+                                          expanded));
+                                begin match
+                                  native_core_pf_choice_witness_detail expanded
+                                with
+                                | Some detail ->
+                                    prerr_endline
+                                      (id
+                                       ^ ": native preprocess Skolem CPS unique registered choice first remaining witness: "
+                                       ^ detail)
+                                | None -> ()
+                                end
+                              end;
+                            None
+                        | None ->
+                            if debug then
+                              prerr_endline
+                                (id
+                                 ^ ": native preprocess Skolem CPS cleaned candidate rejected before final check; contains_choice="
+                                 ^ string_of_bool
+                                     (native_core_pf_contains_choice_witness
+                                        cleaned)
+                                 ^ " contains_unbacked_introduced="
+                                 ^ string_of_bool
+                                     (native_core_pf_contains_term_symbol
+                                        unbacked_introduced_witness_symbols
+                                        cleaned));
+                            None
+                        end
+	                    | None -> None)
 	             in
              if debug || fail_fast then begin
                if native_core_pf_contains_choice_witness candidate then begin

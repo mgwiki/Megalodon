@@ -3136,14 +3136,169 @@ let vampire_candidate_terms_from_closed_subterms ?extra_symbols cxtm source_map 
   |> List.sort_uniq compare
   |> List.sort (fun left right -> compare (term_size left) (term_size right))
 
+let vampire_constructive_goal_search
+    ?source_map
+    ?extra_delta
+    ?extra_symbols
+    claimtm
+    cxtm
+    cxpf =
+  let proof_delta =
+    match source_map with
+    | None -> vampire_source_context_delta_with_locals cxtm
+    | Some source_map ->
+        vampire_source_context_delta_with_source_map ~cxtm source_map
+  in
+  begin match extra_delta with
+  | None -> ()
+  | Some extra_delta -> vampire_merge_reconstruction_delta proof_delta extra_delta
+  end;
+  let debug_constructive =
+    Sys.getenv_opt "MEGALODON_CERT_DEBUG_CONSTRUCTIVE_SEARCH" = Some "1"
+  in
+  let convertible left right =
+    match conv left right proof_delta [] with
+    | Some _ -> true
+    | None -> false
+  in
+  let expose tm =
+    try fst (headnorm tm proof_delta [])
+    with _ -> tm
+  in
+  let rec ordered_hypotheses index = function
+    | [] -> []
+    | proposition :: rest ->
+        (Hyp index, proposition)
+        :: ordered_hypotheses (index + 1) rest
+  in
+  let candidate_terms cxtm goal tp =
+    match tp with
+    | Prop ->
+        vampire_ordered_unique
+          (goal :: vampire_ordered_context_terms_of_type cxtm Prop)
+    | _ -> vampire_ordered_context_terms_with_default cxtm tp
+  in
+  let rec prove depth cxtm cxpf goal =
+    if depth <= 0 then None
+    else
+      let prove_by_hypothesis () =
+        let rec try_hypotheses = function
+          | [] -> None
+          | (proof, proposition) :: rest ->
+              begin match prove_from depth cxtm cxpf proof proposition goal with
+              | Some _ as result -> result
+              | None -> try_hypotheses rest
+              end
+        in
+        try_hypotheses (ordered_hypotheses 0 cxpf)
+      in
+      let goal_view = expose goal in
+      match goal_view with
+      | Imp (assumption, conclusion) ->
+          begin match prove (depth - 1) cxtm (assumption :: cxpf) conclusion with
+          | Some proof -> Some (PLam (assumption, proof))
+          | None -> prove_by_hypothesis ()
+          end
+      | All (tp, body) ->
+          let shifted_cxpf = List.map (fun prop -> tmshift 0 1 prop) cxpf in
+          begin match prove (depth - 1) (("", (tp, None)) :: cxtm) shifted_cxpf body with
+          | Some proof -> Some (TLam (tp, proof))
+          | None -> prove_by_hypothesis ()
+          end
+      | _ -> prove_by_hypothesis ()
+  and prove_from depth cxtm cxpf proof proposition goal =
+    if convertible proposition goal then
+      Some proof
+    else if depth <= 0 then
+      None
+    else
+      let proposition_view = expose proposition in
+      match proposition_view with
+      | Imp (assumption, conclusion) ->
+          begin match prove (depth - 1) cxtm cxpf assumption with
+          | Some assumption_proof ->
+              prove_from
+                (depth - 1)
+                cxtm
+                cxpf
+                (PPfAp (proof, assumption_proof))
+                conclusion
+                goal
+          | None -> None
+          end
+      | All (tp, body) ->
+          let rec try_terms = function
+            | [] -> None
+            | tm :: rest ->
+                begin match
+                  prove_from
+                    (depth - 1)
+                    cxtm
+                    cxpf
+                    (PTmAp (proof, tm))
+                    (tmsubst body 0 tm)
+                    goal
+                with
+                | Some _ as result -> result
+                | None -> try_terms rest
+                end
+          in
+          try_terms (candidate_terms cxtm goal tp)
+      | _ -> None
+  in
+  let proof_hyps = List.map snd cxpf in
+  match prove 20 cxtm proof_hyps claimtm with
+  | None ->
+      if debug_constructive then
+        begin
+          Printf.printf
+            "Vampire native constructive source-goal search found no candidate at line %d char %d for %s.\n"
+            !lineno
+            !charno
+            (tm_to_str claimtm);
+          flush stdout
+        end;
+      None
+  | Some proof ->
+      if debug_constructive then
+        begin
+          Printf.printf
+            "Vampire native constructive source-goal search candidate at line %d char %d: %s\n"
+            !lineno
+            !charno
+            (pf_to_str proof);
+          flush stdout
+        end;
+      let result =
+        vampire_check_current_goal_proof
+          ?source_map
+          ?extra_delta
+          ?extra_symbols
+          claimtm
+          cxtm
+          cxpf
+          proof
+      in
+      if result = None
+         && Sys.getenv_opt "MEGALODON_CERT_DEBUG_SOURCE_APPLY" = Some "1" then
+        begin
+          Printf.printf
+            "Vampire native constructive source-goal search produced a candidate but final checking rejected it at line %d char %d.\n"
+            !lineno
+            !charno;
+          flush stdout
+        end;
+      result
+
 let vampire_reconstruct_current_goal_from_refutation ?source_map ?extra_delta ?extra_symbols claimtm cxtm cxpf proof proposition =
   let direct_goal =
-    match claimtm with
-    | Imp (assumption, _) ->
-        vampire_check_current_goal_proof
-          ?source_map ?extra_delta ?extra_symbols
-          claimtm cxtm cxpf (PLam (assumption, Hyp 0))
-    | _ -> None
+    vampire_constructive_goal_search
+      ?source_map
+      ?extra_delta
+      ?extra_symbols
+      claimtm
+      cxtm
+      cxpf
   in
   match direct_goal with
   | Some _ as result -> result
@@ -3571,6 +3726,9 @@ let vampire_guided_negated_conjecture_reconstruction
       vampire_merge_reconstruction_delta proof_delta extra_delta
   end;
   let debug = Sys.getenv_opt "MEGALODON_CERT_DEBUG_GUIDED" = Some "1" in
+  let debug_focus =
+    Sys.getenv_opt "MEGALODON_CERT_DEBUG_GUIDED_FOCUS" = Some "1"
+  in
   let target_matches_goal target =
     match conv target claimtm proof_delta [] with
     | Some _ -> true
@@ -3743,6 +3901,35 @@ let vampire_guided_negated_conjecture_reconstruction
                         depth
                         (tm_to_str tm);
                       flush stdout
+                    end;
+                  if debug_focus then
+                    begin match vampire_negated_conjecture_target next_binding with
+                    | Some source_target when target_matches_goal source_target ->
+                        let next_proposition = tmsubst body 0 tm in
+                        let interesting =
+                          List.exists
+                            (fun candidate ->
+                               match conv tm candidate proof_delta [] with
+                               | Some _ -> true
+                               | None -> false)
+                            (source_target :: claimtm :: matched_target_terms
+                             @ [TmH (!fal); vampire_native_core_false_tm])
+                        in
+                        if interesting then
+                          begin
+                            Printf.printf
+                              "Vampire native guided focus instantiation depth=%d term=%s ready=%s proposition=%s\n"
+                              depth
+                              (tm_to_str tm)
+                              (if proposition_ready_for_target
+                                    source_target
+                                    next_proposition
+                               then "yes"
+                               else "no")
+                              (tm_to_str next_proposition);
+                            flush stdout
+                          end
+                    | _ -> ()
                     end;
                   begin match
                     try_state
@@ -4420,14 +4607,26 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
   match reconstruct_from_refutation () with
   | Some _ as result -> result
   | None ->
-      vampire_reconstruct_goal_from_source_audit
-        ~extra_delta:reconstruction_delta
-        ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
-        claimtm
-        cxtm
-        cxpf
-        source_map
-        source_audit
+      begin match
+        vampire_constructive_goal_search
+          ~source_map
+          ~extra_delta:reconstruction_delta
+          ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
+          claimtm
+          cxtm
+          cxpf
+      with
+      | Some _ as result -> result
+      | None ->
+          vampire_reconstruct_goal_from_source_audit
+            ~extra_delta:reconstruction_delta
+            ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
+            claimtm
+            cxtm
+            cxpf
+            source_map
+            source_audit
+      end
 
 let check_vampire_aby_native_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) ?(proof_command_label="aby") content output proof_file =
   if !vampireabyproof = "megalodon" then
@@ -4476,9 +4675,21 @@ let check_vampire_aby_native_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) ?(proof_
             match claimtm with
             | None -> None
             | Some claimtm ->
+                let constructive_fallback () =
+                  vampire_constructive_goal_search
+                    ~source_map
+                    claimtm
+                    cxtm
+                    cxpf
+                in
                 try
-                  vampire_certificate_reconstruct_aby_goal
-                    claimtm cxtm cxpf cert source_map source_audit
+                  begin match
+                    vampire_certificate_reconstruct_aby_goal
+                      claimtm cxtm cxpf cert source_map source_audit
+                  with
+                  | Some _ as result -> result
+                  | None -> constructive_fallback ()
+                  end
                 with
                 | Vampire_cert_v1.Error msg ->
                     if !verbosity > 8 then
@@ -4491,7 +4702,7 @@ let check_vampire_aby_native_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) ?(proof_
                           msg;
                         flush stdout
                       end;
-                    None
+                    constructive_fallback ()
                 | Failure msg ->
                     if !verbosity > 8 then
                       begin
@@ -4503,7 +4714,7 @@ let check_vampire_aby_native_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) ?(proof_
                           msg;
                         flush stdout
                       end;
-                    None
+                    constructive_fallback ()
           in
           if !verbosity > 8 then
             begin
