@@ -20066,19 +20066,18 @@ let elaborate_preprocess_refutation_native
   let store_avatar_definition_with_key key id split_name component_literals proof =
     let split_prop = native_core_literal_prop (Pos (TmH split_name)) in
     let component_prop =
-      native_core_step_clause_prop cert [] id component_literals
+      native_core_step_clause_prop cert variables id component_literals
     in
     let prop =
       native_core_and
         (Imp (split_prop, component_prop))
         (Imp (component_prop, split_prop))
       |> native_core_normalize_bool_constants
-      |> native_core_close_tm variables
     in
     check_step_proof id prop proof;
     let table_proof =
       native_core_avatar_definition_proof_from_components
-        cert [] id split_name component_literals
+        cert variables id split_name component_literals
     in
     Hashtbl.replace
       avatar_definition_table
