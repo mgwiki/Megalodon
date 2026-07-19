@@ -9142,6 +9142,29 @@ let native_core_skolem_macro_edges cert id =
         if index >= count then List.rev acc
         else
           let prefix = "skolem_macro_edge_" ^ string_of_int index in
+          let binders =
+            native_core_kernel_v1_typed_variable_fields
+              cert id prefix "binder"
+          in
+          let branch_contract =
+            native_core_kernel_v1_skolem_branch_contract cert id index prefix
+            |> Option.map
+                 (fun contract ->
+                    if contract.Vampire_kernel_syntax.skolem_branch_parent_step_variables
+                       <> [] then
+                      contract
+                    else
+                      let binder_step_variables =
+                        binders
+                        |> List.map
+                             (fun variable ->
+                                (variable.native_kernel_variable_name,
+                                 variable.native_kernel_variable_type))
+                      in
+                      { contract with
+                        Vampire_kernel_syntax.skolem_branch_parent_step_variables =
+                          binder_step_variables })
+          in
           let edge =
             {
               native_skolem_macro_edge_index = index;
@@ -9150,9 +9173,7 @@ let native_core_skolem_macro_edges cert id =
                   cert id (prefix ^ "_parent_index");
               native_skolem_macro_edge_unit =
                 native_core_kernel_v1_field cert id (prefix ^ "_unit");
-              native_skolem_macro_edge_binders =
-                native_core_kernel_v1_typed_variable_fields
-                  cert id prefix "binder";
+              native_skolem_macro_edge_binders = binders;
               native_skolem_macro_edge_formula =
                 native_core_kernel_v1_tm_field
                   cert id (prefix ^ "_formula");
@@ -9193,7 +9214,7 @@ let native_core_skolem_macro_edges cert id =
                   cert id (prefix ^ "_target")
                 |> List.map native_core_kernel_v1_skolem_formula_child;
               native_skolem_macro_edge_branch_contract =
-                native_core_kernel_v1_skolem_branch_contract cert id index prefix;
+                branch_contract;
             }
           in
           begin match edge.native_skolem_macro_edge_branch_contract with
@@ -20168,20 +20189,38 @@ let elaborate_preprocess_refutation_native
             match skolem_contract with
             | None -> []
             | Some contract ->
-                contract.Vampire_kernel_syntax.skolem_parent_instantiations
-                |> List.filter_map
-                     (fun instantiation ->
-                        if instantiation.Vampire_kernel_syntax.skolem_parent_inst_role
-                           <> "preserved_variable" then
-                          None
-                        else
-                          List.find_opt
-                            (fun (name, tp) ->
-                               name
-                               = instantiation.Vampire_kernel_syntax.skolem_parent_inst_variable
-                               && tp
-                                  = instantiation.Vampire_kernel_syntax.skolem_parent_inst_type)
-                            result_step_variables)
+                let top_level_preserved =
+                  contract.Vampire_kernel_syntax.skolem_parent_instantiations
+                  |> List.filter_map
+                       (fun instantiation ->
+                          if instantiation.Vampire_kernel_syntax.skolem_parent_inst_role
+                             <> "preserved_variable" then
+                            None
+                          else
+                            List.find_opt
+                              (fun (name, tp) ->
+                                 name
+                                 = instantiation.Vampire_kernel_syntax.skolem_parent_inst_variable
+                                 && tp
+                                    = instantiation.Vampire_kernel_syntax.skolem_parent_inst_type)
+                              result_step_variables)
+                in
+                let branch_preserved =
+                  match skolem_proof_object with
+                  | None -> []
+                  | Some proof_object ->
+                      proof_object.Vampire_kernel_syntax.skolem_proof_branches
+                      |> List.concat_map
+                           (fun branch ->
+                              branch.Vampire_kernel_syntax.skolem_branch_parent_step_variables)
+                      |> List.filter_map
+                           (fun (branch_name, branch_tp) ->
+                              List.find_opt
+                                (fun (name, tp) ->
+                                   name = branch_name && tp = branch_tp)
+                                result_step_variables)
+                in
+                List.sort_uniq compare (top_level_preserved @ branch_preserved)
           in
           let result_assumption_step_variables =
             result_step_variables

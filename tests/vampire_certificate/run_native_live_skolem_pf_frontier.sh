@@ -26,6 +26,7 @@ MIN_SKOLEM=${MIN_SKOLEM:-10}
 MIN_PASS=${MIN_PASS:-20}
 VAMPIRE_SECONDS=${VAMPIRE_SECONDS:-10}
 WALL_SECONDS=${WALL_SECONDS:-13}
+CHECK_TIMEOUT=${CHECK_TIMEOUT:-30}
 VAMPIRE_PROOF_ARGS=${VAMPIRE_PROOF_ARGS:-"--proof_extra lean --skolemization syntactic --shuffle_input off"}
 
 if [[ -z "$VAMPIRE" || ! -x "$VAMPIRE" ]]; then
@@ -70,7 +71,7 @@ classify_error() {
     printf 'FORMULA_ORIENTATION_UNSUPPORTED'
   elif [[ "$msg" =~ rectify_formula ]]; then
     printf 'RECTIFY_UNSUPPORTED'
-  elif [[ "$msg" =~ cannot\ instantiate\ parent\ variable ]]; then
+  elif [[ "$msg" =~ cannot\ instantiate\ (dropped\ )?parent\ variable ]]; then
     printf 'CNF_PARENT_INSTANTIATION_UNSUPPORTED'
   elif [[ "$msg" =~ no\ proof-term\ rule\ for\ ([a-z_]+) ]]; then
     printf 'UNSUPPORTED_RULE_%s' "${BASH_REMATCH[1]}"
@@ -78,6 +79,8 @@ classify_error() {
     printf 'WRONG_PROPOSITION'
   elif [[ "$msg" =~ ill-formed\ proof\ term ]]; then
     printf 'ILL_FORMED_PROOF_TERM'
+  elif [[ "$msg" =~ timed\ out ]]; then
+    printf 'CHECK_TIMEOUT'
   else
     printf 'PF_FAIL'
   fi
@@ -126,7 +129,7 @@ run_one() {
     return 0
   fi
 
-  if "$MEGALODON" \
+  if timeout "$CHECK_TIMEOUT"s "$MEGALODON" \
       -vampirecertv1preprocesspfcheck \
       -vampirecertv1strict \
       -vampirecertv1 "$case_dir/native.sexp" \
@@ -140,13 +143,19 @@ run_one() {
     return 0
   fi
 
+  local rc=$?
   local status err
-  status=$(classify_error "$case_dir/check.err")
-  err=$(tail -1 "$case_dir/check.err" | tr '\t' ' ')
+  if [[ "$rc" -eq 124 ]]; then
+    status=CHECK_TIMEOUT
+    err="checker timed out after ${CHECK_TIMEOUT}s"
+  else
+    status=$(classify_error "$case_dir/check.err")
+    err=$(tail -1 "$case_dir/check.err" | tr '\t' ' ')
+  fi
   printf '%s\t%s\t%s\n' "$base" "$status" "$err" > "$case_dir/result.tsv"
 }
 
-export ROOT TMPDIR MEGALODON VAMPIRE CASES_DIR WORK_DIR VAMPIRE_SECONDS WALL_SECONDS VAMPIRE_PROOF_ARGS
+export ROOT TMPDIR MEGALODON VAMPIRE CASES_DIR WORK_DIR VAMPIRE_SECONDS WALL_SECONDS CHECK_TIMEOUT VAMPIRE_PROOF_ARGS
 export -f classify_error run_one
 
 xargs -r -P "$JOBS" -n 1 bash -c 'run_one "$1"' bash < "$frontier_cases"
