@@ -18407,6 +18407,49 @@ let native_certificate_source_bindings
     []
     typed_steps
 
+let native_certificate_source_bindings_native_context
+    ?(source_map=[])
+    ?(external_definition_names=[])
+    cert =
+  ignore (check_certificate_strict cert);
+  let variables = native_core_proof_variables ~exclude_names:external_definition_names cert in
+  let symbol_table = native_core_symbol_table cert in
+  let typed_steps =
+    List.map
+      (native_core_type_raw_equalities_step cert variables symbol_table)
+      cert.steps
+  in
+  List.fold_left
+    (fun bindings step ->
+       match step with
+       | Input (id, source, clause) ->
+           let proposition = native_core_step_clause_prop cert variables id clause in
+           bindings @ [native_core_source_binding source_map id source proposition]
+       | FormulaInput (id, source, literal) ->
+           let proposition =
+             native_core_step_clause_prop cert variables id [literal]
+           in
+           bindings @ [native_core_source_binding source_map id source proposition]
+       | FormulaTermInput (id, source, formula) ->
+           let step_variables =
+             if native_core_source_is_conjecture source then
+               native_core_step_variables_for_terms cert id [formula]
+             else
+               native_core_step_variables cert id
+           in
+           let proposition =
+             native_core_close_tm
+               (variables @ step_variables)
+               (native_core_formula_prop formula)
+           in
+           let proposition =
+             List.fold_right (fun (_, tp) prop -> All (tp, prop)) step_variables proposition
+           in
+           bindings @ [native_core_source_binding source_map id source proposition]
+       | _ -> bindings)
+    []
+    typed_steps
+
 let native_preprocess_step_formula_prop_with_step_variables variables step_variables formula =
   let prop =
     native_core_close_tm

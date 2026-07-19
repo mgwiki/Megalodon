@@ -1266,10 +1266,57 @@ let vampire_core_source_proofs source_audit =
   List.filter
     (fun (step, _) ->
        match List.assoc_opt step source_audit.Vampire_source_context.resolved with
-       | Some (Vampire_source_context.LocalHyp _) -> false
        | Some (Vampire_source_context.Definitional _) -> false
        | _ -> true)
     source_audit.Vampire_source_context.source_proofs
+
+let vampire_core_external_hypotheses cert cxtm source_map source_audit cxpf =
+  let native_source_bindings =
+    Vampire_cert_v1.native_certificate_source_bindings_native_context
+      ~source_map
+      ~external_definition_names:
+        (vampire_source_context_external_definition_names cxtm source_map)
+      cert
+  in
+  let native_source_proposition step fallback =
+    match
+      List.find_opt
+        (fun binding -> binding.Vampire_cert_v1.core_native_source_step = step)
+        native_source_bindings
+    with
+    | Some binding -> binding.Vampire_cert_v1.core_native_source_proposition
+    | None -> fallback
+  in
+  let external_hypotheses = Array.of_list (List.map snd cxpf) in
+  List.iter
+    (fun (step, source_proof) ->
+       match source_proof with
+       | Vampire_source_context.LocalHyp (index, proposition)
+           when index >= 0 && index < Array.length external_hypotheses ->
+           let proposition =
+             native_source_proposition step proposition
+           in
+           if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+             prerr_endline
+               ("Vampire native source external local hypothesis "
+                ^ step
+                ^ " -> __"
+                ^ string_of_int index
+                ^ " : "
+                ^ tm_to_str proposition);
+           external_hypotheses.(index) <- proposition
+       | _ -> ())
+    source_audit.Vampire_source_context.resolved;
+  if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+    Array.iteri
+      (fun index proposition ->
+         prerr_endline
+           ("Vampire native source external hypothesis __"
+            ^ string_of_int index
+            ^ " final : "
+            ^ tm_to_str proposition))
+      external_hypotheses;
+  Array.to_list external_hypotheses
 
 let vampire_source_proof source_audit step =
   List.assoc_opt step source_audit.Vampire_source_context.source_proofs
@@ -2847,6 +2894,13 @@ let vampire_reconstruct_current_goal_from_refutation ?source_map ?extra_delta ?e
     match vampire_check_current_goal_proof ?source_map ?extra_delta ?extra_symbols claimtm cxtm cxpf proof with
     | Some _ as result -> result
     | None ->
+        begin match
+          vampire_reconstruct_goal_from_proved_prop
+            ?source_map ?extra_delta ?extra_symbols
+            claimtm cxtm cxpf proof proposition
+        with
+        | Some _ as result -> result
+        | None ->
         begin
           match vampire_xm_native_refutation_elim_to
                   ?source_map ?extra_delta ?extra_symbols
@@ -2915,6 +2969,7 @@ let vampire_reconstruct_current_goal_from_refutation ?source_map ?extra_delta ?e
                     end
               end
               end
+        end
         end
   in
   try_proof 8 proof proposition
@@ -3657,6 +3712,19 @@ let vampire_reconstruct_goal_from_source_audit
     with
     | Some _ as result -> result
     | None ->
+        begin match
+          vampire_reconstruct_goal_from_proved_prop
+            ~source_map
+            ?extra_delta
+            ?extra_symbols
+            claimtm
+            cxtm
+            cxpf
+            proof
+            proposition
+        with
+        | Some _ as result -> result
+        | None ->
         if depth <= 0 then None
         else
           begin match proposition with
@@ -3692,6 +3760,7 @@ let vampire_reconstruct_goal_from_source_audit
               try_source_proofs (source_proofs_for expected)
           | _ -> None
           end
+        end
   in
   let rec try_sources = function
     | [] -> None
@@ -3719,6 +3788,8 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
     Vampire_cert_v1.elaborate_preprocess_refutation_native
       ~source_map
       ~source_proofs:source_proofs_for_core
+      ~external_hypotheses:
+        (vampire_core_external_hypotheses cert cxtm source_map source_audit cxpf)
       ~external_delta_table:
         (vampire_source_context_delta_with_source_map ~cxtm source_map)
       ~external_definition_names

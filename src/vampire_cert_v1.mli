@@ -202,6 +202,11 @@ val native_certificate_source_bindings :
   ?external_definition_names:string list ->
   certificate ->
   core_native_source_binding list
+val native_certificate_source_bindings_native_context :
+  ?source_map:source_map_entry list ->
+  ?external_definition_names:string list ->
+  certificate ->
+  core_native_source_binding list
 val native_core_reflexive_eq_proof : Syntax.tm -> Syntax.pf option
 val check_certificate : certificate -> (string * checked_item) list
 val check_certificate_strict : certificate -> (string * checked_item) list
