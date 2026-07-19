@@ -20101,25 +20101,34 @@ let elaborate_preprocess_refutation_native
         cnf_step_uses_closed_parent_primitive parent_id
     | _ -> false
   in
-  let shadow_skolem_final_refutation
-      ?skolem_assumption_prop
-      ?skolem_assumption_step_variables
-      skolem_id result_checked_prop result_formula =
-    let skolem_assumption_prop =
-      match skolem_assumption_prop with
-      | Some prop -> prop
-      | None -> result_checked_prop
+  let shadow_skolem_final_refutation_many skolem_assumptions =
+    let skolem_assumptions =
+      List.mapi
+        (fun index (id, prop, step_variables, formula) ->
+           (id, index, prop, step_variables, formula))
+        skolem_assumptions
     in
-    let skolem_assumption_step_variables =
-      match skolem_assumption_step_variables with
-      | Some step_variables -> step_variables
-      | None -> native_core_step_variables cert skolem_id
+    let shadow_label =
+      match skolem_assumptions with
+      | (id, _, _, _, _) :: rest ->
+          if rest = [] then id
+          else id ^ "+group" ^ string_of_int (List.length rest + 1)
+      | [] -> error "native preprocess Skolem shadow requires at least one assumption"
+    in
+    let assumption_count = List.length skolem_assumptions in
+    let shadow_assumption_for_id id =
+      List.find_opt
+        (fun (candidate_id, _, _, _, _) -> candidate_id = id)
+        skolem_assumptions
+    in
+    let shadow_assumption_props =
+      List.map (fun (_, _, prop, _, _) -> prop) skolem_assumptions
     in
     let shadow_clause_table = Hashtbl.create 101 in
     let shadow_formula_table = Hashtbl.create 101 in
     let shadow_final_proof = ref None in
     let first_shadow_choice = ref None in
-    let shadow_context = skolem_assumption_prop :: closed_source_context in
+    let shadow_context = shadow_assumption_props @ closed_source_context in
     let debug_shadow_choice kind id proof =
       if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
         match !first_shadow_choice with
@@ -20148,8 +20157,9 @@ let elaborate_preprocess_refutation_native
             end
     in
     let shadow_step_variables id =
-      if id = skolem_id then skolem_assumption_step_variables
-      else native_core_step_variables cert id
+      match shadow_assumption_for_id id with
+      | Some (_, _, _, step_variables, _) -> step_variables
+      | None -> native_core_step_variables cert id
     in
     let check_shadow_step_proof id prop proof =
       let step_variables = shadow_step_variables id in
@@ -20200,11 +20210,11 @@ let elaborate_preprocess_refutation_native
     in
     let shifted_normal_formula id =
       let formula, proof = lookup_formula id in
-      (formula, pfshift 0 1 proof)
+      (formula, pfshift 0 assumption_count proof)
     in
     let shifted_normal_clause id =
       let clause, proof = lookup_clause id in
-      (clause, pfshift 0 1 proof)
+      (clause, pfshift 0 assumption_count proof)
     in
     let shadow_formula_parent id =
       match Hashtbl.find_opt shadow_formula_table id with
@@ -20222,7 +20232,7 @@ let elaborate_preprocess_refutation_native
       let table = Hashtbl.create 101 in
       Hashtbl.iter
         (fun id (clause, proof) ->
-           Hashtbl.replace table id (clause, pfshift 0 1 proof))
+           Hashtbl.replace table id (clause, pfshift 0 assumption_count proof))
         clause_table;
       Hashtbl.iter
         (fun id value -> Hashtbl.replace table id value)
@@ -20236,14 +20246,17 @@ let elaborate_preprocess_refutation_native
            Hashtbl.replace
              table
              key
-             (split_name, component_literals, component_prop, pfshift 0 1 definition_proof))
+             (split_name, component_literals, component_prop, pfshift 0 assumption_count definition_proof))
         avatar_definition_table;
       table
     in
     let replay_step = function
-      | SkolemFormula (id, _, _, _, _, _) when id = skolem_id ->
-          store_shadow_formula_with_prop
-            id result_formula skolem_assumption_prop (Hyp 0)
+      | SkolemFormula (id, _, _, _, _, _) ->
+          begin match shadow_assumption_for_id id with
+          | Some (_, index, prop, _, formula) ->
+              store_shadow_formula_with_prop id formula prop (Hyp index)
+          | None -> ()
+          end
       | FormulaTermCopy (id, parent_id, result) when has_shadow_formula parent_id ->
           let parent_formula, parent_proof = shadow_formula_parent parent_id in
           if parent_formula <> result then
@@ -20277,10 +20290,7 @@ let elaborate_preprocess_refutation_native
             error
               (id ^ ": native preprocess Skolem shadow refuses transitional cnf_formula_clause parent")
           else
-            let parent_step_variables =
-              if parent_id = skolem_id then skolem_assumption_step_variables
-              else native_core_step_variables cert parent_id
-            in
+            let parent_step_variables = shadow_step_variables parent_id in
             store_shadow_clause id result
               (native_core_cnf_formula_clause_proof
                  id variables
@@ -20381,7 +20391,7 @@ let elaborate_preprocess_refutation_native
          with Error _ as exn ->
            if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
              prerr_endline
-               (skolem_id
+               (shadow_label
                 ^ ": native preprocess Skolem shadow replay stopped at "
                 ^ step_id step
                 ^ ": "
@@ -20392,17 +20402,17 @@ let elaborate_preprocess_refutation_native
     | Some proof ->
         if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
           prerr_endline
-            (skolem_id ^ ": native preprocess Skolem shadow replay reached empty clause");
+            (shadow_label ^ ": native preprocess Skolem shadow replay reached empty clause");
           begin match native_core_pf_choice_witness_detail proof with
           | Some detail ->
               prerr_endline
-                (skolem_id ^ ": native preprocess Skolem shadow first choice witness: " ^ detail)
+                (shadow_label ^ ": native preprocess Skolem shadow first choice witness: " ^ detail)
           | None -> ()
           end;
           begin match native_core_pf_choice_known_detail proof with
           | Some detail ->
               prerr_endline
-                (skolem_id ^ ": native preprocess Skolem shadow first choice theorem: " ^ detail)
+                (shadow_label ^ ": native preprocess Skolem shadow first choice theorem: " ^ detail)
           | None -> ()
           end
         end;
@@ -20410,8 +20420,26 @@ let elaborate_preprocess_refutation_native
     | None ->
         if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
           prerr_endline
-            (skolem_id ^ ": native preprocess Skolem shadow replay did not reach empty clause");
+            (shadow_label ^ ": native preprocess Skolem shadow replay did not reach empty clause");
         None
+  in
+  let shadow_skolem_final_refutation
+      ?skolem_assumption_prop
+      ?skolem_assumption_step_variables
+      skolem_id result_checked_prop result_formula =
+    let skolem_assumption_prop =
+      match skolem_assumption_prop with
+      | Some prop -> prop
+      | None -> result_checked_prop
+    in
+    let skolem_assumption_step_variables =
+      match skolem_assumption_step_variables with
+      | Some step_variables -> step_variables
+      | None -> native_core_step_variables cert skolem_id
+    in
+    shadow_skolem_final_refutation_many
+      [skolem_id, skolem_assumption_prop, skolem_assumption_step_variables,
+       result_formula]
   in
   seed_avatar_metadata_definitions ();
   List.iter
@@ -21060,6 +21088,78 @@ let elaborate_preprocess_refutation_native
     | Some proof -> proof
     | None -> error "native preprocess proof-term checker found no empty-clause proof"
   in
+  let skolem_cps_entry_witness_symbols
+      (_id, _source_formula, subst, _result, _parent_step_variables,
+       _result_step_variables, _result_checked_prop,
+       _result_assumption_step_variables, _result_assumption_prop,
+       _parent_proof, _result_proof, _skolem_proof_object) =
+    subst
+    |> List.filter_map
+         (fun (_, witness) ->
+            match native_core_flatten_value_application witness with
+            | TmH symbol, _ -> Some symbol
+            | _ -> None)
+  in
+  let skolem_cps_entry_assumption
+      (id, _source_formula, _subst, result, _parent_step_variables,
+       _result_step_variables, _result_checked_prop,
+       result_assumption_step_variables, result_assumption_prop,
+       _parent_proof, _result_proof, _skolem_proof_object) =
+    (id, result_assumption_prop, result_assumption_step_variables, result)
+  in
+  if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1"
+     && List.length !skolem_cps_entries > 1 then begin
+    let ids =
+      !skolem_cps_entries
+      |> List.map
+           (fun (id, _, _, _, _, _, _, _, _, _, _, _) -> id)
+    in
+    try
+      match
+        shadow_skolem_final_refutation_many
+          (List.map skolem_cps_entry_assumption !skolem_cps_entries)
+      with
+      | Some group_proof ->
+          let witness_symbols =
+            !skolem_cps_entries
+            |> List.concat_map skolem_cps_entry_witness_symbols
+            |> List.sort_uniq String.compare
+          in
+          prerr_endline
+            ("native preprocess Skolem CPS grouped shadow replay reached empty clause for "
+             ^ String.concat ", " ids);
+          begin match native_core_pf_choice_witness_detail group_proof with
+          | Some detail ->
+              prerr_endline
+                ("native preprocess Skolem CPS grouped shadow first choice witness: "
+                 ^ detail)
+          | None -> ()
+          end;
+          begin match native_core_pf_choice_known_detail group_proof with
+          | Some detail ->
+              prerr_endline
+                ("native preprocess Skolem CPS grouped shadow first choice theorem: "
+                 ^ detail)
+          | None -> ()
+          end;
+          begin match native_core_pf_term_symbol_detail witness_symbols group_proof with
+          | Some detail ->
+              prerr_endline
+                ("native preprocess Skolem CPS grouped shadow first introduced symbol: "
+                 ^ detail)
+          | None -> ()
+          end
+      | None ->
+          prerr_endline
+            ("native preprocess Skolem CPS grouped shadow replay did not reach empty clause for "
+             ^ String.concat ", " ids)
+    with (Error _ | Failure _) as exn ->
+      prerr_endline
+        ("native preprocess Skolem CPS grouped shadow replay failed for "
+         ^ String.concat ", " ids
+         ^ ": "
+         ^ Printexc.to_string exn)
+  end;
   let proof =
     List.fold_left
       (fun current
@@ -21069,12 +21169,11 @@ let elaborate_preprocess_refutation_native
             parent_proof, result_proof, skolem_proof_object) ->
          try
            let introduced_witness_symbols =
-             subst
-             |> List.filter_map
-                  (fun (_, witness) ->
-                     match native_core_flatten_value_application witness with
-                     | TmH symbol, _ -> Some symbol
-                     | _ -> None)
+             skolem_cps_entry_witness_symbols
+               (id, source_formula, subst, result, parent_step_variables,
+                result_step_variables, result_checked_prop,
+                result_assumption_step_variables, result_assumption_prop,
+                parent_proof, result_proof, skolem_proof_object)
            in
            let split_replacements =
              avatar_definition_table
