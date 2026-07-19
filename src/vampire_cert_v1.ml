@@ -15992,7 +15992,7 @@ let native_core_skolem_refutation_cps_proof
       match tp with
       | Prop -> native_core_false
       | _ ->
-          native_core_close_tm variables
+          native_core_close_tm (variables @ result_step_variables)
             instantiation.Vampire_kernel_syntax.skolem_parent_inst_term
           |> tm_beta_eta_norm
     in
@@ -16560,6 +16560,10 @@ let native_core_skolem_refutation_cps_proof
 	      result_to_target
 	      |> pftmshift 0 term_depth
 	      |> pfshift 0 (proof_depth + 1)
+	      |> proof_with_replacements
+	           term_replacements
+	           replacements
+	           fallback_replacements
 	    in
 	    let bound_result_proof =
 	      native_core_bind_result_step_variables
@@ -21242,10 +21246,60 @@ let elaborate_preprocess_refutation_native
       if String.length text <= 500 then text
       else String.sub text 0 500 ^ "..."
     in
+    let first_missing_symbol_in_tm tm =
+      let rec find = function
+        | TmH name ->
+            if Hashtbl.mem symbol_table name then None else Some name
+        | TpAp (body, _) -> find body
+        | Ap (left, right) | Imp (left, right) ->
+            begin match find left with
+            | Some _ as found -> found
+            | None -> find right
+            end
+        | Lam (_, body) | All (_, body) -> find body
+        | DB _ | Prim _ -> None
+      in
+      find tm
+    in
+    let first_missing_symbol_in_pf proof =
+      let rec find_pf = function
+        | PTpAp (body, _) -> find_pf body
+        | PTmAp (body, tm) ->
+            begin match find_pf body with
+            | Some _ as found -> found
+            | None -> first_missing_symbol_in_tm tm
+            end
+        | PPfAp (left, right) ->
+            begin match find_pf left with
+            | Some _ as found -> found
+            | None -> find_pf right
+            end
+        | PLam (prop, body) ->
+            begin match first_missing_symbol_in_tm prop with
+            | Some _ as found -> found
+            | None -> find_pf body
+            end
+        | TLam (_, body) -> find_pf body
+        | Hyp _ | Known _ -> None
+      in
+      find_pf proof
+    in
     let debug_failure msg =
       if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
         prerr_endline ("native preprocess " ^ label ^ " proof debug: " ^ msg);
         prerr_endline ("native preprocess " ^ label ^ " expected: " ^ short_tm prop);
+        begin match first_missing_symbol_in_tm prop with
+        | Some name ->
+            prerr_endline
+              ("native preprocess " ^ label ^ " expected first missing term symbol: " ^ name)
+        | None -> ()
+        end;
+        begin match first_missing_symbol_in_pf proof with
+        | Some name ->
+            prerr_endline
+              ("native preprocess " ^ label ^ " proof first missing term symbol: " ^ name)
+        | None -> ()
+        end;
         begin
           try
             let actual, _ =
@@ -21408,6 +21462,38 @@ let elaborate_preprocess_refutation_native
                          target_prop
                          candidate
                   in
+                  if (not candidate_checks)
+                     && Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
+                    let group_witness_symbols =
+                      entries
+                      |> List.concat_map skolem_cps_entry_witness_symbols
+                      |> List.sort_uniq String.compare
+                    in
+                    begin match native_core_pf_term_symbol_detail current_witness_symbols candidate with
+                    | Some detail ->
+                        prerr_endline
+                          (id
+                           ^ ": native preprocess grouped Skolem CPS failed candidate current witness: "
+                           ^ detail)
+                    | None -> ()
+                    end;
+                    begin match native_core_pf_term_symbol_detail group_witness_symbols candidate with
+                    | Some detail ->
+                        prerr_endline
+                          (id
+                           ^ ": native preprocess grouped Skolem CPS failed candidate group witness: "
+                           ^ detail)
+                    | None -> ()
+                    end;
+                    begin match native_core_tm_term_symbol_detail group_witness_symbols target_prop with
+                    | Some detail ->
+                        prerr_endline
+                          (id
+                           ^ ": native preprocess grouped Skolem CPS target still mentions group witness: "
+                           ^ detail)
+                    | None -> ()
+                    end
+                  end;
                   if candidate_checks then begin
                     if has_choice_witness
                        && Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
