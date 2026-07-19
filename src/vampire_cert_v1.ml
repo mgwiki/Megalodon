@@ -15630,14 +15630,18 @@ let native_core_skolem_refutation_cps_proof
     | Some step_variables -> step_variables
     | None -> result_step_variables
   in
-  let witness_symbols =
+  let witness_terms =
     subst
     |> List.map
-         (function
-           | _, TmH symbol -> symbol
-           | _ ->
-               error
-                 (id ^ ": native preprocess Skolem CPS currently supports only nullary introduced witnesses"))
+         (fun (_, witness) ->
+            match native_core_flatten_value_application witness with
+            | TmH symbol, _ -> symbol, witness
+            | _ ->
+                error
+                  (id ^ ": native preprocess Skolem CPS could not identify introduced witness symbol"))
+  in
+  let witness_symbols =
+    List.map fst witness_terms
   in
   let rec source_exists_types = function
     | Ap (TmH "vampire_exists_prop", Lam (tp, body)) ->
@@ -15657,7 +15661,11 @@ let native_core_skolem_refutation_cps_proof
     | _ -> []
   in
   let witness_infos =
-    try List.map2 (fun symbol tp -> (symbol, tp)) witness_symbols (source_exists_types source)
+    try
+      List.map2
+        (fun (symbol, witness) tp -> (symbol, tp, witness))
+        witness_terms
+        (source_exists_types source)
     with Invalid_argument _ ->
       error
         (id ^ ": native preprocess Skolem CPS witness type count does not match substitution count")
@@ -16270,7 +16278,7 @@ let native_core_skolem_refutation_cps_proof
           let sibling_fallbacks =
             witness_infos
             |> List.filter_map
-                 (fun (symbol, symbol_tp) ->
+                 (fun (symbol, symbol_tp, _) ->
                     if symbol_tp = tp && not (List.mem symbol covered) then
                       Some (symbol, DB 0)
                     else
