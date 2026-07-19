@@ -116,7 +116,10 @@ run_one() {
     "$case_dir/vampire.out" > "$case_dir/native.sexp"
 
   if [[ ! -s "$case_dir/native.sexp" ]]; then
-    if rg -q -- '-- Time limit reached!' "$case_dir/vampire.out"; then
+    if rg -q 'Exception at run slice level|User error:' \
+        "$case_dir/vampire.out" "$case_dir/vampire.err"; then
+      printf '%s\tVAMPIRE_EXCEPTION\n' "$base" > "$case_dir/result.tsv"
+    elif rg -q -- '-- Time limit reached!' "$case_dir/vampire.out"; then
       printf '%s\tTIMEOUT\n' "$base" > "$case_dir/result.tsv"
     else
       printf '%s\tNO_CERT\n' "$base" > "$case_dir/result.tsv"
