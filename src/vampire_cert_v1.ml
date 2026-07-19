@@ -16912,7 +16912,52 @@ let native_core_skolem_refutation_cps_proof
             | None -> replacements, expected_result_prop
             end
         in
-        if source_prop <> expected_result_prop then begin
+        let source_proof_with_replacements =
+          proof_with_replacements
+            term_replacements
+            selected_replacements
+            fallback_replacements
+            proof
+        in
+        let equality_oriented_result_proof =
+          if source_prop = expected_result_prop then
+            None
+          else
+            let source_formula =
+              raw_formula_with_replacements
+                term_depth
+                selected_replacements
+                fallback_replacements
+                source
+              |> native_core_replace_terms_in_tm term_replacements
+            in
+            let result_formula =
+              raw_formula_with_replacements
+                term_depth
+                selected_replacements
+                fallback_replacements
+                result
+              |> native_core_replace_terms_in_tm term_replacements
+            in
+            match
+              native_core_equality_sides source_formula,
+              native_core_equality_sides result_formula
+            with
+            | Some (source_tp, source_left, source_right),
+              Some (result_tp, result_left, result_right)
+                when source_tp = result_tp
+                     && source_left = result_right
+                     && source_right = result_left ->
+                Some
+                  (native_core_positive_eq_symmetry
+                     source_tp
+                     source_left
+                     source_right
+                     source_proof_with_replacements)
+            | _ -> None
+        in
+        if source_prop <> expected_result_prop
+           && equality_oriented_result_proof = None then begin
           if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
             prerr_endline ("native preprocess Skolem CPS source base: " ^ tm_to_str source_prop);
             prerr_endline ("native preprocess Skolem CPS result base: " ^ tm_to_str expected_result_prop);
@@ -16999,11 +17044,9 @@ let native_core_skolem_refutation_cps_proof
             (id ^ ": native preprocess Skolem CPS source body does not match the Skolem result")
         end;
         let result_checked_proof =
-          proof_with_replacements
-            term_replacements
-            selected_replacements
-            fallback_replacements
-            proof
+          match equality_oriented_result_proof with
+          | Some proof -> proof
+          | None -> source_proof_with_replacements
         in
 	        let result_to_target_proof =
 	          result_to_target_builder
