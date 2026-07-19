@@ -15477,29 +15477,21 @@ let native_core_pf_term_symbol_detail names proof =
   in
   pf_detail "root" proof
 
+let native_core_choice_witness_symbols =
+  [
+    "Eps_i";
+    "Eps_prop";
+    "Eps_set_prop";
+    "Eps_set_set";
+    "Eps_set_set_prop";
+  ]
+
 let native_core_pf_contains_choice_witness proof =
-  native_core_pf_contains_term_symbol
-    [
-      "Eps_i";
-      "Eps_prop";
-      "Eps_set_prop";
-      "Eps_set_set";
-      "Eps_set_set_prop";
-    ]
-    proof
+  native_core_pf_contains_term_symbol native_core_choice_witness_symbols proof
 
 let native_core_pf_choice_witness_detail proof =
-  let choice_symbols =
-    [
-      "Eps_i";
-      "Eps_prop";
-      "Eps_set_prop";
-      "Eps_set_set";
-      "Eps_set_set_prop";
-    ]
-  in
   let rec tm_detail path enclosing = function
-    | TmH name when List.mem name choice_symbols ->
+    | TmH name when List.mem name native_core_choice_witness_symbols ->
         Some
           (path
            ^ ": certificate-local choice witness "
@@ -20558,43 +20550,50 @@ let elaborate_preprocess_refutation_native
            let fail_fast_skolem_cps () =
              Sys.getenv_opt "MEGALODON_CERT_FAIL_FAST_SKOLEM_CPS" = Some "1"
            in
-           if native_core_pf_contains_choice_witness candidate then begin
-             if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
-               prerr_endline
-                 (id ^ ": native preprocess Skolem CPS candidate still contains certificate-local choice witnesses; keeping original refutation");
-               begin match native_core_pf_choice_witness_detail candidate with
-               | Some detail ->
+           if native_core_pf_contains_term_symbol
+                (native_core_choice_witness_symbols @ introduced_witness_symbols)
+                candidate then begin
+             let debug = Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" in
+             let fail_fast = fail_fast_skolem_cps () in
+             if debug || fail_fast then begin
+               if native_core_pf_contains_choice_witness candidate then begin
+                 if debug then begin
                    prerr_endline
-                     (id ^ ": native preprocess Skolem CPS first choice witness: " ^ detail)
-               | None -> ()
-               end;
-               begin match native_core_pf_choice_known_detail candidate with
-               | Some detail ->
+                     (id ^ ": native preprocess Skolem CPS candidate still contains certificate-local choice witnesses; keeping original refutation");
+                   begin match native_core_pf_choice_witness_detail candidate with
+                   | Some detail ->
+                       prerr_endline
+                         (id ^ ": native preprocess Skolem CPS first choice witness: " ^ detail)
+                   | None -> ()
+                   end;
+                   begin match native_core_pf_choice_known_detail candidate with
+                   | Some detail ->
+                       prerr_endline
+                         (id ^ ": native preprocess Skolem CPS first choice theorem: " ^ detail)
+                   | None -> ()
+                   end
+                 end;
+                 if fail_fast then
+                   error
+                     (id
+                      ^ ": native preprocess Skolem CPS candidate still contains certificate-local choice witnesses")
+               end else begin
+                 if debug then begin
                    prerr_endline
-                     (id ^ ": native preprocess Skolem CPS first choice theorem: " ^ detail)
-               | None -> ()
+                     (id ^ ": native preprocess Skolem CPS candidate still contains introduced Skolem symbols; keeping original refutation");
+                   begin match native_core_pf_term_symbol_detail introduced_witness_symbols candidate with
+                   | Some detail ->
+                       prerr_endline
+                         (id ^ ": native preprocess Skolem CPS first introduced symbol: " ^ detail)
+                   | None -> ()
+                   end
+                 end;
+                 if fail_fast then
+                   error
+                     (id
+                      ^ ": native preprocess Skolem CPS candidate still contains introduced Skolem symbols")
                end
              end;
-             if fail_fast_skolem_cps () then
-               error
-                 (id
-                  ^ ": native preprocess Skolem CPS candidate still contains certificate-local choice witnesses");
-             current
-           end else if native_core_pf_contains_term_symbol introduced_witness_symbols candidate then begin
-             if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
-               prerr_endline
-                 (id ^ ": native preprocess Skolem CPS candidate still contains introduced Skolem symbols; keeping original refutation");
-               begin match native_core_pf_term_symbol_detail introduced_witness_symbols candidate with
-               | Some detail ->
-                   prerr_endline
-                     (id ^ ": native preprocess Skolem CPS first introduced symbol: " ^ detail)
-               | None -> ()
-               end
-             end;
-             if fail_fast_skolem_cps () then
-               error
-                 (id
-                  ^ ": native preprocess Skolem CPS candidate still contains introduced Skolem symbols");
              current
            end else if final_refutation_proof_checks candidate then begin
              if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
