@@ -2726,6 +2726,31 @@ let vampire_ordered_unique terms =
   in
   add [] [] terms
 
+let vampire_source_map_local_terms_of_type cxtm source_map target_tp =
+  let rec local_terms proof_index = function
+    | [] -> []
+    | (_, (_, Some _)) :: rest -> local_terms proof_index rest
+    | (name, (tp, None)) :: rest ->
+        (name, proof_index, tp) :: local_terms (proof_index + 1) rest
+  in
+  let local_terms = local_terms 0 cxtm in
+  source_map
+  |> List.filter_map
+       (fun entry ->
+          if entry.Vampire_cert_v1.source_map_kind = "local_type" then
+            match
+              List.find_opt
+                (fun (local_name, _, tp) ->
+                   local_name = entry.Vampire_cert_v1.source_map_source_name
+                   && tp = target_tp)
+                local_terms
+            with
+            | Some (_, index, _) -> Some (DB index)
+            | None -> None
+          else
+            None)
+  |> vampire_ordered_unique
+
 let vampire_ordered_context_terms_of_type cxtm target_tp =
   let rec scan i = function
     | [] -> []
@@ -3210,24 +3235,18 @@ let vampire_take n xs =
   take n [] xs
 
 let vampire_instantiated_refutation_candidates ?source_map ?extra_symbols ?(candidate_props=[]) cxtm proof proposition source_bindings =
-  let source_binding_props =
-    List.map
-      (fun binding -> binding.Vampire_cert_v1.core_native_source_proposition)
-      source_bindings
-  in
-  let props = proposition :: candidate_props @ source_binding_props in
   let terms_for_type tp =
     match tp, source_map with
     | Prop, _ -> vampire_context_terms_of_type cxtm tp
     | _, None -> vampire_context_terms_of_type cxtm tp
     | _, Some source_map ->
-        vampire_candidate_terms_from_closed_subterms
-          ?extra_symbols
-          cxtm
-          source_map
-          props
-          tp
-        |> vampire_take 16
+        let local_terms =
+          vampire_ordered_unique
+            (vampire_source_map_local_terms_of_type cxtm source_map tp
+             @ vampire_context_terms_of_type cxtm tp)
+        in
+        if local_terms <> [] then local_terms
+        else []
   in
   let rec collect depth proof proposition source_bindings =
     let current = [(proof,proposition,source_bindings)] in
@@ -3684,7 +3703,17 @@ let vampire_reconstruct_goal_from_source_audit
   in
   let source_props = claimtm :: List.map snd source_proofs in
   let term_candidates tp =
-    vampire_candidate_terms_from_props ?extra_symbols cxtm source_map source_props tp
+    match tp with
+    | Prop ->
+        vampire_candidate_terms_from_props ?extra_symbols cxtm source_map source_props tp
+    | _ ->
+        let local_terms =
+          vampire_ordered_unique
+            (vampire_source_map_local_terms_of_type cxtm source_map tp
+             @ vampire_context_terms_of_type cxtm tp)
+        in
+        if local_terms <> [] then local_terms
+        else vampire_candidate_terms_from_props ?extra_symbols cxtm source_map source_props tp
   in
   let source_proofs_for expected =
     source_proofs
