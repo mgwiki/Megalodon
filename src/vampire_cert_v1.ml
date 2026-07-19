@@ -16097,6 +16097,48 @@ let native_core_pf_choice_witness_terms proof =
   pf_collect proof;
   !terms |> List.sort_uniq compare
 
+let native_core_pf_choice_witness_terms_with_depth proof =
+  let normalize tm =
+    tm
+    |> native_core_normalize_bool_constants
+    |> tm_beta_eta_norm
+  in
+  let terms = ref [] in
+  let add_choice depth enclosing =
+    terms := (depth, normalize enclosing) :: !terms
+  in
+  let rec tm_collect depth enclosing = function
+    | TmH name when List.mem name native_core_choice_witness_symbols ->
+        add_choice depth enclosing
+    | TmH _ | DB _ | Prim _ -> ()
+    | TpAp (body, _) as tm -> tm_collect depth tm body
+    | Ap (left, right) as tm ->
+        tm_collect depth tm left;
+        tm_collect depth tm right
+    | Lam (_, body) | All (_, body) as tm ->
+        tm_collect (depth + 1) tm body
+    | Imp (left, right) as tm ->
+        tm_collect depth tm left;
+        tm_collect depth tm right
+  in
+  let tm_collect depth tm = tm_collect depth tm tm in
+  let rec pf_collect depth = function
+    | PTpAp (body, _) -> pf_collect depth body
+    | PTmAp (body, tm) ->
+        pf_collect depth body;
+        tm_collect depth tm
+    | PPfAp (left, right) ->
+        pf_collect depth left;
+        pf_collect depth right
+    | PLam (prop, body) ->
+        tm_collect depth prop;
+        pf_collect depth body
+    | TLam (_, body) -> pf_collect (depth + 1) body
+    | Hyp _ | Known _ -> ()
+  in
+  pf_collect 0 proof;
+  !terms |> List.sort_uniq compare
+
 let native_core_pf_choice_known_detail proof =
   let choice_knowns =
     [
@@ -22741,17 +22783,24 @@ let elaborate_preprocess_refutation_native
                   if branch_choice_justified
                      && List.length staged_branch_replacements_for_entry = 1 then begin
                     let actual_choices =
-                      native_core_pf_choice_witness_terms candidate
+                      native_core_pf_choice_witness_terms_with_depth candidate
                     in
                     let tentative =
                       replacement_names
                       |> List.concat_map
                            (fun replacement_name ->
                               actual_choices
-                              |> List.map
-                                   (fun actual_choice ->
-                                      (replacement_name, actual_choice,
-                                       closed_witness)))
+                              |> List.filter_map
+                                   (fun (depth, actual_choice) ->
+                                      try
+                                        let local_template =
+                                          tmshift 0 (-depth) actual_choice
+                                          |> tm_beta_eta_norm
+                                        in
+                                        Some
+                                          (replacement_name, actual_choice,
+                                           closed_witness, local_template)
+                                      with _ -> None))
                       |> List.sort_uniq compare
                     in
                     branch_choice_candidate_replacements :=
@@ -22788,10 +22837,75 @@ let elaborate_preprocess_refutation_native
 	                 candidate
                @ (branch_choice_candidate_replacements
                   |> List.map
-                       (fun (replacement_name, actual_choice, _definition) ->
+                       (fun (replacement_name, actual_choice, _definition,
+                             _local_template) ->
                           (actual_choice, TmH replacement_name)))
                |> List.sort_uniq compare
 	             in
+             let branch_choice_expanded_candidate =
+               let template_attempt_limit =
+                 match Sys.getenv_opt "MEGALODON_CERT_BRANCH_CHOICE_TEMPLATE_LIMIT" with
+                 | Some value ->
+                     begin try max 0 (int_of_string value)
+                     with Failure _ -> 0
+                     end
+                 | None -> 0
+               in
+               let rec take n = function
+                 | _ when n <= 0 -> []
+                 | [] -> []
+                 | item :: rest -> item :: take (n - 1) rest
+               in
+               let branch_choice_templates =
+                 branch_choice_candidate_replacements
+                 |> List.map
+                      (fun (_replacement_name, _actual_choice, _definition,
+                            local_template) ->
+                         local_template)
+                 |> List.sort_uniq compare
+                 |> take template_attempt_limit
+               in
+               let branch_choice_replacement_names =
+                 branch_choice_candidate_replacements
+                 |> List.concat_map
+                      (fun (replacement_name, _actual_choice, _definition,
+                            _local_template) ->
+                         native_core_symbol_name_aliases replacement_name)
+                 |> List.sort_uniq String.compare
+               in
+               let rec try_templates = function
+                 | [] -> None
+                 | local_template :: rest ->
+                     let replacements =
+                       branch_choice_replacement_names
+                       |> List.map
+                            (fun replacement_name ->
+                               (replacement_name, local_template))
+                     in
+                     let expanded =
+                       native_core_replace_witness_symbols_in_pf
+                         replacements
+                         candidate
+                     in
+                     if not
+                          (native_core_pf_contains_term_symbol
+                             introduced_witness_symbols
+                             expanded)
+                        && final_refutation_proof_checks expanded then begin
+                       if debug then
+                         prerr_endline
+                           (id
+                            ^ ": native preprocess Skolem CPS discharged branch-choice witness by scoped choice expansion");
+                       Some expanded
+                     end else
+                       try_templates rest
+               in
+               if branch_choice_templates = []
+                  || branch_choice_replacement_names = [] then
+                 None
+               else
+                 try_templates branch_choice_templates
+             in
              let cleaned_candidate =
                if registered_choice_replacements = [] then
                  None
@@ -22804,7 +22918,7 @@ let elaborate_preprocess_refutation_native
              let with_temporary_branch_choice_delta replacements f =
                let names =
                  replacements
-                 |> List.map (fun (name, _, _) -> name)
+                 |> List.map (fun (name, _, _, _) -> name)
                  |> List.sort_uniq String.compare
                in
                let saved =
@@ -22816,7 +22930,7 @@ let elaborate_preprocess_refutation_native
                           Hashtbl.find_opt definition_delta name))
                in
                List.iter
-                 (fun (name, _actual_choice, definition) ->
+                 (fun (name, _actual_choice, definition, _local_template) ->
                     if native_core_tm_scoped_under
                          (List.length variables)
                          definition then begin
@@ -22845,14 +22959,34 @@ let elaborate_preprocess_refutation_native
                end;
                result
              in
-	             let cleaned_candidate_checked =
+             let contract_backed_branch_replacement_names =
+               branch_choice_candidate_replacements
+               |> List.concat_map
+                    (fun (replacement_name, _actual_choice, _definition,
+                          _local_template) ->
+                       native_core_symbol_name_aliases replacement_name)
+               |> List.sort_uniq String.compare
+             in
+             let unbacked_introduced_witness_symbols =
+               introduced_witness_symbols
+               |> List.filter
+                    (fun name ->
+                       not
+                         (List.mem
+                            name
+                            contract_backed_branch_replacement_names))
+             in
+             let cleaned_candidate_checked =
                with_temporary_branch_choice_delta
                  branch_choice_candidate_replacements
                  (fun () ->
                     match cleaned_candidate with
                     | Some cleaned
                         when not (native_core_pf_contains_choice_witness cleaned)
-                             && not (native_core_pf_contains_term_symbol introduced_witness_symbols cleaned)
+                             && not
+                                  (native_core_pf_contains_term_symbol
+                                     unbacked_introduced_witness_symbols
+                                     cleaned)
                              && final_refutation_proof_checks cleaned ->
                         Some cleaned
                     | _ -> None)
@@ -22928,10 +23062,13 @@ let elaborate_preprocess_refutation_native
                       ^ ": native preprocess Skolem CPS candidate still contains introduced Skolem symbols")
                end
              end;
-	             begin match cleaned_candidate_checked with
-	             | Some cleaned ->
+             begin match branch_choice_expanded_candidate, cleaned_candidate_checked with
+             | Some expanded, _ ->
+                 expanded
+             | None, Some cleaned ->
                  List.iter
-                   (fun (replacement_name, _actual_choice, definition) ->
+                   (fun (replacement_name, _actual_choice, definition,
+                         _local_template) ->
                       skolem_witness_replacements :=
                         (replacement_name, definition)
                         :: List.remove_assoc

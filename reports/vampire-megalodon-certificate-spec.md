@@ -518,6 +518,15 @@ tries them as replacement needles for the introduced witness symbol. The
 definition installed for that symbol is still the closed witness term derived
 from the Vampire branch-choice contract, not the local proof occurrence.
 
+The checker also records the term-binder depth of each local `Eps_*`
+occurrence. This supports an opt-in diagnostic path that unshifts a local
+choice occurrence into a template and tries replacing the branch Skolem name by
+that scoped choice template. The diagnostic is disabled by default because each
+template requires a full proof check and `183:4` showed that speculative
+template search can noticeably slow the focused loop without solving the
+branch. Set `MEGALODON_CERT_BRANCH_CHOICE_TEMPLATE_LIMIT` to a positive integer
+to enable a bounded number of such attempts.
+
 This prototype is intentionally fail-closed:
 
 - branch-choice records are parsed only under
@@ -532,9 +541,12 @@ This prototype is intentionally fail-closed:
   refutation checker.
 
 Current evidence on 2026-07-19: this prototype preserves the focused baseline
-but does not yet solve the active `183:4` branch-local witness target. Debug
-output shows that it stages 20 contract-backed local branch-choice replacement
-candidates for `u30`, but the transformed proof is still rejected and the
-checker keeps the original refutation. The next design step is a real
-small-kernel branch-choice proof object rather than broader search over local
-choice terms.
+but does not yet solve the active `183:4` branch-local witness target. The
+parallel four-target gate with branch-choice contracts enabled still reports
+`10654:21` and `172:4` passing, with `183:4` and `233:4` failing. Debug output
+for `183:4` shows that `u30` stages 20 contract-backed local branch-choice
+replacement candidates, but the transformed proof is rejected because the
+proof-local `vampire_exists_prop_choice` term and the proposition containing
+`sK1` are not convertible under the current closed branch witness definition.
+The next design step is a real small-kernel branch-choice proof object rather
+than broader default search over local choice terms.
