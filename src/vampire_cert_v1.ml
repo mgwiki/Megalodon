@@ -12208,6 +12208,79 @@ let native_core_avatar_split_proof cert id parent_ids result clause_table avatar
     | [literal] -> native_core_split_literal_name literal
     | _ -> None
   in
+  let rec avatar_component_witness_subst id variables prop =
+    match variables, tm_beta_eta_norm prop with
+    | [], _ -> []
+    | (name, tp) :: rest, All (prop_tp, body) ->
+        if tp <> prop_tp then
+          error
+            (id ^ ": native preprocess proof-term avatar_split component quantifier sort mismatch");
+        let eps = native_core_eps_symbol tp in
+        if eps = "Eps_unsupported" then
+          error
+            (id ^ ": native preprocess proof-term avatar_split has no epsilon operator for component sort");
+        let neg_predicate =
+          Lam (tp, Imp (body, native_core_false))
+        in
+        let witness =
+          Ap (TmH eps, neg_predicate)
+        in
+        (name, witness) ::
+        avatar_component_witness_subst
+          id rest (tmsubst body 0 witness)
+    | _ :: _, _ ->
+        error
+          (id ^ ": native preprocess proof-term avatar_split component proposition is missing quantified binders")
+  in
+  let avatar_component_instantiate_not_foralls id variables prop not_prop =
+    let rec instantiate variables prop not_prop =
+      match variables, tm_beta_eta_norm prop with
+      | [], _ -> not_prop
+      | (_name, tp) :: rest, All (prop_tp, body) ->
+          if tp <> prop_tp then
+            error
+              (id ^ ": native preprocess proof-term avatar_split component quantifier sort mismatch");
+          let eps = native_core_eps_symbol tp in
+          if eps = "Eps_unsupported" then
+            error
+              (id ^ ": native preprocess proof-term avatar_split has no epsilon operator for component sort");
+          let component_predicate = Lam (tp, body) in
+          let neg_component_predicate =
+            Lam (tp, Imp (body, native_core_false))
+          in
+          let witness =
+            Ap (TmH eps, neg_component_predicate)
+          in
+          let pointwise =
+            TLam
+              (tp,
+               PLam (Imp (body, native_core_false), Hyp 0))
+          in
+          let exists_neg_component =
+            PPfAp
+              (PPfAp
+                 (PTmAp
+                    (PTmAp
+                       (Known (native_core_not_forall_exists_hash tp),
+                        component_predicate),
+                     neg_component_predicate),
+                  pointwise),
+               not_prop)
+          in
+          let not_body_at_witness =
+            PPfAp
+              (PTmAp
+                 (Known (native_core_exists_choice_hash tp),
+                  neg_component_predicate),
+               exists_neg_component)
+          in
+          instantiate rest (tmsubst body 0 witness) not_body_at_witness
+      | _ :: _, _ ->
+          error
+            (id ^ ": native preprocess proof-term avatar_split component proposition is missing quantified binders")
+    in
+    instantiate variables prop not_prop
+  in
   let quantified_two_component_split source_id definition_ids =
     if definition_ids <> [] && native_core_is_split_clause result then begin
         let source_clause, source_proof = Hashtbl.find clause_table source_id in
@@ -12234,8 +12307,11 @@ let native_core_avatar_split_proof cert id parent_ids result clause_table avatar
               error
                 (id ^ ": native preprocess proof-term avatar_split references unknown avatar definition")
           in
-          match component_literals, native_core_step_variables cert definition_id with
-          | _ :: _, ([] | [_]) ->
+          let component_variables =
+            native_core_step_variables cert definition_id
+          in
+          match component_literals with
+          | _ :: _ ->
               let split_prop = native_core_literal_prop (Pos (TmH split_name)) in
               let component_to_split =
                 native_core_and_elim_right
@@ -12250,28 +12326,13 @@ let native_core_avatar_split_proof cert id parent_ids result clause_table avatar
                   definition_proof
               in
               let component_witness =
-                match native_core_step_variables cert definition_id with
+                match component_variables with
                 | [] -> None
-                | [component_var, component_tp] ->
-                    let open_component_prop =
-                      native_core_clause_prop id component_literals
-                    in
-                    let component_body =
-                      subst_named_tm component_var open_component_prop
-                    in
-                    let component_predicate =
-                      Lam (component_tp, component_body)
-                    in
-                    let neg_component_predicate =
-                      Lam (component_tp, Imp (component_body, native_core_false))
-                    in
-                    let witness =
-                      Ap (TmH (native_core_eps_symbol component_tp), neg_component_predicate)
-                    in
+                | _ :: _ ->
                     Some
-                      (component_var, component_tp, component_body,
-                       component_predicate, neg_component_predicate, witness)
-                | _ -> assert false
+                      (component_variables,
+                       avatar_component_witness_subst
+                         id component_variables definition_component_prop)
               in
               (definition_id, split_name, component_literals, component_witness,
                definition_component_prop, component_to_split, split_to_component,
@@ -12283,12 +12344,11 @@ let native_core_avatar_split_proof cert id parent_ids result clause_table avatar
         let infos = List.map definition_info definition_ids in
         let default_substitution =
           infos
-          |> List.filter_map
+          |> List.concat_map
                (fun (_, _, _, component_witness, _, _, _, _, _) ->
                   match component_witness with
-                  | Some (component_var, _, _, _, _, witness) ->
-                      Some (component_var, witness)
-                  | None -> None)
+                  | Some (_, witness_subst) -> witness_subst
+                  | None -> [])
         in
         let metadata_substitution =
           let field key =
@@ -12305,7 +12365,19 @@ let native_core_avatar_split_proof cert id parent_ids result clause_table avatar
                  (fun (_, candidate_split, _, component_witness, _, _, _, _, _) ->
                     if candidate_split = split_name then
                       match component_witness with
-                      | Some (_, _, _, _, _, witness) -> Some witness
+                      | Some (_, [(_, witness)]) -> Some witness
+                      | Some _ -> None
+                      | None -> None
+                    else None)
+          in
+          let witness_for_split_component split_name component_var =
+            infos
+            |> List.find_map
+                 (fun (_, candidate_split, _, component_witness, _, _, _, _, _) ->
+                    if candidate_split = split_name then
+                      match component_witness with
+                      | Some (_, witness_subst) ->
+                          List.assoc_opt component_var witness_subst
                       | None -> None
                     else None)
           in
@@ -12316,9 +12388,18 @@ let native_core_avatar_split_proof cert id parent_ids result clause_table avatar
               let acc =
                 match
                   field (prefix ^ "_parent_var"),
+                  field (prefix ^ "_component_var"),
                   field (prefix ^ "_split_var")
                 with
-                | Some parent_var, Some split_var ->
+                | Some parent_var, Some component_var, Some split_var ->
+                    begin match
+                      witness_for_split_component
+                        ("split_" ^ split_var) (native_core_ident component_var)
+                    with
+                    | Some witness -> (native_core_ident parent_var, witness) :: acc
+                    | None -> acc
+                    end
+                | Some parent_var, None, Some split_var ->
                     begin match witness_for_split ("split_" ^ split_var) with
                     | Some witness -> (native_core_ident parent_var, witness) :: acc
                     | None -> acc
@@ -12341,9 +12422,20 @@ let native_core_avatar_split_proof cert id parent_ids result clause_table avatar
                        definition_component_prop, component_to_split,
                        split_to_component, split_prop, result_split_literal) ->
                     match component_witness, result_split_literal with
-                    | Some (component_var, component_tp, component_body,
-                            component_predicate, neg_component_predicate, _),
+                    | Some ([(component_var, component_tp)], _),
                       Some (Pos (TmH _)) ->
+                        let open_component_prop =
+                          native_core_clause_prop id component_literals
+                        in
+                        let component_body =
+                          subst_named_tm component_var open_component_prop
+                        in
+                        let component_predicate =
+                          Lam (component_tp, component_body)
+                        in
+                        let neg_component_predicate =
+                          Lam (component_tp, Imp (component_body, native_core_false))
+                        in
                         Some
                           (definition_id, split_name, component_literals,
                            component_var, component_tp, component_body,
@@ -12365,6 +12457,11 @@ let native_core_avatar_split_proof cert id parent_ids result clause_table avatar
                         if tp = component_tp then Some (name, DB 0) else None)
               in
               if bound_substitution = [] then None
+              else if
+                List.exists
+                  (fun (name, _) -> not (List.mem_assoc name bound_substitution))
+                  source_step_variables
+              then None
               else
                 let instantiated_source_clause =
                   subst_clause bound_substitution source_clause
@@ -12657,33 +12754,11 @@ let native_core_avatar_split_proof cert id parent_ids result clause_table avatar
                    let instantiated_component_literals, not_instantiated_component =
                      match component_witness with
                      | None -> component_literals, not_closed_component
-                     | Some (component_var, component_tp, component_body,
-                             component_predicate, neg_component_predicate, witness) ->
-                         let pointwise =
-                           TLam
-                             (component_tp,
-                              PLam (Imp (component_body, native_core_false), Hyp 0))
-                         in
-                         let exists_neg_component =
-                           PPfAp
-                             (PPfAp
-                                (PTmAp
-                                   (PTmAp
-                                      (Known (native_core_not_forall_exists_hash component_tp),
-                                       component_predicate),
-                                    neg_component_predicate),
-                                 pointwise),
-                              not_closed_component)
-                         in
-                         let not_instantiated_component =
-                           PPfAp
-                             (PTmAp
-                                (Known (native_core_exists_choice_hash component_tp),
-                                 neg_component_predicate),
-                              exists_neg_component)
-                         in
-                         subst_clause [(component_var, witness)] component_literals,
-                         not_instantiated_component
+                     | Some (component_variables, witness_subst) ->
+                         subst_clause witness_subst component_literals,
+                         avatar_component_instantiate_not_foralls
+                           id component_variables definition_component_prop
+                           not_closed_component
                    in
                    List.map
                      (fun instantiated_literal ->
@@ -20881,6 +20956,10 @@ let elaborate_preprocess_refutation_native
   let staged_skolem_branch_witness_replacements = ref [] in
   let final_proof = ref None in
   let first_stored_choice_witness = ref None in
+  let trace_step phase kind id =
+    if Sys.getenv_opt "MEGALODON_CERT_TRACE_STEPS" = Some "1" then
+      prerr_endline ("native preprocess " ^ phase ^ " " ^ kind ^ " " ^ id)
+  in
   let debug_stored_choice_witness kind id proof =
     if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
       match !first_stored_choice_witness with
@@ -20899,18 +20978,26 @@ let elaborate_preprocess_refutation_native
   in
   let store_clause id clause proof =
     let prop = native_core_step_clause_prop cert variables id clause in
+    trace_step "checking" "clause" id;
     check_step_proof id prop proof;
+    trace_step "checked" "clause" id;
     debug_stored_choice_witness "clause" id proof;
     Hashtbl.replace clause_table id (clause, proof);
     if clause = [] then final_proof := Some proof
   in
   let store_formula id formula proof =
     let prop = native_preprocess_step_formula_prop cert variables id formula in
+    trace_step "checking" "formula" id;
     check_step_proof id prop proof;
+    trace_step "checked" "formula" id;
     debug_stored_choice_witness "formula" id proof;
     Hashtbl.replace formula_table id (formula, proof)
   in
+  let final_check_counter = ref 0 in
   let final_refutation_proof_checks proof =
+    incr final_check_counter;
+    let final_check_id = string_of_int !final_check_counter in
+    trace_step "checking" "final-refutation" final_check_id;
     let proof = localize_source_locals_pf proof in
     let rec proof_node_count = function
       | Hyp _ | Known _ -> 1
@@ -21061,17 +21148,22 @@ let elaborate_preprocess_refutation_native
     in
     try
       match check_propofpf proof_delta symbol_table variable_types closed_source_context proof native_core_false [] with
-      | Some _ -> true
+      | Some _ ->
+          trace_step "checked" "final-refutation" final_check_id;
+          true
       | None ->
           debug_failure "wrong proposition";
+          trace_step "rejected" "final-refutation" final_check_id;
           false
     with Failure msg ->
       debug_failure msg;
+      trace_step "rejected" "final-refutation" final_check_id;
       false
     | Error _ as exn -> raise exn
     | exn ->
-        debug_failure (Printexc.to_string exn);
-        false
+      debug_failure (Printexc.to_string exn);
+      trace_step "rejected" "final-refutation" final_check_id;
+      false
   in
   let abstract_skolem_result_by_prop result_prop result_proof shifted_final =
     let replaced = ref 0 in
@@ -22445,6 +22537,7 @@ let elaborate_preprocess_refutation_native
          ^ Printexc.to_string exn)
   end;
   let preprocess_proof_checks_against_prop label prop proof =
+    trace_step "checking" "final-prop" label;
     let prop = localize_source_locals_tm prop in
     let proof = localize_source_locals_pf proof in
     let short_tm tm =
@@ -22683,17 +22776,22 @@ let elaborate_preprocess_refutation_native
     try
       native_core_reject_certificate_knowns label label proof;
       match check_propofpf proof_delta symbol_table variable_types closed_source_context proof prop [] with
-      | Some _ -> true
+      | Some _ ->
+          trace_step "checked" "final-prop" label;
+          true
       | None ->
           debug_failure "wrong proposition";
+          trace_step "rejected" "final-prop" label;
           false
     with Failure msg ->
       debug_failure msg;
+      trace_step "rejected" "final-prop" label;
       false
     | Error _ as exn -> raise exn
     | exn ->
-        debug_failure (Printexc.to_string exn);
-        false
+      debug_failure (Printexc.to_string exn);
+      trace_step "rejected" "final-prop" label;
+      false
   in
   let nested_imp props target =
     List.fold_right (fun prop body -> Imp (prop, body)) props target
@@ -23062,7 +23160,14 @@ let elaborate_preprocess_refutation_native
              ^ Printexc.to_string exn);
         None
   in
+  let try_final_cleanup =
+    Sys.getenv_opt "MEGALODON_CERT_TRY_FINAL_CLEANUP" = Some "1"
+    || Sys.getenv_opt "MEGALODON_CERT_FAIL_FAST_SKOLEM_CPS" = Some "1"
+  in
   let proof =
+    if not try_final_cleanup then
+      proof
+    else
     match try_grouped_skolem_cps_discharge () with
     | Some proof -> proof
     | None ->
@@ -23689,6 +23794,9 @@ let elaborate_preprocess_refutation_native
       !skolem_cps_entries
   in
   let proof =
+    if not try_final_cleanup then
+      proof
+    else
     let split_replacements =
       avatar_definition_table
       |> Hashtbl.to_seq_values
@@ -23743,6 +23851,9 @@ let elaborate_preprocess_refutation_native
       end
   in
   let proof =
+    if not try_final_cleanup then
+      proof
+    else
     let split_replacements =
       avatar_definition_table
       |> Hashtbl.to_seq_values
@@ -23777,6 +23888,9 @@ let elaborate_preprocess_refutation_native
       end
   in
   let proof =
+    if not try_final_cleanup then
+      proof
+    else
     let replacements =
       !skolem_witness_replacements
       |> List.sort_uniq compare

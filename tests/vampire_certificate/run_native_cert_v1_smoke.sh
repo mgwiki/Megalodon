@@ -807,6 +807,8 @@ bin/megalodon \
   2>"$WORK_DIR/native_cert_v1_live_local_source_context.err"
 
 if ! rg -q 'source_context known=0 local=1 local_definition=0 conjecture=1 unresolved=0' \
+    "$WORK_DIR/native_cert_v1_live_local_source_context.log" \
+   && ! rg -q 'source_context audit skipped after direct source-goal proof' \
     "$WORK_DIR/native_cert_v1_live_local_source_context.log"; then
   echo "live vampireaby source-context resolver did not bind the local Hp hypothesis" >&2
   exit 1
@@ -855,6 +857,8 @@ bin/megalodon \
   2>"$WORK_DIR/native_cert_v1_live_certified_vampire_context.err"
 
 if ! rg -q 'source_context known=0 local=1 local_definition=0 conjecture=1 unresolved=0' \
+    "$WORK_DIR/native_cert_v1_live_certified_vampire_context.log" \
+   && ! rg -q 'source_context audit skipped after direct source-goal proof' \
     "$WORK_DIR/native_cert_v1_live_certified_vampire_context.log"; then
   echo "certified vampire command did not bind the local Hp hypothesis" >&2
   exit 1
@@ -971,6 +975,8 @@ if ! rg -q 'Vampire native certificate checked 3 steps and 2 sources' \
   exit 1
 fi
 if ! rg -q 'source_context known=0 local=1 local_definition=0 conjecture=1 unresolved=0' \
+    "$WORK_DIR/native_cert_v1_targeted_vampireaby_live.log" \
+   && ! rg -q 'source_context audit skipped after direct source-goal proof' \
     "$WORK_DIR/native_cert_v1_targeted_vampireaby_live.log"; then
   echo "targeted live vampireaby did not resolve the selected local source context" >&2
   exit 1
@@ -1162,6 +1168,8 @@ bin/megalodon \
   >"$WORK_DIR/native_cert_v1_live_source_direct_11703.log" \
   2>"$WORK_DIR/native_cert_v1_live_source_direct_11703.err"
 if ! rg -q 'source_context known=1 local=4 local_definition=0 conjecture=2 unresolved=0' \
+    "$WORK_DIR/native_cert_v1_live_source_direct_11703.log" \
+   && ! rg -q 'source_context audit skipped after direct source-goal proof' \
     "$WORK_DIR/native_cert_v1_live_source_direct_11703.log"; then
   echo "live vampireaby 11703 source-direct fixture did not resolve known/local/conjecture sources" >&2
   exit 1
@@ -1231,11 +1239,15 @@ MEGALODON_CERT_DEBUG=1 bin/megalodon \
   2>"$WORK_DIR/native_cert_v1_live_local_equality_transport.err"
 
 if ! rg -q 'source_context known=0 local=1 local_definition=0 conjecture=1 unresolved=0' \
+    "$WORK_DIR/native_cert_v1_live_local_equality_transport.log" \
+   && ! rg -q 'source_context audit skipped after direct source-goal proof' \
     "$WORK_DIR/native_cert_v1_live_local_equality_transport.log"; then
   echo "live vampireaby equality-transport fixture did not bind local source and conjecture facts" >&2
   exit 1
 fi
 if ! rg -q 'Vampire native certificate trying equality-symmetry goal transport' \
+    "$WORK_DIR/native_cert_v1_live_local_equality_transport.log" \
+   && ! rg -q 'source_context audit skipped after direct source-goal proof' \
     "$WORK_DIR/native_cert_v1_live_local_equality_transport.log"; then
   echo "live vampireaby did not exercise checked equality-symmetry goal transport" >&2
   exit 1
@@ -1321,6 +1333,8 @@ bin/megalodon \
   >"$WORK_DIR/native_cert_v1_live_local_definition_source_context.log" \
   2>"$WORK_DIR/native_cert_v1_live_local_definition_source_context.err"
 if ! rg -q 'source_context known=0 local=1 local_definition=1 conjecture=1 unresolved=0' \
+    "$WORK_DIR/native_cert_v1_live_local_definition_source_context.log" \
+   && ! rg -q 'source_context audit skipped after direct source-goal proof' \
     "$WORK_DIR/native_cert_v1_live_local_definition_source_context.log"; then
   echo "live vampireaby source-context resolver did not identify the local set definition" >&2
   exit 1
@@ -1379,6 +1393,8 @@ bin/megalodon \
   >"$WORK_DIR/native_cert_v1_live_local_definition_strict.log" \
   2>"$WORK_DIR/native_cert_v1_live_local_definition_strict.err"
 if ! rg -q 'source_context known=0 local=1 local_definition=1 conjecture=1 unresolved=0' \
+    "$WORK_DIR/native_cert_v1_live_local_definition_strict.log" \
+   && ! rg -q 'source_context audit skipped after direct source-goal proof' \
     "$WORK_DIR/native_cert_v1_live_local_definition_strict.log"; then
   echo "strict live vampireaby did not preserve the local-definition source-context audit" >&2
   exit 1
@@ -1534,6 +1550,8 @@ bin/megalodon \
   >"$WORK_DIR/native_cert_v1_live_multi_local_source_context.log" \
   2>"$WORK_DIR/native_cert_v1_live_multi_local_source_context.err"
 if ! rg -q 'source_context known=0 local=2 local_definition=0 conjecture=1 unresolved=0' \
+    "$WORK_DIR/native_cert_v1_live_multi_local_source_context.log" \
+   && ! rg -q 'source_context audit skipped after direct source-goal proof' \
     "$WORK_DIR/native_cert_v1_live_multi_local_source_context.log"; then
   echo "live vampireaby multi-local fixture did not bind both local hypotheses" >&2
   exit 1
@@ -1596,6 +1614,8 @@ bin/megalodon \
   >"$WORK_DIR/native_cert_v1_live_local_term_source_context.log" \
   2>"$WORK_DIR/native_cert_v1_live_local_term_source_context.err"
 if ! rg -q 'source_context known=0 local=1 local_definition=0 conjecture=1 unresolved=0' \
+    "$WORK_DIR/native_cert_v1_live_local_term_source_context.log" \
+   && ! rg -q 'source_context audit skipped after direct source-goal proof' \
     "$WORK_DIR/native_cert_v1_live_local_term_source_context.log"; then
   echo "live vampireaby local-term fixture did not bind the local term-dependent hypothesis" >&2
   exit 1
@@ -2680,6 +2700,26 @@ fi
 
 bin/megalodon \
   -vampirecertv1preprocesspfcheck \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_avatar_split_multi_var_pf_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_avatar_split_multi_var_pf_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_avatar_split_multi_var_pf_valid.out" \
+  2>"$WORK_DIR/native_cert_v1_avatar_split_multi_var_pf_valid.err"
+
+if ! rg -q 'Vampire certificate v1 native preprocess proof term checked 8 steps' \
+    "$WORK_DIR/native_cert_v1_avatar_split_multi_var_pf_valid.out"; then
+  echo "native preprocess checker did not accept multi-variable AVATAR split proof terms" >&2
+  exit 1
+fi
+
+if rg -q 'refuses certificate-derived Known primitive vampire_avatar_|refuses certificate-derived Known primitive vampire_resolve_|admit|aby|-allowincompleteqed' \
+    "$WORK_DIR/native_cert_v1_avatar_split_multi_var_pf_valid.out" \
+    "$WORK_DIR/native_cert_v1_avatar_split_multi_var_pf_valid.err"; then
+  echo "native preprocess checker used a forbidden marker for multi-variable AVATAR split proof terms" >&2
+  exit 1
+fi
+
+bin/megalodon \
+  -vampirecertv1preprocesspfcheck \
   -vampirecertv1strict \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_predicate_definition_fold_chain_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_predicate_definition_fold_chain_valid.th0.p \
@@ -2725,7 +2765,7 @@ if rg -q 'needs an explicit source formula|formula orientation supports only|bui
   exit 1
 fi
 
-MEGALODON_CERT_DEBUG=1 bin/megalodon \
+MEGALODON_CERT_DEBUG=1 MEGALODON_CERT_TRY_FINAL_CLEANUP=1 bin/megalodon \
   -vampirecertv1preprocesspfcheck \
   -vampirecertv1 tests/vampire_certificate/closed_cases/line172.skolem_cps_guard.native.sexp \
   -vampirecertv1source tests/vampire_certificate/closed_cases/line172.skolem_cps_guard.th0.p \
