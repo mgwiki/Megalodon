@@ -21002,12 +21002,79 @@ let elaborate_preprocess_refutation_native
                 end
             | TmH raw_name, _ :: _ ->
                 begin match native_core_ident_opt raw_name with
-                | Some name when List.mem name introduced_names
-                                 && Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" ->
-                    prerr_endline
-                      (id
-                       ^ ": native preprocess skolem deferred dependent witness definition for "
-                       ^ name)
+                | Some name when List.mem name introduced_names ->
+                    let replacement_names =
+                      native_core_symbol_name_aliases raw_name
+                      @ native_core_symbol_name_aliases name
+                      |> List.sort_uniq String.compare
+                    in
+                    let closed_witness =
+                      let _, args =
+                        native_core_flatten_value_application target_witness
+                      in
+                      let dependency_types =
+                        args
+                        |> List.map
+                             (fun arg ->
+                                match arg with
+                                | TmH raw_dependency ->
+                                    begin match native_core_ident_opt raw_dependency with
+                                    | Some dependency ->
+                                        List.assoc_opt
+                                          dependency
+                                          (variables @ parent_step_variables @ result_step_variables)
+                                    | None -> None
+                                    end
+                                | _ -> None)
+                      in
+                      let rec collect_types = function
+                        | [] -> Some []
+                        | Some tp :: rest ->
+                            begin match collect_types rest with
+                            | Some rest -> Some (tp :: rest)
+                            | None -> None
+                            end
+                        | None :: _ -> None
+                      in
+                      match collect_types dependency_types with
+                      | None -> None
+                      | Some dependency_types ->
+                          let body =
+                            native_core_close_tm variables epsilon_witness
+                            |> tm_beta_eta_norm
+                          in
+                          Some
+                            (List.fold_right
+                               (fun tp body -> Lam (tp, tmshift 0 1 body))
+                               dependency_types
+                               body
+                             |> tm_beta_eta_norm)
+                    in
+                    begin match closed_witness with
+                    | Some closed_witness
+                        when native_core_tm_scoped_under
+                               (List.length variables)
+                               closed_witness ->
+                        if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+                          prerr_endline
+                            (id
+                             ^ ": native preprocess skolem registered dependent witness definition "
+                             ^ name
+                             ^ " := "
+                             ^ tm_to_str closed_witness);
+                        List.iter
+                          (fun replacement_name ->
+                             skolem_witness_replacements :=
+                               (replacement_name, closed_witness)
+                               :: List.remove_assoc replacement_name !skolem_witness_replacements)
+                          replacement_names
+                    | _ ->
+                        if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+                          prerr_endline
+                            (id
+                             ^ ": native preprocess skolem deferred dependent witness definition for "
+                             ^ name)
+                    end
                 | _ -> ()
                 end
             | _ -> ()
