@@ -13815,7 +13815,7 @@ let native_core_rectify_formula_proof
 
 let native_core_cnf_formula_clause_proof
     ?(shift_parent_proof=true)
-    id variables parent_step_variables result_step_variables parent_formula result proof =
+    id variables parent_step_variables result_step_variables parent_formula index result proof =
   let close_literal = function
     | Pos atom -> Pos (native_core_close_tm (variables @ result_step_variables) atom)
     | Neg atom -> Neg (native_core_close_tm (variables @ result_step_variables) atom)
@@ -13930,7 +13930,9 @@ let native_core_cnf_formula_clause_proof
           (id ^ ": native preprocess proof-term cnf_formula_clause cannot instantiate formula universal binder")
     | candidates -> candidates
   in
-  let rec eliminate pending formula proof =
+  let rec eliminate pending clause_index formula proof =
+    if clause_index < 0 then
+      error (id ^ ": native preprocess proof-term cnf_formula_clause has negative projection index");
     let formula_prop = native_core_formula_prop formula in
     if formula_prop = result_prop then proof
     else
@@ -13949,39 +13951,63 @@ let native_core_cnf_formula_clause_proof
                 try
                   eliminate
                     pending
+                    clause_index
                     (tmsubst body 0 arg)
                     (PTmAp (proof, arg))
                 with Error _ -> try_candidates rest
           in
           try_candidates (quantifier_candidates pending tp)
       | Ap (Ap (TmH "vampire_or", left), right) ->
+          let left_clause_count = List.length (cnf_clauses left) in
+          let right_clause_count = List.length (cnf_clauses right) in
+          if left_clause_count = 0 || right_clause_count = 0 then
+            error
+              (id ^ ": native preprocess proof-term cnf_formula_clause found empty disjunction CNF projection");
+          let product_count = left_clause_count * right_clause_count in
+          if clause_index >= product_count then
+            error
+              (id ^ ": native preprocess proof-term cnf_formula_clause disjunction projection index is out of bounds");
+          let right_clause_index = clause_index / left_clause_count in
+          let left_clause_index = clause_index mod left_clause_count in
           let left_prop = native_core_formula_prop left in
           let right_prop = native_core_formula_prop right in
           let left_branch =
-            PLam (left_prop, eliminate pending left (Hyp 0))
+            PLam (left_prop, eliminate pending left_clause_index left (Hyp 0))
           in
           let right_branch =
-            PLam (right_prop, eliminate pending right (Hyp 0))
+            PLam (right_prop, eliminate pending right_clause_index right (Hyp 0))
           in
           PPfAp (PPfAp (PTmAp (proof, result_prop), left_branch), right_branch)
       | Ap (Ap (TmH "vampire_and", left), right) ->
+          let left_clause_count = List.length (cnf_clauses left) in
+          let right_clause_count = List.length (cnf_clauses right) in
+          if left_clause_count = 0 || right_clause_count = 0 then
+            error
+              (id ^ ": native preprocess proof-term cnf_formula_clause found empty conjunction CNF projection");
+          let total_count = left_clause_count + right_clause_count in
+          if clause_index >= total_count then
+            error
+              (id ^ ": native preprocess proof-term cnf_formula_clause conjunction projection index is out of bounds");
           let left_prop = native_core_formula_prop left in
           let right_prop = native_core_formula_prop right in
-          let left_proof =
-            PPfAp
-              (PTmAp (proof, left_prop),
-               PLam (left_prop, PLam (right_prop, Hyp 1)))
-          in
-          let right_proof =
-            PPfAp
-              (PTmAp (proof, right_prop),
-               PLam (left_prop, PLam (right_prop, Hyp 0)))
-          in
-          begin
-            try eliminate pending left left_proof
-            with Error _ -> eliminate pending right right_proof
-          end
+          if clause_index < left_clause_count then
+            let left_proof =
+              PPfAp
+                (PTmAp (proof, left_prop),
+                 PLam (left_prop, PLam (right_prop, Hyp 1)))
+            in
+            eliminate pending clause_index left left_proof
+          else
+            let right_proof =
+              PPfAp
+                (PTmAp (proof, right_prop),
+                 PLam (left_prop, PLam (right_prop, Hyp 0)))
+            in
+            eliminate pending (clause_index - left_clause_count) right right_proof
       | _ ->
+          if clause_index <> 0 then
+            error
+              (id ^ ": native preprocess proof-term cnf_formula_clause leaf projection index is out of bounds");
           let literal = literal_of_formula_tm formula in
           if List.exists ((=) literal) result then
             native_core_prove_literal_to_clause id result literal proof
@@ -14004,7 +14030,7 @@ let native_core_cnf_formula_clause_proof
           end
   in
   let body_proof =
-    eliminate parent_step_variables parent_formula parent_proof
+    eliminate parent_step_variables index parent_formula parent_proof
   in
   native_core_bind_result_step_variables variables result_step_variables body_proof
 
@@ -14110,6 +14136,39 @@ let native_core_fool_exhaustiveness_proof cert id result =
   | _ ->
       error
         (id ^ ": native preprocess proof-term fool_exhaustiveness expected two literals")
+
+let native_core_fool_distinctness_proof cert id result =
+  let step_variables = native_core_step_variables cert id in
+  let close_literal = function
+    | Pos atom -> Pos (native_core_close_tm step_variables atom)
+    | Neg atom -> Neg (native_core_close_tm step_variables atom)
+  in
+  match List.map close_literal result with
+  | [Neg atom] ->
+      let equality_prop = native_core_expand_eq_atom atom in
+      let false_proof equality_proof =
+        let motive_left = Lam (Prop, Lam (Prop, DB 1)) in
+        let motive_right = Lam (Prop, Lam (Prop, DB 0)) in
+        match native_core_equality_sides atom with
+        | Some (Prop, left, right)
+            when left = native_core_true && right = native_core_false ->
+            PPfAp (PTmAp (equality_proof, motive_left), native_core_true_proof)
+        | Some (Prop, left, right)
+            when left = native_core_false && right = native_core_true ->
+            PPfAp (PTmAp (equality_proof, motive_right), native_core_true_proof)
+        | Some _ ->
+            error (id ^ ": native proof-term fool_distinctness expected true != false")
+        | None ->
+            error (id ^ ": native proof-term fool_distinctness literal is not typed Megalodon equality")
+      in
+      List.fold_right
+        (fun (_, tp) proof -> TLam (tp, proof))
+        step_variables
+        (PLam (equality_prop, false_proof (Hyp 0)))
+  | [_] ->
+      error (id ^ ": native proof-term fool_distinctness literal must be negative")
+  | _ ->
+      error (id ^ ": native proof-term fool_distinctness expected a singleton clause")
 
 let native_core_fool_bool_proof id variables parent_formula parent_proof result =
   let close = native_core_close_tm variables in
@@ -20295,14 +20354,14 @@ let elaborate_core_resolution_refutation_native
             error
               (id ^ ": native core proof-term cnf_literal result is not propositionally identical to the parent formula");
           store id result parent_proof
-      | CnfFormulaClause (id, parent_id, _index, _count, result) ->
+      | CnfFormulaClause (id, parent_id, index, _count, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
           let parent_step_variables = native_core_step_variables cert parent_id in
           let result_step_variables = native_core_step_variables cert id in
           store id result
             (native_core_cnf_formula_clause_proof
                id variables parent_step_variables result_step_variables
-               parent_formula result parent_proof)
+               parent_formula index result parent_proof)
       | DefinitionInput (id, result) ->
           check_definition_input id result;
           let result_step_variables = native_core_step_variables cert id in
@@ -20319,6 +20378,10 @@ let elaborate_core_resolution_refutation_native
           check_fool_exhaustiveness id result;
           store id result
             (native_core_fool_exhaustiveness_proof cert id result)
+      | FoolDistinctness (id, result) ->
+          check_fool_distinctness id result;
+          store id result
+            (native_core_fool_distinctness_proof cert id result)
       | InequalityNameIntro (id, result) ->
           check_inequality_name_intro id result;
           store id result
@@ -21211,7 +21274,7 @@ let elaborate_preprocess_refutation_native
             error
               (id ^ ": native preprocess Skolem shadow cnf_literal result is not propositionally identical to the parent formula");
           store_shadow_clause id result parent_proof
-      | CnfFormulaClause (id, parent_id, _index, _count, result)
+      | CnfFormulaClause (id, parent_id, index, _count, result)
           when has_shadow_formula parent_id ->
           let parent_formula, parent_proof = shadow_formula_parent parent_id in
           if Hashtbl.mem transitional_primitive_formula_steps parent_id then
@@ -21224,7 +21287,7 @@ let elaborate_preprocess_refutation_native
                  id variables
                  parent_step_variables
                  (native_core_step_variables cert id)
-                 parent_formula result parent_proof)
+                 parent_formula index result parent_proof)
       | SplitDependency (id, owner_id, _dependencies, result)
           when has_shadow_clause owner_id ->
           let owner_clause, owner_proof = shadow_clause_parent owner_id in
@@ -21910,7 +21973,7 @@ let elaborate_preprocess_refutation_native
             error
               (id ^ ": native preprocess proof-term cnf_literal result is not propositionally identical to the parent formula");
           store_clause id result parent_proof
-      | CnfFormulaClause (id, parent_id, _index, _count, result) ->
+      | CnfFormulaClause (id, parent_id, index, _count, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
           let parent_step_variables = native_core_step_variables cert parent_id in
           let result_step_variables = native_core_step_variables cert id in
@@ -21930,7 +21993,7 @@ let elaborate_preprocess_refutation_native
             store_clause id result
               (native_core_cnf_formula_clause_proof
                  id variables parent_step_variables result_step_variables
-                 parent_formula result parent_proof)
+                 parent_formula index result parent_proof)
       | DefinitionInput (id, result) ->
           let result_step_variables = native_core_step_variables cert id in
           store_clause id result
@@ -21981,6 +22044,9 @@ let elaborate_preprocess_refutation_native
       | FoolExhaustiveness (id, result) ->
           store_clause id result
             (native_core_fool_exhaustiveness_proof cert id result)
+      | FoolDistinctness (id, result) ->
+          store_clause id result
+            (native_core_fool_distinctness_proof cert id result)
       | InequalityNameIntro (id, result) ->
           store_clause id result
             (native_core_inequality_name_intro_proof cert symbol_table id variables result)

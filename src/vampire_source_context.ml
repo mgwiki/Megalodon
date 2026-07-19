@@ -121,7 +121,8 @@ let rec collapse_expanded_equality = function
   | _ -> None
 
 let equality_sides ?default_tp = function
-  | Ap (Ap (TpAp (TmH h, tp), left), right) when h = megalodon_eq_poly_hash ->
+  | Ap (Ap (TpAp (TmH h, tp), left), right)
+      when h = megalodon_eq_poly_hash || h = "eq" || h = "=" ->
       Some (tp, left, right)
   | Ap (Ap (TmH h, left), right) when h = "=" || h = "eq" ->
       begin match default_tp with
@@ -406,6 +407,118 @@ let equality_symmetry_proof ?(proof_context=[]) context term_context proof propo
   in
   search target_candidates
 
+let structural_equality_transport_proof ?(proof_context=[]) context term_context proof proposition =
+  let rec variants tm =
+    match collapse_expanded_equality tm with
+    | Some collapsed when collapsed <> tm -> [tm; collapsed]
+    | _ -> [tm]
+  in
+  let checked candidate target =
+    if proof_proves_in_context_with_props
+         context
+         term_context
+         proof_context
+         candidate
+         target
+    then Some candidate
+    else None
+  in
+  let equality_leaf proof source target =
+    variants source
+    |> List.find_map
+         (fun source_variant ->
+            match equality_sides source_variant with
+            | None -> None
+            | Some (tp, left, right) ->
+                let candidate =
+                  positive_equality_symmetry_proof tp left right proof
+                in
+                List.find_map
+                  (fun target_variant ->
+                     match checked candidate target_variant with
+                     | Some candidate -> checked candidate target
+                     | None -> None)
+                  (variants target))
+  in
+  let rec transport depth term_context proof_context proof source target =
+    if depth <= 0 then
+      None
+    else if proof_proves_in_context_with_props
+              context
+              term_context
+              proof_context
+              proof
+              target
+    then
+      Some proof
+    else
+      match source, target with
+      | All (source_tp, source_body), All (target_tp, target_body)
+          when source_tp = target_tp ->
+          let body_proof = PTmAp (pftmshift 0 1 proof, DB 0) in
+          begin match
+            transport
+              (depth - 1)
+              (target_tp :: term_context)
+              proof_context
+              body_proof
+              source_body
+              target_body
+          with
+          | Some body ->
+              checked (TLam (target_tp, body)) target
+          | None -> None
+          end
+      | Imp (source_arg, source_body), Imp (target_arg, target_body) ->
+          let shifted_context =
+            target_arg :: proof_context
+          in
+          let direct_arg =
+            if proof_proves_in_context_with_props
+                 context
+                 term_context
+                 shifted_context
+                 (Hyp 0)
+                 source_arg
+            then
+              Some (Hyp 0)
+            else
+              transport
+                (depth - 1)
+                term_context
+                shifted_context
+                (Hyp 0)
+                target_arg
+                source_arg
+          in
+          begin match direct_arg with
+          | None -> None
+          | Some source_arg_proof ->
+              let body_proof =
+                PPfAp (pfshift 0 1 proof, source_arg_proof)
+              in
+              begin match
+                transport
+                  (depth - 1)
+                  term_context
+                  shifted_context
+                  body_proof
+                  source_body
+                  target_body
+              with
+              | Some body ->
+                  checked (PLam (target_arg, body)) target
+              | None -> None
+              end
+          end
+      | _ ->
+          equality_leaf proof source target
+  in
+  match proof_prop_in_context context term_context proof with
+  | None -> None
+  | Some source ->
+      transport 16 term_context proof_context proof source proposition
+
 let rec proof_for_prop ?(proof_context=[]) context term_context proof proposition =
   if proof_proves_in_context_with_props context term_context proof_context proof proposition then
     Some proof
@@ -425,6 +538,9 @@ let rec proof_for_prop ?(proof_context=[]) context term_context proof propositio
     in
     match collapsed_or_symmetry with
     | Some proof -> Some proof
+    | None ->
+    match structural_equality_transport_proof ~proof_context context term_context proof proposition with
+    | Some _ as result -> result
     | None ->
     let instantiate_loaded_forall () =
       match proof_prop_in_context context term_context proof with

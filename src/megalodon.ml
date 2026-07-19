@@ -2869,6 +2869,51 @@ let vampire_reconstruct_goal_from_proved_prop ?source_map ?extra_delta ?extra_sy
       | Some extra_delta ->
           vampire_merge_reconstruction_delta proof_delta extra_delta
       end;
+      let props_convert left right =
+        tm_beta_eta_norm left = tm_beta_eta_norm right
+        || (conv left right proof_delta [] <> None
+            && conv right left proof_delta [] <> None)
+      in
+      let rec structural_transport source target proof =
+        if props_convert source target then
+          Some proof
+        else
+          match tm_beta_eta_norm source, tm_beta_eta_norm target with
+          | All (source_tp, source_body), All (target_tp, target_body)
+              when source_tp = target_tp ->
+              begin match
+                structural_transport
+                  source_body
+                  target_body
+                  (PTmAp (pftmshift 0 1 proof, DB 0))
+              with
+              | Some body -> Some (TLam (target_tp, body))
+              | None -> None
+              end
+          | Imp (source_arg, source_body), Imp (target_arg, target_body)
+              when props_convert source_arg target_arg ->
+              begin match
+                structural_transport
+                  source_body
+                  target_body
+                  (PPfAp (pfshift 0 1 proof, Hyp 0))
+              with
+              | Some body -> Some (PLam (target_arg, body))
+              | None -> None
+              end
+          | _ ->
+              begin match vampire_equality_sides source, vampire_equality_sides target with
+              | Some (source_tp, source_left, source_right),
+                Some (target_tp, target_left, target_right)
+                  when source_tp = target_tp
+                       && props_convert source_left target_right
+                       && props_convert source_right target_left ->
+                  Some
+                    (vampire_positive_equality_symmetry_proof
+                       source_tp source_left source_right proof)
+              | _ -> None
+              end
+      in
       let proposition_sides = vampire_equality_sides proposition in
       let claim_sides = vampire_equality_sides claimtm in
       begin match proposition_sides, claim_sides with
@@ -2903,6 +2948,34 @@ let vampire_reconstruct_goal_from_proved_prop ?source_map ?extra_delta ?extra_sy
           | _ -> None
           end
       | _ ->
+          begin match structural_transport proposition claimtm proof with
+          | Some candidate ->
+              if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+                begin
+                  Printf.printf
+                    "Vampire native certificate trying structural goal transport from %s to %s.\n"
+                    (tm_to_str proposition)
+                    (tm_to_str claimtm);
+                  flush stdout
+                end;
+              let result =
+                vampire_check_current_goal_proof
+                  ?source_map
+                  ?extra_delta
+                  ?extra_symbols
+                  claimtm
+                  cxtm
+                  cxpf
+                  candidate
+              in
+              if result = None && Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+                begin
+                  Printf.printf
+                    "Vampire native certificate structural goal transport rejected.\n";
+                  flush stdout
+                end;
+              result
+          | None ->
           if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
             begin
               Printf.printf
@@ -2916,6 +2989,7 @@ let vampire_reconstruct_goal_from_proved_prop ?source_map ?extra_delta ?extra_sy
               flush stdout
             end;
           None
+          end
       end
 
 let vampire_context_terms_of_type cxtm target_tp =
@@ -4516,20 +4590,63 @@ let vampire_source_proof_props ?extra_symbols cxtm cxpf source_map source_audit 
   let hyps = List.map snd cxpf in
   let proof_delta = vampire_source_context_delta_with_source_map ~cxtm source_map in
   let symbol_table = vampire_symbol_table ?extra_symbols source_map in
-  List.filter_map
-    (fun (_, proof) ->
-       let rec try_variants = function
-         | [] -> None
-         | proof :: rest ->
-             try
-               let (prop, _) =
-                 extr_propofpf proof_delta symbol_table cx hyps proof []
-               in
-               Some (proof, prop)
-             with _ -> try_variants rest
-       in
-       try_variants (vampire_prop_ext_variants ~delta:proof_delta proof))
-    source_audit.Vampire_source_context.source_proofs
+  let prop_of_proof proof =
+    let rec try_variants = function
+      | [] -> None
+      | proof :: rest ->
+          try
+            let (prop, _) =
+              extr_propofpf proof_delta symbol_table cx hyps proof []
+            in
+            Some (proof, prop)
+          with _ -> try_variants rest
+    in
+    try_variants (vampire_prop_ext_variants ~delta:proof_delta proof)
+  in
+  let add_unique proof_prop proof_props =
+    if List.exists (fun existing -> existing = proof_prop) proof_props then
+      proof_props
+    else
+      proof_prop :: proof_props
+  in
+  let audit_proofs =
+    List.filter_map
+      (fun (_, proof) -> prop_of_proof proof)
+      source_audit.Vampire_source_context.source_proofs
+  in
+  let known_hash_candidates entry =
+    let add hash hashes =
+      if hash = "" || List.mem hash hashes then hashes else hash :: hashes
+    in
+    let add_name name hashes =
+      if name = "" then hashes
+      else
+        match Hashtbl.find_opt sigknh name with
+        | Some hash -> add hash hashes
+        | None -> hashes
+    in
+    []
+    |> add entry.Vampire_cert_v1.source_map_hash
+    |> add_name entry.Vampire_cert_v1.source_map_source_name
+    |> add_name entry.Vampire_cert_v1.source_map_tptp_name
+    |> List.rev
+  in
+  let source_map_known_proofs =
+    source_map
+    |> List.filter
+         (fun entry ->
+            entry.Vampire_cert_v1.source_map_kind = "known"
+            || entry.Vampire_cert_v1.source_map_kind = "axiom")
+    |> List.filter_map
+         (fun entry ->
+            known_hash_candidates entry
+            |> List.find_map (fun hash -> prop_of_proof (Known hash)))
+  in
+  List.rev
+    (List.fold_left
+       (fun proof_props proof_prop -> add_unique proof_prop proof_props)
+       []
+       (audit_proofs @ source_map_known_proofs))
 
 let vampire_reconstruct_goal_from_source_audit
     ?extra_delta
