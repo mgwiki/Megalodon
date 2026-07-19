@@ -8517,16 +8517,47 @@ let native_core_ident_opt s =
   try Some (native_core_ident s) with Error _ -> None
 
 let native_core_generated_skolem_symbols cert =
-  cert.steps
-  |> List.filter_map
-       (function
-         | SkolemFormula (_, _, _, introductions, _, _) ->
-             Some
-               (List.map
-                  (fun intro -> native_core_ident intro.skolem_intro_symbol)
-                  introductions)
-         | _ -> None)
-  |> List.flatten
+  let step_symbols =
+    cert.steps
+    |> List.filter_map
+         (function
+           | SkolemFormula (_, _, _, introductions, _, _) ->
+               Some
+                 (List.map
+                    (fun intro -> native_core_ident intro.skolem_intro_symbol)
+                    introductions)
+           | _ -> None)
+    |> List.flatten
+  in
+  let kernel_v1_symbols =
+    cert.metadata.step_extras
+    |> List.concat_map
+         (fun (_, kind, fields) ->
+            if kind <> "kernel_v1" then []
+            else
+              let collect prefix =
+                match field_value (prefix ^ "count") fields with
+                | None -> []
+                | Some raw_count ->
+                    let count =
+                      try int_of_string raw_count
+                      with Failure _ -> 0
+                    in
+                    let rec loop index =
+                      if index >= count then []
+                      else
+                        let key = prefix ^ string_of_int index ^ "_symbol" in
+                        match field_value key fields with
+                        | Some symbol ->
+                            native_core_ident symbol :: loop (index + 1)
+                        | None -> loop (index + 1)
+                    in
+                    loop 0
+              in
+              collect "introduced_"
+              @ collect "skolem_contract_introduced_")
+  in
+  step_symbols @ kernel_v1_symbols
   |> List.sort_uniq compare
 
 let native_core_avatar_definition_names cert =
@@ -18769,8 +18800,10 @@ let elaborate_core_resolution_refutation_native
                          ^ " := "
                          ^ tm_to_str closed_witness);
                     if native_core_tm_scoped_under (List.length variables) closed_witness then begin
-                      Hashtbl.replace proof_delta name (0, closed_witness);
-                      Hashtbl.replace definition_delta name (0, closed_witness)
+                      if not (Hashtbl.mem proof_delta name) then
+                        Hashtbl.replace proof_delta name (0, closed_witness);
+                      if not (Hashtbl.mem definition_delta name) then
+                        Hashtbl.replace definition_delta name (0, closed_witness)
                     end else if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
                       prerr_endline
                         (id
@@ -19172,6 +19205,7 @@ let elaborate_preprocess_refutation_native
   let transitional_primitive_clause_steps = Hashtbl.create 17 in
   let skolem_cps_entries = ref [] in
   let skolem_witness_replacements = ref [] in
+  let skolem_witness_raw_replacements = ref [] in
   let final_proof = ref None in
   let first_stored_choice_witness = ref None in
   let debug_stored_choice_witness kind id proof =
@@ -19934,14 +19968,12 @@ let elaborate_preprocess_refutation_native
           let source_formula, source_proof = lookup_formula source_id in
           let definition_formula, _ = lookup_formula definition_id in
           check_predicate_definition_fold (checked_formulas ()) id source_id definition_id result;
-          let defined, _, _ = predicate_definition_parts definition_id definition_formula in
           let parent_step_variables = native_core_step_variables cert source_id in
           let result_step_variables = native_core_step_variables cert id in
           store_formula id result
-            (native_core_formula_orientation_proof
-               ~definition_symbols:[native_core_ident defined]
+            (native_core_predicate_definition_fold_step_proof
                id variables parent_step_variables result_step_variables
-               source_formula result source_proof)
+               definition_formula source_formula result source_proof)
       | PredicateDefinitionFoldChain (id, source_id, definition_ids, result) ->
           let source_formula, source_proof = lookup_formula source_id in
           let path =
@@ -20086,8 +20118,10 @@ let elaborate_preprocess_refutation_native
                          ^ " := "
                          ^ tm_to_str closed_witness);
                     if native_core_tm_scoped_under (List.length variables) closed_witness then begin
-                      Hashtbl.replace proof_delta name (0, closed_witness);
-                      Hashtbl.replace definition_delta name (0, closed_witness)
+                      if not (Hashtbl.mem proof_delta name) then
+                        Hashtbl.replace proof_delta name (0, closed_witness);
+                      if not (Hashtbl.mem definition_delta name) then
+                        Hashtbl.replace definition_delta name (0, closed_witness)
                     end else if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
                       prerr_endline
                         (id
@@ -20096,7 +20130,10 @@ let elaborate_preprocess_refutation_native
                          ^ " out of arity-zero delta tables");
                     skolem_witness_replacements :=
                       (name, closed_witness)
-                      :: List.remove_assoc name !skolem_witness_replacements
+                      :: List.remove_assoc name !skolem_witness_replacements;
+                    skolem_witness_raw_replacements :=
+                      (name, tm_beta_eta_norm epsilon_witness)
+                      :: List.remove_assoc name !skolem_witness_raw_replacements
                 | _ -> ()
                 end
             | TmH raw_name, _ :: _ ->
@@ -20112,21 +20149,31 @@ let elaborate_preprocess_refutation_native
             | _ -> ()
           in
           let build_skolem_formula_proof result_step_variables =
-            try
-              native_core_skolem_formula_proof
-                ~normalize_formula_for_match:normalize_generated_skolems
-                ~register_witness_replacement
-                id variables parent_step_variables result_step_variables
-                subst source_formula result parent_proof
-            with (Error _ | Failure _) as exn ->
-              if helper_formulas = [] then raise exn
-              else
+            let proof =
+              try
                 native_core_skolem_formula_proof
-                  ~helper_formulas
                   ~normalize_formula_for_match:normalize_generated_skolems
                   ~register_witness_replacement
                   id variables parent_step_variables result_step_variables
                   subst source_formula result parent_proof
+              with (Error _ | Failure _) as exn ->
+                if helper_formulas = [] then raise exn
+                else
+                  native_core_skolem_formula_proof
+                    ~helper_formulas
+                    ~normalize_formula_for_match:normalize_generated_skolems
+                    ~register_witness_replacement
+                    id variables parent_step_variables result_step_variables
+                    subst source_formula result parent_proof
+            in
+            let inverse_witness_replacements =
+              (!skolem_witness_raw_replacements @ !skolem_witness_replacements)
+              |> List.filter
+                   (fun (name, _) -> List.mem name introduced_names)
+              |> List.map
+                   (fun (name, witness) -> (witness, TmH name))
+            in
+            native_core_replace_terms_in_pf inverse_witness_replacements proof
           in
           let proof =
             build_skolem_formula_proof result_step_variables

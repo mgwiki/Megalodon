@@ -2641,9 +2641,9 @@ if ! rg -q 'u30: native preprocess Skolem CPS discharged certificate-local witne
   exit 1
 fi
 
-if ! rg -q 'u30: native preprocess first stored formula proof containing certificate-local choice witness: .*certificate-local choice witness Eps_prop in term' \
+if ! rg -q 'u30: native preprocess skolem registered witness definition sK[0-9]+ := \(#Eps_prop ' \
     "$WORK_DIR/native_cert_v1_skolem_cps_guard.err"; then
-  echo "native preprocess checker did not localize the first stored Skolem choice witness to u30" >&2
+  echo "native preprocess checker did not register the u30 Skolem choice witnesses" >&2
   exit 1
 fi
 
