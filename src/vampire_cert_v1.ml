@@ -4209,8 +4209,14 @@ let check_step checked = function
       (id, CheckedClause clause) :: checked
   | SplitDependency (id, owner_id, dependencies, clause) ->
       check_avatar_dependencies id dependencies;
-      let owner_clause = lookup_clause checked owner_id in
-      if owner_clause <> clause then error (id ^ ": split_dependency result does not match owner clause");
+      begin match List.assoc_opt owner_id checked with
+      | Some (CheckedClause owner_clause) ->
+          if owner_clause <> clause then
+            error (id ^ ": split_dependency result does not match owner clause")
+      | Some _ ->
+          error (id ^ ": split_dependency owner is not a clause")
+      | None -> ()
+      end;
       (id, CheckedClause clause) :: checked
   | AvatarSplit (id, parent_ids, clause) ->
       check_avatar_sat_clause checked id parent_ids clause;
@@ -4376,9 +4382,36 @@ let field_key_value field =
         (String.sub field 0 eq,
          String.sub field (eq + 1) (String.length field - eq - 1))
 
+let kernel_v1_metadata_key id fields =
+  let rule =
+    match field_value "rule" fields with
+    | Some rule -> rule
+    | None -> ""
+  in
+  (id, rule)
+
+let latest_kernel_v1_metadata_indices step_extras =
+  let latest = Hashtbl.create 97 in
+  List.iteri
+    (fun index (id, kind, fields) ->
+       if kind = "kernel_v1" then
+         Hashtbl.replace latest (kernel_v1_metadata_key id fields) index)
+    step_extras;
+  latest
+
+let is_latest_kernel_v1_metadata latest index id kind fields =
+  kind <> "kernel_v1"
+  ||
+  match Hashtbl.find_opt latest (kernel_v1_metadata_key id fields) with
+  | Some latest_index -> index = latest_index
+  | None -> true
+
 let validate_kernel_v1_metadata_contracts cert =
   let step_indices = Hashtbl.create 97 in
   let step_by_id = Hashtbl.create 97 in
+  let latest_kernel_v1_metadata =
+    latest_kernel_v1_metadata_indices cert.metadata.step_extras
+  in
   List.iteri
     (fun index step ->
        Hashtbl.add step_indices (step_id step) index;
@@ -4479,6 +4512,22 @@ let validate_kernel_v1_metadata_contracts cert =
         (id ^ ": strict certificate v1 kernel_v1 metadata field "
          ^ key ^ " is negative");
     value
+  in
+  let metadata_shadowed_by_native_split_dependency id fields =
+    match field_value "rule" fields,
+          Hashtbl.find_opt step_by_id id,
+          Hashtbl.find_opt step_by_id (id ^ "_split_dependency") with
+    | Some rule, None, Some (SplitDependency (_, owner_id, _, result))
+        when rule <> "split_dependency" && owner_id = id ->
+        begin match field_value "result_clause" fields with
+        | Some value ->
+            begin try
+              same_clause_multiset (parse_clause (parse_sexpr value)) result
+            with _ -> false
+            end
+        | None -> false
+        end
+    | _ -> false
   in
   let rec formula_shape_summary tm =
     match tm with
@@ -5542,12 +5591,13 @@ let validate_kernel_v1_metadata_contracts cert =
         if owner_id <> id then
           error
             (id ^ ": strict certificate v1 kernel_v1 split_dependency owner does not match metadata unit");
-        begin match Hashtbl.find_opt step_by_id owner_id with
-        | Some _ -> ()
-        | None ->
-            error
-              (id ^ ": strict certificate v1 kernel_v1 split_dependency owner step is missing")
-        end;
+        if step_id = id then
+          begin match Hashtbl.find_opt step_by_id owner_id with
+          | Some _ -> ()
+          | None ->
+              error
+                (id ^ ": strict certificate v1 kernel_v1 split_dependency owner step is missing")
+          end;
         require_field_clause id fields "result_clause" result;
         begin match field_value "conclusion_clause" fields with
         | Some _ -> require_field_clause id fields "conclusion_clause" result
@@ -6248,9 +6298,12 @@ let validate_kernel_v1_metadata_contracts cert =
     in
     infer [] tm
   in
-  List.iter
-    (fun (id, kind, fields) ->
-       if kind = "kernel_v1" then
+  List.iteri
+    (fun metadata_index (id, kind, fields) ->
+       if kind = "kernel_v1"
+          && is_latest_kernel_v1_metadata
+               latest_kernel_v1_metadata metadata_index id kind fields then
+         if not (metadata_shadowed_by_native_split_dependency id fields) then
          let owner_index = Hashtbl.find_opt step_indices id in
          let schema = field_required id fields "schema" in
          if schema <> Vampire_kernel_syntax.schema then
@@ -7721,11 +7774,30 @@ let validate_kernel_v1_metadata_contracts cert =
 
 let validate_primitive_expansion_contracts cert =
   let steps = cert.steps in
+  let latest_kernel_v1_metadata =
+    latest_kernel_v1_metadata_indices cert.metadata.step_extras
+  in
   let has_step_id id =
     List.exists (fun step -> step_id step = id) steps
   in
   let step_by_id id =
     List.find_opt (fun step -> step_id step = id) steps
+  in
+  let metadata_shadowed_by_native_split_dependency id fields =
+    match field_value "rule" fields,
+          step_by_id id,
+          step_by_id (id ^ "_split_dependency") with
+    | Some rule, None, Some (SplitDependency (_, owner_id, _, result))
+        when rule <> "split_dependency" && owner_id = id ->
+        begin match field_value "result_clause" fields with
+        | Some value ->
+            begin try
+              same_clause_multiset (parse_clause (parse_sexpr value)) result
+            with _ -> false
+            end
+        | None -> false
+        end
+    | _ -> false
   in
   let step_clause_opt = function
     | Input (_, _, clause)
@@ -8251,6 +8323,14 @@ let validate_primitive_expansion_contracts cert =
     if not !has_required_resolve then
       fail "unit_resulting_resolution primitive_expansion_requires_N must include resolve"
   in
+  let has_kernel_unit_backing_step id primitive_required =
+    has_step_id id
+    ||
+    match primitive_required, step_by_id (id ^ "_split_dependency") with
+    | "split_dependency", Some (SplitDependency (_, owner_id, _, _))
+        when owner_id = id -> true
+    | _ -> false
+  in
   let validate_contract id kernel_rule primitive_required fields =
     let fail message =
       error (id ^ ": strict certificate v1 " ^ message)
@@ -8279,7 +8359,7 @@ let validate_primitive_expansion_contracts cert =
     | None ->
         fail ("requires primitive_expansion_requires=" ^ primitive_required ^ " for kernel rule " ^ kernel_rule)
     end;
-    if not (has_step_id id) then
+    if not (has_kernel_unit_backing_step id primitive_required) then
       fail "requires a final certificate step with the kernel unit id";
     if not (has_prefixed_primitive prefix primitive_required) then
       fail ("requires a " ^ primitive_required ^ " primitive step with prefix " ^ prefix)
@@ -8321,14 +8401,17 @@ let validate_primitive_expansion_contracts cert =
                  ^ String.concat ", " primitive_options
                  ^ " for kernel rule " ^ kernel_rule)
         in
-        if not (has_step_id id) then
+        if not (has_kernel_unit_backing_step id primitive_required) then
           fail "requires a final certificate step with the kernel unit id";
         if not (has_prefixed_primitive prefix primitive_required) then
           fail ("requires a " ^ primitive_required ^ " primitive step with prefix " ^ prefix)
   in
-  List.iter
-    (fun (id, kind, fields) ->
-       if kind = "kernel_v1" then
+  List.iteri
+    (fun metadata_index (id, kind, fields) ->
+       if kind = "kernel_v1"
+          && is_latest_kernel_v1_metadata
+               latest_kernel_v1_metadata metadata_index id kind fields then
+         if not (metadata_shadowed_by_native_split_dependency id fields) then
          begin
          validate_expansion_index id fields;
          match field_value "rule" fields with

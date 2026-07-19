@@ -372,6 +372,14 @@ while IFS= read -r native_file; do
       }
     }
 
+    function proof_id_prefix(id, out) {
+      if (match(id, /^u[0-9]+/)) {
+        out = substr(id, RSTART, RLENGTH)
+        return out
+      }
+      return ""
+    }
+
     function process_record(line, record_line,    step, rule, id, ref) {
       if (match(line, /^[[:space:]]*\(([[:alnum:]_]+) "([^"]+)"/, step)) {
         rule = step[1]
@@ -407,7 +415,8 @@ while IFS= read -r native_file; do
           if (match(line, /\(target "([^"]+)"/, ref)) {
             report("target", ref[1], line, record_line)
           }
-          if (match(line, /\(owner "([^"]+)"/, ref)) {
+          if (match(line, /\(owner "([^"]+)"/, ref) &&
+              !(rule == "split_dependency" && ref[1] == proof_id_prefix(id))) {
             report("owner", ref[1], line, record_line)
           }
         }
@@ -585,7 +594,17 @@ while IFS= read -r native_file; do
       if (rule == "equality_factoring") {
         return primitive == "equality_factoring" || primitive == "equality_factoring_constraints"
       }
+      if (rule == "predicate_definition") {
+        return primitive == "predicate_definition_intro" || primitive == "predicate_definition"
+      }
       return 1
+    }
+
+    function native_primitive_rule(primitive) {
+      if (primitive == "predicate_definition_intro") {
+        return "predicate_definition"
+      }
+      return primitive
     }
 
     function process_record(line, record_line,    step, rule, id, prefix, owner, unit, rule_match, kernel_rule, required_match, primitive, has_required) {
@@ -666,9 +685,15 @@ while IFS= read -r native_file; do
       }
       for (macro_index = 1; macro_index <= macro_count; ++macro_index) {
         unit = macro_unit[macro_index]
-        primitive = macro_primitive[macro_index]
-        if (!(unit in proof_step)) {
+        primitive = native_primitive_rule(macro_primitive[macro_index])
+        split_backed = ((unit "_split_dependency") in proof_step)
+        if (!(unit in proof_step) &&
+            !(split_backed &&
+              (macro_rule[macro_index] == "split_dependency" || split_backed))) {
           print source "\tmissing-final-primitive-step\t" unit "\t" macro_rule[macro_index] "\t" macro_line[macro_index]
+        }
+        if (split_backed && macro_rule[macro_index] != "split_dependency") {
+          continue
         }
         if (!((unit "\034" primitive) in primitive_for_prefix)) {
           print source "\tmissing-required-primitive-prefix\t" unit "\t" macro_rule[macro_index] "\t" primitive "\t" macro_line[macro_index]
