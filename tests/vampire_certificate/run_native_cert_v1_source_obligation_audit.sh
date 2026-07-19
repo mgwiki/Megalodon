@@ -9,6 +9,7 @@ MEGALODON=${MEGALODON:-"$ROOT/bin/megalodon"}
 CASES_DIR=${CASES_DIR:-"$ROOT/tests/vampire_certificate/closed_cases"}
 CASE_LIST=${CASE_LIST:-}
 DEFAULT_CASE_LIST=${DEFAULT_CASE_LIST:-"$ROOT/tests/vampire_certificate/closed_textual_pass_cases.list"}
+INCLUDE_GENERATED_SOURCE_FIXTURES=${INCLUDE_GENERATED_SOURCE_FIXTURES:-1}
 JOBS=${JOBS:-10}
 WORK_DIR=${WORK_DIR:-"$(mktemp -d "$TMPDIR/native_cert_v1_source_obligations.XXXXXX")"}
 STRICT=${STRICT:-0}
@@ -49,6 +50,18 @@ else
     | sort > "$selected_cases"
 fi
 
+if [[ "$INCLUDE_GENERATED_SOURCE_FIXTURES" == "1" ]]; then
+  for generated_fixture in \
+    "$ROOT/tests/vampire_certificate/native_cert_v1_source_map_set_reflexivity_valid.sexp" \
+    "$ROOT/tests/vampire_certificate/native_cert_v1_source_map_local_set_reflexivity_valid.sexp"
+  do
+    if [[ -s "$generated_fixture" ]]; then
+      printf '%s\n' "$generated_fixture" >> "$selected_cases"
+    fi
+  done
+  sort -u "$selected_cases" -o "$selected_cases"
+fi
+
 if [[ ! -s "$selected_cases" ]]; then
   echo "no source-obligation certificate cases selected" >&2
   exit 2
@@ -59,6 +72,13 @@ run_one() {
   local base
   base=$(basename "$native" .native.sexp)
   local source="$CASES_DIR/$base.th0.p"
+  local native_source="${native%.native.sexp}.th0.p"
+  if [[ ! -s "$source" && "$native" == *.sexp ]]; then
+    native_source="${native%.sexp}.th0.p"
+  fi
+  if [[ ! -s "$source" && -s "$native_source" ]]; then
+    source="$native_source"
+  fi
   local case_dir="$WORK_DIR/cases/$base"
   mkdir -p "$case_dir"
   : > "$case_dir/dummy.mg"
@@ -162,4 +182,3 @@ if (( pass_count < MIN_AUDIT_PASS )); then
   sed -n '1,40p' "$WORK_DIR/summary.tsv" >&2
   exit 1
 fi
-

@@ -164,11 +164,15 @@ TMPDIR=/project/tmp JOBS=10 \
 tests/vampire_certificate/run_native_cert_v1_source_obligation_audit.sh
 ```
 
-This runs over the committed closed-corpus list by default and reports how many
-certificate source inputs have declaration formulas checked by the supported
-THF fragment, how many are unsupported or missing formulas, and how many are
-generated equality/`set_reflexivity` obligations. This is a source-linking
-measurement gate, not proof reconstruction evidence by itself.
+This runs over the committed closed-corpus list by default and also includes
+the focused `set_reflexivity` and `local_set_reflexivity` fixtures, so the fast
+gate must report nonzero generated equality coverage. Set
+`INCLUDE_GENERATED_SOURCE_FIXTURES=0` only when auditing exactly the listed
+corpus. The output reports how many certificate source inputs have declaration
+formulas checked by the supported THF fragment, how many are unsupported or
+missing formulas, and how many are generated equality/`set_reflexivity`
+obligations. This is a source-linking measurement gate, not proof
+reconstruction evidence by itself.
 
 To audit whether hash-backed source inputs are actually available in the loaded
 Megalodon context, add:
