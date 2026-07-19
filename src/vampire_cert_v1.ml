@@ -20669,9 +20669,14 @@ let elaborate_preprocess_refutation_native
             native_core_skolem_result_formula_step_variables
               cert id result_step_variables
           in
+          let result_formula_has_free_variable_metadata =
+            native_core_kernel_v1_field cert id "result_formula_free_variable_count" <> None
+          in
           let preserved_contract_step_variables =
             match skolem_contract with
             | None -> []
+            | Some _ when result_formula_has_free_variable_metadata ->
+                base_result_assumption_step_variables
             | Some contract ->
                 let top_level_preserved =
                   contract.Vampire_kernel_syntax.skolem_parent_instantiations
