@@ -15694,6 +15694,58 @@ let native_core_skolem_refutation_cps_proof
       error
         (id ^ ": native preprocess Skolem CPS witness type count does not match substitution count")
   in
+  let witness_dependency_type tm =
+    let lookup name =
+      let names =
+        if String.length name > 1 && name.[0] = '#' then
+          [name; String.sub name 1 (String.length name - 1)]
+        else
+          [name]
+      in
+      names
+      |> List.find_map
+           (fun candidate ->
+              Option.bind
+                (native_core_ident_opt candidate)
+                (fun ident ->
+                   List.assoc_opt
+                     ident
+                     (variables @ parent_step_variables @ result_step_variables)))
+    in
+    match tm with
+    | TmH name -> lookup name
+    | _ -> None
+  in
+  let dependent_witness_symbol_replacement symbol bound =
+    match
+      witness_terms
+      |> List.find_opt (fun (candidate, _) -> candidate = symbol)
+      |> Option.map snd
+    with
+    | None -> bound
+    | Some witness ->
+        let _, args = native_core_flatten_value_application witness in
+        let arg_types =
+          args |> List.map witness_dependency_type
+        in
+        let rec collect_types = function
+          | [] -> Some []
+          | Some tp :: rest ->
+              begin match collect_types rest with
+              | Some rest -> Some (tp :: rest)
+              | None -> None
+              end
+          | None :: _ -> None
+        in
+        match collect_types arg_types with
+        | None ->
+          bound
+        | Some arg_types ->
+            List.fold_right
+              (fun tp body -> Lam (tp, tmshift 0 1 body))
+              arg_types
+              bound
+  in
   let parent_proof = native_core_close_pf variables parent_proof in
   let result_proof = native_core_close_pf variables result_proof in
   let final_proof = native_core_close_pf variables final_proof in
@@ -16321,7 +16373,7 @@ let native_core_skolem_refutation_cps_proof
           result
           witnesses;
         let replacements_under_binder =
-          (witness, DB 0)
+          (witness, dependent_witness_symbol_replacement witness (DB 0))
           :: List.map (fun (name, tm) -> (name, tmshift 0 1 tm)) replacements
         in
         let fallback_replacements_under_binder =
@@ -16338,7 +16390,9 @@ let native_core_skolem_refutation_cps_proof
             |> List.filter_map
                  (fun (symbol, symbol_tp, _) ->
                     if symbol_tp = tp && not (List.mem symbol covered) then
-                      Some (symbol, DB 0)
+                      Some
+                        (symbol,
+                         dependent_witness_symbol_replacement symbol (DB 0))
                     else
                       None)
           in
