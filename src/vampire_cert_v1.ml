@@ -15778,7 +15778,7 @@ let native_core_replace_terms_in_tm replacements tm =
   let rec replace_tm depth tm =
     match
       List.find_opt
-        (fun (needle, _) -> tm = tmshift 0 depth needle)
+        (fun (needle, _) -> normalize tm = (tmshift 0 depth needle |> normalize))
         replacements
     with
     | Some (_, replacement) -> tmshift 0 depth replacement |> normalize
@@ -15802,7 +15802,7 @@ let native_core_replace_terms_in_pf replacements proof =
   let rec replace_tm depth tm =
     match
       List.find_opt
-        (fun (needle, _) -> tm = tmshift 0 depth needle)
+        (fun (needle, _) -> normalize tm = (tmshift 0 depth needle |> normalize))
         replacements
     with
     | Some (_, replacement) -> tmshift 0 depth replacement |> normalize
@@ -16054,6 +16054,48 @@ let native_core_pf_first_choice_witness_term proof =
     | Hyp _ | Known _ -> None
   in
   pf_detail "root" proof
+
+let native_core_pf_choice_witness_terms proof =
+  let normalize tm =
+    tm
+    |> native_core_normalize_bool_constants
+    |> tm_beta_eta_norm
+  in
+  let terms = ref [] in
+  let add_choice enclosing =
+    terms := normalize enclosing :: !terms
+  in
+  let rec tm_collect enclosing = function
+    | TmH name when List.mem name native_core_choice_witness_symbols ->
+        add_choice enclosing
+    | TmH _ | DB _ | Prim _ -> ()
+    | TpAp (body, _) as tm -> tm_collect tm body
+    | Ap (left, right) as tm ->
+        tm_collect tm left;
+        tm_collect tm right
+    | Lam (_, body) | All (_, body) as tm ->
+        tm_collect tm body
+    | Imp (left, right) as tm ->
+        tm_collect tm left;
+        tm_collect tm right
+  in
+  let tm_collect tm = tm_collect tm tm in
+  let rec pf_collect = function
+    | PTpAp (body, _) -> pf_collect body
+    | PTmAp (body, tm) ->
+        pf_collect body;
+        tm_collect tm
+    | PPfAp (left, right) ->
+        pf_collect left;
+        pf_collect right
+    | PLam (prop, body) ->
+        tm_collect prop;
+        pf_collect body
+    | TLam (_, body) -> pf_collect body
+    | Hyp _ | Known _ -> ()
+  in
+  pf_collect proof;
+  !terms |> List.sort_uniq compare
 
 let native_core_pf_choice_known_detail proof =
   let choice_knowns =
@@ -22243,11 +22285,25 @@ let elaborate_preprocess_refutation_native
                 witness.Vampire_kernel_syntax.skolem_witness_symbol)
       |> List.sort_uniq String.compare
     in
+    let branch_choice_symbols =
+      branch.Vampire_kernel_syntax.skolem_branch_choices
+      |> List.concat_map
+           (fun choice ->
+              native_core_symbol_name_aliases
+                choice.Vampire_kernel_syntax.skolem_branch_choice_symbol)
+      |> List.sort_uniq String.compare
+    in
     let register_closed_witness raw_name name closed_witness =
       let replacement_names =
         native_core_symbol_name_aliases raw_name
         @ native_core_symbol_name_aliases name
         |> List.sort_uniq String.compare
+      in
+      let branch_choice_justified =
+        List.exists
+          (fun replacement_name ->
+             List.mem replacement_name branch_choice_symbols)
+          replacement_names
       in
       if native_core_tm_scoped_under
            (List.length variables)
@@ -22260,7 +22316,7 @@ let elaborate_preprocess_refutation_native
              ^ " := "
              ^ tm_to_str closed_witness);
         staged_skolem_branch_witness_replacements :=
-          (id, replacement_names, closed_witness)
+          (id, replacement_names, closed_witness, branch_choice_justified)
           :: !staged_skolem_branch_witness_replacements
       end else if skolem_branch_debug_enabled () then
         prerr_endline
@@ -22608,10 +22664,12 @@ let elaborate_preprocess_refutation_native
            in
            let staged_branch_replacements_for_entry =
              !staged_skolem_branch_witness_replacements
-             |> List.filter (fun (entry_id, _, _) -> entry_id = id)
+             |> List.filter (fun (entry_id, _, _, _) -> entry_id = id)
            in
+           let branch_choice_candidate_replacements = ref [] in
            List.iter
-             (fun (_entry_id, replacement_names, closed_witness) ->
+             (fun (_entry_id, replacement_names, closed_witness,
+                   branch_choice_justified) ->
                 if native_core_pf_contains_exact_term closed_witness candidate then begin
                   if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
                     prerr_endline
@@ -22679,6 +22737,32 @@ let elaborate_preprocess_refutation_native
                           (id
                            ^ ": native preprocess Skolem CPS found no choice term while diagnosing non-exact branch witness")
                     end
+                  end;
+                  if branch_choice_justified
+                     && List.length staged_branch_replacements_for_entry = 1 then begin
+                    let actual_choices =
+                      native_core_pf_choice_witness_terms candidate
+                    in
+                    let tentative =
+                      replacement_names
+                      |> List.concat_map
+                           (fun replacement_name ->
+                              actual_choices
+                              |> List.map
+                                   (fun actual_choice ->
+                                      (replacement_name, actual_choice,
+                                       closed_witness)))
+                      |> List.sort_uniq compare
+                    in
+                    branch_choice_candidate_replacements :=
+                      tentative @ !branch_choice_candidate_replacements
+                      |> List.sort_uniq compare;
+                    if skolem_branch_debug_enabled () then
+                      prerr_endline
+                        (id
+                         ^ ": native preprocess Skolem CPS staged "
+                         ^ string_of_int (List.length tentative)
+                         ^ " contract-backed local branch-choice replacement candidates")
                   end
                 end)
              staged_branch_replacements_for_entry;
@@ -22688,31 +22772,91 @@ let elaborate_preprocess_refutation_native
            if native_core_pf_contains_term_symbol
                 (native_core_choice_witness_symbols @ introduced_witness_symbols)
                 candidate then begin
-             let debug = Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" in
-             let fail_fast = fail_fast_skolem_cps () in
-             let registered_choice_replacements =
-               native_core_registered_choice_witness_term_replacements
-                 (!skolem_witness_replacements |> List.sort_uniq compare)
-                 candidate
+	             let debug = Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" in
+	             let fail_fast = fail_fast_skolem_cps () in
+             let branch_choice_candidate_replacements =
+               !branch_choice_candidate_replacements
+               |> List.sort_uniq compare
              in
+             let candidate_witness_replacements =
+               !skolem_witness_replacements
+               |> List.sort_uniq compare
+             in
+	             let registered_choice_replacements =
+	               native_core_registered_choice_witness_term_replacements
+                 candidate_witness_replacements
+	                 candidate
+               @ (branch_choice_candidate_replacements
+                  |> List.map
+                       (fun (replacement_name, actual_choice, _definition) ->
+                          (actual_choice, TmH replacement_name)))
+               |> List.sort_uniq compare
+	             in
              let cleaned_candidate =
                if registered_choice_replacements = [] then
                  None
                else
                  Some
-                   (native_core_replace_terms_in_pf
-                      registered_choice_replacements
-                      candidate)
+	                   (native_core_replace_terms_in_pf
+	                      registered_choice_replacements
+	                      candidate)
+	             in
+             let with_temporary_branch_choice_delta replacements f =
+               let names =
+                 replacements
+                 |> List.map (fun (name, _, _) -> name)
+                 |> List.sort_uniq String.compare
+               in
+               let saved =
+                 names
+                 |> List.map
+                      (fun name ->
+                         (name,
+                          Hashtbl.find_opt proof_delta name,
+                          Hashtbl.find_opt definition_delta name))
+               in
+               List.iter
+                 (fun (name, _actual_choice, definition) ->
+                    if native_core_tm_scoped_under
+                         (List.length variables)
+                         definition then begin
+                      if not (Hashtbl.mem proof_delta name) then
+                        Hashtbl.replace proof_delta name (0, definition);
+                      if not (Hashtbl.mem definition_delta name) then
+                        Hashtbl.replace definition_delta name (0, definition)
+                    end)
+                 replacements;
+               let result = f () in
+               begin match result with
+               | Some _ -> ()
+               | None ->
+                   List.iter
+                     (fun (name, proof_saved, definition_saved) ->
+                        begin match proof_saved with
+                        | Some value -> Hashtbl.replace proof_delta name value
+                        | None -> Hashtbl.remove proof_delta name
+                        end;
+                        begin match definition_saved with
+                        | Some value ->
+                            Hashtbl.replace definition_delta name value
+                        | None -> Hashtbl.remove definition_delta name
+                        end)
+                     saved
+               end;
+               result
              in
-             let cleaned_candidate_checked =
-               match cleaned_candidate with
-               | Some cleaned
-                   when not (native_core_pf_contains_choice_witness cleaned)
-                        && not (native_core_pf_contains_term_symbol introduced_witness_symbols cleaned)
-                        && final_refutation_proof_checks cleaned ->
-                   Some cleaned
-               | _ -> None
-             in
+	             let cleaned_candidate_checked =
+               with_temporary_branch_choice_delta
+                 branch_choice_candidate_replacements
+                 (fun () ->
+                    match cleaned_candidate with
+                    | Some cleaned
+                        when not (native_core_pf_contains_choice_witness cleaned)
+                             && not (native_core_pf_contains_term_symbol introduced_witness_symbols cleaned)
+                             && final_refutation_proof_checks cleaned ->
+                        Some cleaned
+                    | _ -> None)
+	             in
              if debug || fail_fast then begin
                if native_core_pf_contains_choice_witness candidate then begin
                  if debug then begin
@@ -22784,10 +22928,18 @@ let elaborate_preprocess_refutation_native
                       ^ ": native preprocess Skolem CPS candidate still contains introduced Skolem symbols")
                end
              end;
-             begin match cleaned_candidate_checked with
-             | Some cleaned ->
-                 if debug then
-                   prerr_endline
+	             begin match cleaned_candidate_checked with
+	             | Some cleaned ->
+                 List.iter
+                   (fun (replacement_name, _actual_choice, definition) ->
+                      skolem_witness_replacements :=
+                        (replacement_name, definition)
+                        :: List.remove_assoc
+                             replacement_name
+                             !skolem_witness_replacements)
+                   branch_choice_candidate_replacements;
+	                 if debug then
+	                   prerr_endline
                      (id ^ ": native preprocess Skolem CPS discharged registered choice witnesses");
                  cleaned
              | _ -> current

@@ -507,3 +507,34 @@ This first elaborator is intentionally limited to set-sorted first-order terms
 and ground resolution after substitution. Paramodulation elaboration currently
 requires ground instantiated parent clauses. It is a no-admit kernel-checking
 smoke path, not yet the full first-order Megalodon importer.
+
+## Branch-Choice Replay Prototype
+
+The native Megalodon checker now has a guarded prototype for consuming parsed
+Skolem branch-choice contracts during CPS replay. When a staged branch witness
+is backed by an explicit Vampire `skolem_branch_choice` record, the checker
+collects the local `Eps_*` choice terms that occur in the candidate proof and
+tries them as replacement needles for the introduced witness symbol. The
+definition installed for that symbol is still the closed witness term derived
+from the Vampire branch-choice contract, not the local proof occurrence.
+
+This prototype is intentionally fail-closed:
+
+- branch-choice records are parsed only under
+  `MEGALODON_CERT_ENABLE_BRANCH_CHOICE_CONTRACTS=1`;
+- local choice-term candidates are considered only for a single staged branch
+  witness whose symbol is named by a parsed branch-choice contract;
+- candidate definitions are installed into the delta tables only while the
+  transformed proof is being checked;
+- failed candidates restore the previous delta state and are not committed to
+  the witness replacement table;
+- successful candidates must pass `check_propofpf` through the existing final
+  refutation checker.
+
+Current evidence on 2026-07-19: this prototype preserves the focused baseline
+but does not yet solve the active `183:4` branch-local witness target. Debug
+output shows that it stages 20 contract-backed local branch-choice replacement
+candidates for `u30`, but the transformed proof is still rejected and the
+checker keeps the original refutation. The next design step is a real
+small-kernel branch-choice proof object rather than broader search over local
+choice terms.
