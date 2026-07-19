@@ -21132,6 +21132,16 @@ let elaborate_preprocess_refutation_native
           let result_formula_has_free_variable_metadata =
             native_core_kernel_v1_field cert id "result_formula_free_variable_count" <> None
           in
+          let result_formula_quantified_variables =
+            native_core_kernel_v1_quantifier_fields cert id "result_formula"
+            |> List.map
+                 (fun quantifier ->
+                    let variable =
+                      quantifier.native_kernel_quantifier_variable
+                    in
+                    (variable.native_kernel_variable_name,
+                     variable.native_kernel_variable_type))
+          in
           let preserved_contract_step_variables =
             match skolem_contract with
             | None -> []
@@ -21178,7 +21188,59 @@ let elaborate_preprocess_refutation_native
                                 result_step_variables)
                 in
                 List.sort_uniq compare (top_level_preserved @ branch_preserved)
+                |> List.filter
+                     (fun variable ->
+                        not (List.mem variable result_formula_quantified_variables))
           in
+          if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
+            let variables_text variables =
+              variables
+              |> List.map (fun (name, tp) -> name ^ ":" ^ tp_to_str tp)
+              |> String.concat ", "
+            in
+            let instantiations_text instantiations =
+              instantiations
+              |> List.map
+                   (fun instantiation ->
+                      instantiation.Vampire_kernel_syntax.skolem_parent_inst_variable
+                      ^ ":"
+                      ^ tp_to_str instantiation.Vampire_kernel_syntax.skolem_parent_inst_type
+                      ^ "/"
+                      ^ instantiation.Vampire_kernel_syntax.skolem_parent_inst_role)
+              |> String.concat ", "
+            in
+            prerr_endline
+              (id ^ ": native preprocess Skolem result step variables: "
+               ^ variables_text result_step_variables);
+            prerr_endline
+              (id ^ ": native preprocess Skolem base result-assumption variables: "
+               ^ variables_text base_result_assumption_step_variables);
+            prerr_endline
+              (id ^ ": native preprocess Skolem preserved contract variables: "
+               ^ variables_text preserved_contract_step_variables);
+            begin match skolem_contract with
+            | None -> ()
+            | Some contract ->
+                prerr_endline
+                  (id ^ ": native preprocess Skolem top-level parent instantiations: "
+                   ^ instantiations_text
+                       contract.Vampire_kernel_syntax.skolem_parent_instantiations)
+            end;
+            begin match skolem_proof_object with
+            | None -> ()
+            | Some proof_object ->
+                proof_object.Vampire_kernel_syntax.skolem_proof_branches
+                |> List.iter
+                     (fun branch ->
+                        prerr_endline
+                          (Printf.sprintf
+                             "%s: native preprocess Skolem branch #%d parent instantiations: %s"
+                             id
+                             branch.Vampire_kernel_syntax.skolem_branch_index
+                             (instantiations_text
+                                branch.Vampire_kernel_syntax.skolem_branch_parent_instantiations)))
+            end
+          end;
           let result_assumption_step_variables =
             result_step_variables
             |> List.filter
@@ -21865,53 +21927,69 @@ let elaborate_preprocess_refutation_native
                     None
               | (id, source_formula, subst, result, parent_step_variables,
                  result_step_variables, result_checked_prop,
-                 result_assumption_step_variables, result_assumption_prop,
-                 parent_proof, result_proof, skolem_proof_object) :: rest ->
-                  let props =
-                    remaining
-                    |> List.map
-                         (fun (_id, _source_formula, _subst, _result,
-                               _parent_step_variables, _result_step_variables,
-                               _result_checked_prop,
-                               _result_assumption_step_variables,
-                               result_assumption_prop,
-                               _parent_proof, _result_proof,
-                               _skolem_proof_object) ->
-                            result_assumption_prop)
-                  in
-                  let target_prop =
-                    nested_imp
-                      (List.tl props)
-                      native_core_false
-                    |> tm_beta_eta_norm
-                  in
-                  let result_to_target_body =
-                    close_tail_result_assumptions props continuation_body
-                  in
-                  let split_replacements =
-                    avatar_definition_table
-                    |> Hashtbl.to_seq_values
-                    |> List.of_seq
-                    |> List.map
-                         (fun (split_name, _component_literals, component_prop, _definition_proof) ->
-                            (split_name,
-                             component_prop
-                             |> native_core_normalize_bool_constants
-                             |> tm_beta_eta_norm))
-                    |> List.sort_uniq compare
-                  in
-                  let candidate =
-                    native_core_skolem_refutation_cps_proof
-                      ~abstract_result_proof:abstract_skolem_result_by_prop
+	                 result_assumption_step_variables, result_assumption_prop,
+	                 parent_proof, result_proof, skolem_proof_object) :: rest ->
+	                  let split_replacements =
+	                    avatar_definition_table
+	                    |> Hashtbl.to_seq_values
+	                    |> List.of_seq
+	                    |> List.map
+	                         (fun (split_name, _component_literals, component_prop, _definition_proof) ->
+	                            (split_name,
+	                             component_prop
+	                             |> native_core_normalize_bool_constants
+	                             |> tm_beta_eta_norm))
+	                    |> List.sort_uniq compare
+	                  in
+	                  let group_replacements =
+	                    (!skolem_witness_replacements @ split_replacements)
+	                    |> List.sort_uniq compare
+	                  in
+	                  let normalize_group_prop prop =
+	                    native_core_replace_witness_symbols_in_tm
+	                      group_replacements
+	                      prop
+	                  in
+	                  let normalize_group_pf proof =
+	                    native_core_replace_witness_symbols_in_pf
+	                      group_replacements
+	                      proof
+	                  in
+	                  let props =
+	                    remaining
+	                    |> List.map
+	                         (fun (_id, _source_formula, _subst, _result,
+	                               _parent_step_variables, _result_step_variables,
+	                               _result_checked_prop,
+	                               _result_assumption_step_variables,
+	                               result_assumption_prop,
+	                               _parent_proof, _result_proof,
+	                               _skolem_proof_object) ->
+	                            normalize_group_prop result_assumption_prop)
+	                  in
+	                  let target_prop =
+	                    nested_imp
+	                      (List.tl props)
+	                      native_core_false
+	                    |> tm_beta_eta_norm
+	                  in
+	                  let result_to_target_body =
+	                    close_tail_result_assumptions
+	                      props
+	                      (normalize_group_pf continuation_body)
+	                  in
+	                  let candidate =
+	                    native_core_skolem_refutation_cps_proof
+	                      ~abstract_result_proof:abstract_skolem_result_by_prop
                       ~result_to_target_body
                       ~result_assumption_prop
-                      ~result_assumption_step_variables
-                      ?skolem_proof_object
-                      ~split_replacements
-                      ~initial_fallback_replacements:!skolem_witness_replacements
-                      id variables parent_step_variables result_step_variables
-                      source_formula subst result result_checked_prop parent_proof
-                      result_proof continuation_body target_prop
+	                      ~result_assumption_step_variables
+	                      ?skolem_proof_object
+	                      ~split_replacements
+	                      ~initial_fallback_replacements:group_replacements
+	                      id variables parent_step_variables result_step_variables
+	                      source_formula subst result result_checked_prop parent_proof
+	                      result_proof continuation_body target_prop
                   in
                   let current_witness_symbols =
                     skolem_cps_entry_witness_symbols
