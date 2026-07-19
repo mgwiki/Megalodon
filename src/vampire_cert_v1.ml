@@ -15908,10 +15908,13 @@ let native_core_skolem_refutation_cps_proof
     match parent_step_variables, parent_instantiations with
     | [], [] -> parent_proof
     | _, [] ->
-        List.fold_left
-          (fun proof (_, tp) -> PTmAp (proof, legacy_dummy_step_argument tp))
+        if List.exists (fun (_, tp) -> tp <> Prop) parent_step_variables then
           parent_proof
-          parent_step_variables
+        else
+          List.fold_left
+            (fun proof (_, tp) -> PTmAp (proof, legacy_dummy_step_argument tp))
+            parent_proof
+            parent_step_variables
     | _ ->
         if List.length parent_step_variables <> List.length parent_instantiations then
           error
@@ -16278,6 +16281,37 @@ let native_core_skolem_refutation_cps_proof
       result
       witnesses;
     match source, result, witnesses with
+    | All (source_tp, source_body), All (result_tp, result_body), _
+        when source_tp = result_tp ->
+        let shifted_term_replacements =
+          List.map
+            (fun (needle, replacement) ->
+               (tmshift 0 1 needle, tmshift 0 1 replacement))
+            term_replacements
+        in
+        let shifted_replacements =
+          List.map
+            (fun (name, tm) -> (name, tmshift 0 1 tm))
+            replacements
+        in
+        let shifted_fallback_replacements =
+          List.map
+            (fun (name, tm) -> (name, tmshift 0 1 tm))
+            fallback_replacements
+        in
+        TLam
+          (source_tp,
+           eliminate
+             (term_depth + 1)
+             proof_depth
+             shifted_term_replacements
+             shifted_replacements
+             shifted_fallback_replacements
+             witnesses
+             source_body
+             result_body
+             (PTmAp (pftmshift 0 1 proof, DB 0))
+             result_to_target_builder)
     | Ap (TmH "vampire_exists_prop", Lam (tp, body)), _, witness :: rest ->
         debug_skolem_branch_candidates
           ("exists " ^ witness)

@@ -2627,6 +2627,42 @@ let vampire_equality_sides = function
       Some (Set, left, right)
   | tm -> vampire_expanded_equality_sides tm
 
+let vampire_add_audited_definition_delta source_bindings source_audit delta =
+  let binding_names step fallback_names =
+    match
+      List.find_opt
+        (fun binding ->
+           binding.Vampire_cert_v1.core_native_source_step = step)
+        source_bindings
+    with
+    | None -> fallback_names
+    | Some binding ->
+        [
+          binding.Vampire_cert_v1.core_native_source_name;
+          binding.Vampire_cert_v1.core_native_tptp_name;
+          binding.Vampire_cert_v1.core_native_source_hash;
+        ] @ fallback_names
+  in
+  let add_definition names body =
+    List.iter
+      (fun name ->
+         if name <> "" then
+           Hashtbl.replace delta name (0, tm_beta_eta_norm body))
+      (List.sort_uniq String.compare names)
+  in
+  List.iter
+    (function
+      | step, Vampire_source_context.Definitional (proposition, _) ->
+          begin match vampire_equality_sides proposition with
+          | Some (_, TmH name, body) ->
+              add_definition (binding_names step [name]) body
+          | Some (_, body, TmH name) ->
+              add_definition (binding_names step [name]) body
+          | _ -> ()
+          end
+      | _ -> ())
+    source_audit.Vampire_source_context.resolved
+
 let vampire_positive_equality_symmetry_proof tp left right proof =
   let predicate_sort = Ar (tp, Ar (tp, Prop)) in
   let premise =
@@ -3824,6 +3860,13 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
       ~external_definition_names
       cert
   in
+  let reconstruction_delta =
+    Hashtbl.copy native_core.Vampire_cert_v1.core_native_delta_table
+  in
+  vampire_add_audited_definition_delta
+    native_core.Vampire_cert_v1.core_native_source_bindings
+    source_audit
+    reconstruction_delta;
   let remaining_bindings =
     vampire_remaining_source_bindings_for_proofs
       source_proofs_for_core
@@ -3869,7 +3912,7 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
       | [binding] when List.length remaining_bindings = 1 ->
           vampire_guided_negated_conjecture_reconstruction
             ~source_map
-            ~extra_delta:native_core.Vampire_cert_v1.core_native_delta_table
+            ~extra_delta:reconstruction_delta
             ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
             claimtm
             cxtm
@@ -3921,7 +3964,7 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
                   match
                           vampire_reconstruct_current_goal_from_refutation
                             ~source_map
-                            ~extra_delta:native_core.Vampire_cert_v1.core_native_delta_table
+                            ~extra_delta:reconstruction_delta
                             ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
                             claimtm
                             cxtm
@@ -3936,7 +3979,7 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
                           begin match
                             vampire_reconstruct_goal_from_supplied_refutation
                               ~source_map
-                              ~extra_delta:native_core.Vampire_cert_v1.core_native_delta_table
+                              ~extra_delta:reconstruction_delta
                               ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
                               claimtm
                               cxtm
@@ -3950,7 +3993,7 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
                           begin match
                             vampire_reconstruct_current_goal_from_refutation
                               ~source_map
-                              ~extra_delta:native_core.Vampire_cert_v1.core_native_delta_table
+                              ~extra_delta:reconstruction_delta
                               ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
                               source_target
                               cxtm
@@ -3962,7 +4005,7 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
                               begin match
                                 vampire_reconstruct_goal_from_proved_prop
                                   ~source_map
-                                  ~extra_delta:native_core.Vampire_cert_v1.core_native_delta_table
+                                  ~extra_delta:reconstruction_delta
                                   ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
                                   claimtm
                                   cxtm
@@ -3983,7 +4026,7 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
           in
           try_applied
             (vampire_apply_available_source_bindings
-               ~extra_delta:native_core.Vampire_cert_v1.core_native_delta_table
+               ~extra_delta:reconstruction_delta
                ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
                cxtm
                cxpf
@@ -4008,7 +4051,7 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
   | Some _ as result -> result
   | None ->
       vampire_reconstruct_goal_from_source_audit
-        ~extra_delta:native_core.Vampire_cert_v1.core_native_delta_table
+        ~extra_delta:reconstruction_delta
         ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
         claimtm
         cxtm
