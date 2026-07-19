@@ -43,7 +43,7 @@ ln -sfn "$WORK_DIR" "$TMPDIR/latest_native_live_rectify_varmap"
   -t "$VAMPIRE_SECONDS" \
   --proof megalodon \
   --proof_extra lean \
-  --skolemization syntactic \
+  --skolemization standard \
   --shuffle_input off \
   --output_axiom_names on \
   "$PROBLEM" \

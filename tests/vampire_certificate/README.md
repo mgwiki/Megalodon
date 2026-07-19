@@ -71,7 +71,7 @@ Vampire-derived source assumptions; a counted success must be traced through
 certificate steps rather than imported as a fresh input. By default it invokes
 Vampire with the same extra proof-detail options used by Megalodon's live
 `-vampireabyproof megalodon` bridge:
-`--proof_extra lean --skolemization syntactic --shuffle_input off`. Override
+`--proof_extra lean --skolemization standard --shuffle_input off`. Override
 `VAMPIRE_PROOF_ARGS` only when intentionally testing another proof-export
 configuration.
 

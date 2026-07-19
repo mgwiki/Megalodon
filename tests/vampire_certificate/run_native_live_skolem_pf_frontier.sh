@@ -27,7 +27,7 @@ MIN_PASS=${MIN_PASS:-20}
 VAMPIRE_SECONDS=${VAMPIRE_SECONDS:-10}
 WALL_SECONDS=${WALL_SECONDS:-13}
 CHECK_TIMEOUT=${CHECK_TIMEOUT:-30}
-VAMPIRE_PROOF_ARGS=${VAMPIRE_PROOF_ARGS:-"--proof_extra lean --skolemization syntactic --shuffle_input off"}
+VAMPIRE_PROOF_ARGS=${VAMPIRE_PROOF_ARGS:-"--proof_extra lean --skolemization standard --shuffle_input off"}
 
 if [[ -z "$VAMPIRE" || ! -x "$VAMPIRE" ]]; then
   echo "VAMPIRE must point to an executable Vampire binary" >&2

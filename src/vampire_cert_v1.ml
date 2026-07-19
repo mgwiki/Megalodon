@@ -692,6 +692,8 @@ let parse_named_index name = function
   | _ -> error ("expected " ^ name ^ " index")
 
 let parse_constraints = function
+  | List [Atom "constraints"; List (Atom "clause" :: constraints)] ->
+      List.map parse_literal constraints
   | List (Atom "constraints" :: constraints) -> List.map parse_literal constraints
   | _ -> error "expected constraints"
 
@@ -3756,9 +3758,18 @@ let check_equality_resolution_constraints checked id parent_id literal_index sel
   if not (same_clause_multiset expected result) then
     error (id ^ ": equality-resolution constraints do not explain result")
 
-let diseq_literal left right = Neg (Ap (Ap (TmH "=", left), right))
+let equality_atom_like equality_atom left right =
+  match equality_atom with
+  | Ap (Ap (TpAp (TmH h, tp), _), _) when h = megalodon_eq_poly_hash ->
+      Ap (Ap (TpAp (TmH h, tp), left), right)
+  | Ap (Ap (TmH h, _), _) when h = "=" || h = "eq" ->
+      Ap (Ap (TmH h, left), right)
+  | _ -> Ap (Ap (TmH "=", left), right)
 
-let rec term_disagreement_constraints left right =
+let diseq_literal_like equality_atom left right =
+  Neg (equality_atom_like equality_atom left right)
+
+let rec term_disagreement_constraints equality_atom left right =
   if left = right then []
   else
     let left_head, left_args = application_spine left in
@@ -3770,34 +3781,34 @@ let rec term_disagreement_constraints left right =
             let constraints =
               if l = r then []
               else
-                let nested = term_disagreement_constraints l r in
-                if nested = [] then [diseq_literal l r] else nested
+                let nested = term_disagreement_constraints equality_atom l r in
+                if nested = [] then [diseq_literal_like equality_atom l r] else nested
             in
             collect (List.rev_append constraints acc) (ls, rs)
-        | _ -> [diseq_literal left right]
+        | _ -> [diseq_literal_like equality_atom left right]
       in
       collect [] (left_args, right_args)
     else
-      [diseq_literal left right]
+      [diseq_literal_like equality_atom left right]
 
-let equality_factoring_constraint_candidates selected_sides other_sides =
+let equality_factoring_constraint_candidates equality_atom selected_sides other_sides =
   let selected_left, selected_right = selected_sides in
   let other_left, other_right = other_sides in
   let candidates = ref [] in
   let add_simple shared selected_other other_other =
     if shared then begin
-      candidates := [diseq_literal selected_other other_other] :: !candidates;
-      candidates := [diseq_literal other_other selected_other] :: !candidates
+      candidates := [diseq_literal_like equality_atom selected_other other_other] :: !candidates;
+      candidates := [diseq_literal_like equality_atom other_other selected_other] :: !candidates
     end
   in
   let add_decomposed selected_shared selected_other other_shared other_other =
     let constraints =
-      diseq_literal selected_shared other_shared
-      :: term_disagreement_constraints selected_other other_other
+      diseq_literal_like equality_atom selected_shared other_shared
+      :: term_disagreement_constraints equality_atom selected_other other_other
     in
     let reversed =
-      diseq_literal other_shared selected_shared
-      :: term_disagreement_constraints other_other selected_other
+      diseq_literal_like equality_atom other_shared selected_shared
+      :: term_disagreement_constraints equality_atom other_other selected_other
     in
     candidates := constraints :: reversed :: !candidates
   in
@@ -3811,7 +3822,7 @@ let equality_factoring_constraint_candidates selected_sides other_sides =
   add_decomposed selected_left selected_right other_left other_right;
   List.filter (fun constraints -> constraints <> []) !candidates
 
-let equality_factoring_explicit_constraint_candidates id selected_sides other_sides selected_lhs other_rhs =
+let equality_factoring_explicit_constraint_candidates id equality_atom selected_sides other_sides selected_lhs other_rhs =
   let selected_left, selected_right = selected_sides in
   let other_left, other_right = other_sides in
   let selected_choices =
@@ -3834,7 +3845,7 @@ let equality_factoring_explicit_constraint_candidates id selected_sides other_si
         List.fold_left
           (fun acc (other_other, other_shared) ->
             if selected_shared = other_shared then
-              [diseq_literal selected_other other_other] :: acc
+              [diseq_literal_like equality_atom selected_other other_other] :: acc
             else
               acc)
           acc other_choices)
@@ -3862,11 +3873,11 @@ let equality_factoring_context checked id parent_id selected_index other_index s
   let other_literal = nth other_index parent_clause (id ^ " other equality") in
   let selected_sub = subst_literal subst selected_literal in
   let other_sub = subst_literal subst other_literal in
-  let selected_sides =
+  let selected_atom, selected_sides =
     match selected_sub with
     | Pos atom ->
         begin match equality_sides atom with
-        | Some sides -> sides
+        | Some sides -> atom, sides
         | None -> error (id ^ ": selected literal is not an equality")
         end
     | Neg _ -> error (id ^ ": selected literal must be positive")
@@ -3882,18 +3893,18 @@ let equality_factoring_context checked id parent_id selected_index other_index s
   in
   let substituted_parent = subst_clause subst parent_clause in
   let without_selected = remove_at selected_index substituted_parent (id ^ " selected equality") in
-  selected_sides, other_sides, without_selected
+  selected_atom, selected_sides, other_sides, without_selected
 
 let check_equality_factoring checked id parent_id selected_index other_index explicit_sides subst result =
-  let selected_sides, other_sides, without_selected =
+  let selected_atom, selected_sides, other_sides, without_selected =
     equality_factoring_context checked id parent_id selected_index other_index subst
   in
   let candidates =
     match explicit_sides with
-    | None -> equality_factoring_constraint_candidates selected_sides other_sides
+    | None -> equality_factoring_constraint_candidates selected_atom selected_sides other_sides
     | Some (selected_lhs, other_rhs) ->
         equality_factoring_explicit_constraint_candidates
-          id selected_sides other_sides selected_lhs other_rhs
+          id selected_atom selected_sides other_sides selected_lhs other_rhs
   in
   if candidates = [] then error (id ^ ": selected and other equalities do not yield factoring constraints");
   if not (List.exists
@@ -3907,7 +3918,7 @@ let check_equality_factoring checked id parent_id selected_index other_index exp
 let check_equality_factoring_constraints checked id parent_id selected_index other_index explicit_sides subst constraints result =
   if constraints = [] then error (id ^ ": equality-factoring constraints must be non-empty");
   check_negative_equality_constraints id constraints;
-  let selected_sides, other_sides, without_selected =
+  let selected_atom, selected_sides, other_sides, without_selected =
     equality_factoring_context checked id parent_id selected_index other_index subst
   in
   let expected = without_selected @ constraints in
@@ -3915,10 +3926,10 @@ let check_equality_factoring_constraints checked id parent_id selected_index oth
     error (id ^ ": equality-factoring constraints do not explain result");
   let candidates =
     match explicit_sides with
-    | None -> equality_factoring_constraint_candidates selected_sides other_sides
+    | None -> equality_factoring_constraint_candidates selected_atom selected_sides other_sides
     | Some (selected_lhs, other_rhs) ->
         equality_factoring_explicit_constraint_candidates
-          id selected_sides other_sides selected_lhs other_rhs
+          id selected_atom selected_sides other_sides selected_lhs other_rhs
   in
   if not (List.exists
       (fun candidate ->

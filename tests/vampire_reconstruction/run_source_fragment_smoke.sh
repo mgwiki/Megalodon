@@ -28,7 +28,7 @@ run_case() {
     -t "${MEGALODON_VAMPIRE_TIMEOUT:-10}" \
     --proof megalodon \
     --proof_extra lean \
-    --skolemization syntactic \
+    --skolemization standard \
     --shuffle_input off \
     "$problem" > "$output" 2>&1
 

@@ -96,7 +96,7 @@ python3 scripts/vampire_reconstruct_megalodon.py \
 ```
 
 LeanChecker mode asks Vampire for Lean output with the required
-`--output_mode lean --proof_extra lean --skolemization syntactic
+`--output_mode lean --proof_extra lean --skolemization standard
 --shuffle_input off` options.  The manifest check requires a complete Lean
 payload (`theorem fullProof` through `end vamproof`) and rejects fatal Vampire
 markers.  It does not run the Lean kernel by itself; that requires a local Lean
@@ -290,7 +290,7 @@ so the reusable test path exercises the same helper insertion and
 source-context checking code as development iterations.
 
 Megalodon mode asks Vampire for the same replay information that LeanChecker
-uses (`--proof_extra lean --skolemization syntactic --shuffle_input off`) but
+uses (`--proof_extra lean --skolemization standard --shuffle_input off`) but
 emits a Megalodon reconstruction outline instead of Lean syntax.  The outline
 records each proof unit, its Vampire inference rule, parent unit ids, and
 whether replay/substitution information was recovered.  For the currently
@@ -326,7 +326,7 @@ The live mode writes the exact THF problem generated at each `aby`, runs
 Vampire with the selected `-vampireabyproof` mode, and fails the Megalodon
 check unless Vampire proves the obligation and emits a proof payload.  In
 `megalodon` mode Megalodon passes Vampire
-`--output_axiom_names on --proof_extra lean --skolemization syntactic
+`--output_axiom_names on --proof_extra lean --skolemization standard
 --shuffle_input off`, extracts the native
 `megalodon_certificate_native_sexpr_*` block, checks it with
 `Vampire_cert_v1.check_certificate_strict`, and validates all certificate input
