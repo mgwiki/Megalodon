@@ -15462,6 +15462,37 @@ let native_core_pf_contains_term_symbol names proof =
   in
   pf_contains proof
 
+let native_core_pf_contains_exact_term needle proof =
+  let needle =
+    needle
+    |> native_core_normalize_bool_constants
+    |> tm_beta_eta_norm
+  in
+  let normalize tm =
+    tm
+    |> native_core_normalize_bool_constants
+    |> tm_beta_eta_norm
+  in
+  let rec tm_contains tm =
+    normalize tm = needle
+    ||
+    match tm with
+    | TpAp (body, _) -> tm_contains body
+    | Ap (left, right) | Imp (left, right) ->
+        tm_contains left || tm_contains right
+    | Lam (_, body) | All (_, body) -> tm_contains body
+    | DB _ | TmH _ | Prim _ -> false
+  in
+  let rec pf_contains = function
+    | PTpAp (body, _) -> pf_contains body
+    | PTmAp (body, tm) -> pf_contains body || tm_contains tm
+    | PPfAp (left, right) -> pf_contains left || pf_contains right
+    | PLam (prop, body) -> tm_contains prop || pf_contains body
+    | TLam (_, body) -> pf_contains body
+    | Hyp _ | Known _ -> false
+  in
+  pf_contains proof
+
 let native_core_tm_term_symbol_detail names tm =
   let rec tm_detail path enclosing = function
     | TmH name when List.mem name names ->
@@ -21119,6 +21150,32 @@ let elaborate_preprocess_refutation_native
                        prerr_endline
                          (id ^ ": native preprocess Skolem CPS first choice theorem: " ^ detail)
                    | None -> ()
+                   end;
+                   let matching_registered_witnesses =
+                     !skolem_witness_replacements
+                     |> List.filter_map
+                          (fun (name, witness) ->
+                             let witness_choice_symbols =
+                               native_core_choice_witness_symbols
+                               |> List.filter
+                                    (fun symbol -> tm_contains_symbol symbol witness)
+                             in
+                             if native_core_pf_contains_exact_term witness candidate
+                                || (witness_choice_symbols <> []
+                                    && native_core_pf_contains_term_symbol
+                                         witness_choice_symbols candidate) then
+                               Some name
+                             else
+                               None)
+                     |> List.sort_uniq String.compare
+                   in
+                   begin match matching_registered_witnesses with
+                   | [] -> ()
+                   | names ->
+                       prerr_endline
+                         (id
+                          ^ ": native preprocess Skolem CPS choice terms match registered witnesses "
+                          ^ String.concat ", " names)
                    end
                  end;
                  if fail_fast then
