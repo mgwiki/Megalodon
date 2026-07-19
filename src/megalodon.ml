@@ -3141,6 +3141,7 @@ let vampire_constructive_goal_search
     ?source_map
     ?extra_delta
     ?extra_symbols
+    ?(external_proofs=[])
     claimtm
     cxtm
     cxpf =
@@ -3179,7 +3180,7 @@ let vampire_constructive_goal_search
           (goal :: vampire_ordered_context_terms_of_type cxtm Prop)
     | _ -> vampire_ordered_context_terms_with_default cxtm tp
   in
-  let rec prove depth cxtm cxpf goal =
+  let rec prove depth cxtm cxpf external_proofs goal =
     if depth <= 0 then None
     else
       let church_or_branches proposition =
@@ -3305,6 +3306,7 @@ let vampire_constructive_goal_search
               (depth - 1)
               (add_prop_binders term_offset cxtm)
               shifted_hyps
+              external_proofs
               leaf
           with
           | None -> None
@@ -3452,12 +3454,12 @@ let vampire_constructive_goal_search
           | (proof, proposition) :: rest ->
               if church_or_branches proposition <> None then
                 try_hypotheses rest
-              else begin match prove_from depth cxtm cxpf proof proposition goal with
+              else begin match prove_from depth cxtm cxpf external_proofs proof proposition goal with
               | Some _ as result -> result
               | None -> try_hypotheses rest
               end
         in
-        try_hypotheses (ordered_hypotheses 0 cxpf)
+        try_hypotheses (ordered_hypotheses 0 cxpf @ external_proofs)
       in
       let prove_by_church_or_hypothesis () =
         let rec try_hypotheses = function
@@ -3466,9 +3468,14 @@ let vampire_constructive_goal_search
               begin match church_or_branches proposition with
               | None -> try_hypotheses rest
               | Some (left, right) ->
+                  let shifted_external_proofs =
+                    List.map
+                      (fun (proof, prop) -> (pfshift 0 1 proof, prop))
+                      external_proofs
+                  in
                   begin match
-                    prove (depth - 1) cxtm (left :: cxpf) goal,
-                    prove (depth - 1) cxtm (right :: cxpf) goal
+                    prove (depth - 1) cxtm (left :: cxpf) shifted_external_proofs goal,
+                    prove (depth - 1) cxtm (right :: cxpf) shifted_external_proofs goal
                   with
                   | Some left_proof, Some right_proof ->
                       Some
@@ -3481,7 +3488,7 @@ let vampire_constructive_goal_search
                   end
               end
         in
-        try_hypotheses (ordered_hypotheses 0 cxpf)
+        try_hypotheses (ordered_hypotheses 0 cxpf @ external_proofs)
       in
       let prove_by_context () =
         match prove_by_hypothesis () with
@@ -3505,7 +3512,12 @@ let vampire_constructive_goal_search
           begin match church_or_elimination_proof assumption conclusion with
           | Some _ as result -> result
           | None ->
-          begin match prove (depth - 1) cxtm (assumption :: cxpf) conclusion with
+          let shifted_external_proofs =
+            List.map
+              (fun (proof, prop) -> (pfshift 0 1 proof, prop))
+              external_proofs
+          in
+          begin match prove (depth - 1) cxtm (assumption :: cxpf) shifted_external_proofs conclusion with
           | Some proof -> Some (PLam (assumption, proof))
           | None -> prove_by_context ()
           end
@@ -3513,12 +3525,24 @@ let vampire_constructive_goal_search
           end
       | All (tp, body) ->
           let shifted_cxpf = List.map (fun prop -> tmshift 0 1 prop) cxpf in
-          begin match prove (depth - 1) (("", (tp, None)) :: cxtm) shifted_cxpf body with
+          let shifted_external_proofs =
+            List.map
+              (fun (proof, prop) -> (pftmshift 0 1 proof, tmshift 0 1 prop))
+              external_proofs
+          in
+          begin match
+            prove
+              (depth - 1)
+              (("", (tp, None)) :: cxtm)
+              shifted_cxpf
+              shifted_external_proofs
+              body
+          with
           | Some proof -> Some (TLam (tp, proof))
           | None -> prove_by_context ()
           end
       | _ -> prove_by_context ()
-  and prove_from depth cxtm cxpf proof proposition goal =
+  and prove_from depth cxtm cxpf external_proofs proof proposition goal =
     if convertible proposition goal then
       Some proof
     else if depth <= 0 then
@@ -3527,12 +3551,13 @@ let vampire_constructive_goal_search
       let proposition_view = expose proposition in
       match proposition_view with
       | Imp (assumption, conclusion) ->
-          begin match prove (depth - 1) cxtm cxpf assumption with
+          begin match prove (depth - 1) cxtm cxpf external_proofs assumption with
           | Some assumption_proof ->
               prove_from
                 (depth - 1)
                 cxtm
                 cxpf
+                external_proofs
                 (PPfAp (proof, assumption_proof))
                 conclusion
                 goal
@@ -3547,6 +3572,7 @@ let vampire_constructive_goal_search
                     (depth - 1)
                     cxtm
                     cxpf
+                    external_proofs
                     (PTmAp (proof, tm))
                     (tmsubst body 0 tm)
                     goal
@@ -3559,7 +3585,7 @@ let vampire_constructive_goal_search
       | _ -> None
   in
   let proof_hyps = List.map snd cxpf in
-  match prove 20 cxtm proof_hyps claimtm with
+  match prove 20 cxtm proof_hyps external_proofs claimtm with
   | None ->
       if debug_constructive then
         begin
@@ -4628,6 +4654,19 @@ let vampire_reconstruct_goal_from_source_audit
         end
   in
   let result = try_sources source_proofs in
+  let result =
+    match result with
+    | Some _ as result -> result
+    | None ->
+        vampire_constructive_goal_search
+          ~source_map
+          ?extra_delta
+          ?extra_symbols
+          ~external_proofs:source_proofs
+          claimtm
+          cxtm
+          cxpf
+  in
   if result = None && Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
     begin
       Printf.printf
@@ -5059,7 +5098,17 @@ let check_vampire_aby_native_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) ?(proof_
                               msg;
                             flush stdout
                           end;
-                        constructive_fallback claimtm
+                        begin match
+                          vampire_reconstruct_goal_from_source_audit
+                            claimtm
+                            cxtm
+                            cxpf
+                            source_map
+                            audit
+                        with
+                        | Some _ as result -> result
+                        | None -> constructive_fallback claimtm
+                        end
                     | Failure msg ->
                         timing "refutation_replay:failure";
                         if !verbosity > 8 then
@@ -5072,7 +5121,17 @@ let check_vampire_aby_native_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) ?(proof_
                               msg;
                             flush stdout
                           end;
-                        constructive_fallback claimtm
+                        begin match
+                          vampire_reconstruct_goal_from_source_audit
+                            claimtm
+                            cxtm
+                            cxpf
+                            source_map
+                            audit
+                        with
+                        | Some _ as result -> result
+                        | None -> constructive_fallback claimtm
+                        end
                 end
           in
           if !verbosity > 8 then
