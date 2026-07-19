@@ -8690,6 +8690,85 @@ let native_core_proof_variables_for_source
   else
     List.sort_uniq compare (variables @ local_variables)
 
+let native_core_source_local_alias_indices source_map variables =
+  let variable_count = List.length variables in
+  let rec variable_index index = function
+    | [] -> None
+    | (name, _) :: rest ->
+        begin match variable_index index rest with
+        | Some i -> Some (i + 1)
+        | None -> if name = index then Some 0 else None
+        end
+  in
+  let add_alias alias db_index aliases =
+    if alias = "" || List.mem_assoc alias aliases then aliases
+    else (alias, db_index) :: aliases
+  in
+  source_map
+  |> List.fold_left
+       (fun aliases entry ->
+          if entry.source_map_kind <> "local_type" then
+            aliases
+          else
+            match native_core_ident_opt entry.source_map_source_name with
+            | None -> aliases
+            | Some source_name ->
+                begin match variable_index source_name variables with
+                | None -> aliases
+                | Some outer_index ->
+                    let db_index = variable_count - outer_index - 1 in
+                    native_core_symbol_name_aliases entry.source_map_tptp_name
+                    @ native_core_symbol_name_aliases entry.source_map_source_name
+                    |> List.fold_left
+                         (fun aliases alias -> add_alias alias db_index aliases)
+                         aliases
+                end)
+       []
+
+let native_core_localize_source_local_aliases_tm_at aliases initial_depth tm =
+  if aliases = [] then
+    tm
+  else
+    let rec localize depth = function
+      | TmH name ->
+          begin match List.assoc_opt name aliases with
+          | Some db_index -> DB (depth + db_index)
+          | None -> TmH name
+          end
+      | TpAp (body, tp) -> TpAp (localize depth body, tp)
+      | Ap (left, right) -> Ap (localize depth left, localize depth right)
+      | Lam (tp, body) -> Lam (tp, localize (depth + 1) body)
+      | Imp (left, right) -> Imp (localize depth left, localize depth right)
+      | All (tp, body) -> All (tp, localize (depth + 1) body)
+      | DB _ | Prim _ as tm -> tm
+    in
+    localize initial_depth tm
+
+let native_core_localize_source_local_aliases_tm aliases tm =
+  native_core_localize_source_local_aliases_tm_at aliases 0 tm
+
+let native_core_localize_source_local_aliases_pf aliases proof =
+  if aliases = [] then
+    proof
+  else
+    let rec localize_pf term_depth proof =
+      match proof with
+      | PTpAp (body, tp) -> PTpAp (localize_pf term_depth body, tp)
+      | PTmAp (body, tm) ->
+          PTmAp
+            (localize_pf term_depth body,
+             native_core_localize_source_local_aliases_tm_at aliases term_depth tm)
+      | PPfAp (left, right) ->
+          PPfAp (localize_pf term_depth left, localize_pf term_depth right)
+      | PLam (prop, body) ->
+          PLam
+            (native_core_localize_source_local_aliases_tm_at aliases term_depth prop,
+             localize_pf term_depth body)
+      | TLam (tp, body) -> TLam (tp, localize_pf (term_depth + 1) body)
+      | Hyp _ | Known _ -> proof
+    in
+    localize_pf 0 proof
+
 let native_core_step_variables cert id =
   let variable_sort_pair sort =
     match String.index_opt sort ':' with
@@ -19846,6 +19925,15 @@ let elaborate_preprocess_refutation_native
     lift source_prop target_prop proof
   in
   let variable_types = List.rev (List.map snd variables) in
+  let source_local_aliases =
+    native_core_source_local_alias_indices source_map variables
+  in
+  let localize_source_locals_tm tm =
+    native_core_localize_source_local_aliases_tm source_local_aliases tm
+  in
+  let localize_source_locals_pf proof =
+    native_core_localize_source_local_aliases_pf source_local_aliases proof
+  in
   let closed_source_context =
     (!source_inputs
     |> List.map (fun (_, prop, _) -> prop)
@@ -19947,6 +20035,7 @@ let elaborate_preprocess_refutation_native
     Hashtbl.replace formula_table id (formula, proof)
   in
   let final_refutation_proof_checks proof =
+    let proof = localize_source_locals_pf proof in
     let rec proof_node_count = function
       | Hyp _ | Known _ -> 1
       | PTpAp (body, _) -> 1 + proof_node_count body
@@ -21353,6 +21442,8 @@ let elaborate_preprocess_refutation_native
          ^ Printexc.to_string exn)
   end;
   let preprocess_proof_checks_against_prop label prop proof =
+    let prop = localize_source_locals_tm prop in
+    let proof = localize_source_locals_pf proof in
     let short_tm tm =
       let text = tm_to_str tm in
       if String.length text <= 500 then text
