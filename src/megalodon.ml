@@ -2757,6 +2757,58 @@ let vampire_candidate_terms_from_props ?extra_symbols cxtm source_map props targ
   |> List.sort_uniq compare
   |> List.sort (fun left right -> compare (term_size left) (term_size right))
 
+let vampire_candidate_terms_from_closed_subterms ?extra_symbols cxtm source_map props target_tp =
+  let rec term_size = function
+    | DB _ | TmH _ | Prim _ -> 1
+    | TpAp (body, _) -> 1 + term_size body
+    | Ap (fn, arg) -> 1 + term_size fn + term_size arg
+    | Lam (_, body) | All (_, body) -> 1 + term_size body
+    | Imp (left, right) -> 1 + term_size left + term_size right
+  in
+  let cx =
+    List.filter_map
+      (fun (_, (tp, definition)) ->
+         match definition with
+         | None -> Some tp
+         | Some _ -> None)
+      cxtm
+  in
+  let symbol_table = vampire_symbol_table ?extra_symbols source_map in
+  let bound_free depth tm =
+    let rec check i =
+      i >= depth || ((not (free_in_tm_p tm i)) && check (i + 1))
+    in
+    check 0
+  in
+  let add depth tm terms =
+    if not (bound_free depth tm) then terms
+    else
+      try
+        let candidate =
+          if depth = 0 then tm
+          else tmshift 0 (-depth) tm
+        in
+        if extr_tpoftm symbol_table cx candidate = target_tp then
+          candidate :: terms
+        else terms
+      with _ -> terms
+  in
+  let rec scan depth tm terms =
+    let terms = add depth tm terms in
+    match tm with
+    | TpAp (body, _) -> scan depth body terms
+    | Ap (fn, arg) -> scan depth arg (scan depth fn terms)
+    | Imp (left, right) -> scan depth right (scan depth left terms)
+    | Lam (_, body) | All (_, body) -> scan (depth + 1) body terms
+    | DB _ | TmH _ | Prim _ -> terms
+  in
+  props
+  |> List.fold_left (fun terms prop -> scan 0 prop terms) []
+  |> List.rev_append (vampire_context_terms_of_type cxtm target_tp)
+  |> vampire_ordered_unique
+  |> List.sort_uniq compare
+  |> List.sort (fun left right -> compare (term_size left) (term_size right))
+
 let vampire_reconstruct_current_goal_from_refutation ?source_map ?extra_delta ?extra_symbols claimtm cxtm cxpf proof proposition =
   let direct_goal =
     match claimtm with
@@ -3094,7 +3146,34 @@ let vampire_definition_transport_proofs source_audit expected actual actual_proo
              transport_from_definition definition_prop definition_proof
          | _ -> [])
 
-let vampire_instantiated_refutation_candidates cxtm proof proposition source_bindings =
+let vampire_take n xs =
+  let rec take i acc = function
+    | _ when i <= 0 -> List.rev acc
+    | [] -> List.rev acc
+    | x :: rest -> take (i - 1) (x :: acc) rest
+  in
+  take n [] xs
+
+let vampire_instantiated_refutation_candidates ?source_map ?extra_symbols ?(candidate_props=[]) cxtm proof proposition source_bindings =
+  let source_binding_props =
+    List.map
+      (fun binding -> binding.Vampire_cert_v1.core_native_source_proposition)
+      source_bindings
+  in
+  let props = proposition :: candidate_props @ source_binding_props in
+  let terms_for_type tp =
+    match tp, source_map with
+    | Prop, _ -> vampire_context_terms_of_type cxtm tp
+    | _, None -> vampire_context_terms_of_type cxtm tp
+    | _, Some source_map ->
+        vampire_candidate_terms_from_closed_subterms
+          ?extra_symbols
+          cxtm
+          source_map
+          props
+          tp
+        |> vampire_take 16
+  in
   let rec collect depth proof proposition source_bindings =
     let current = [(proof,proposition,source_bindings)] in
     if depth <= 0 then current
@@ -3112,7 +3191,7 @@ let vampire_instantiated_refutation_candidates cxtm proof proposition source_bin
                     (List.map
                        (fun binding -> vampire_instantiate_source_binding binding tm)
                        source_bindings))
-               (vampire_context_terms_of_type cxtm tp))
+               (terms_for_type tp))
       | _ -> current
   in
   collect 8 proof proposition source_bindings
@@ -3817,6 +3896,9 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
     in
     try_candidates
       (vampire_instantiated_refutation_candidates
+         ~source_map
+         ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
+         ~candidate_props:[claimtm]
          cxtm
          native_core.Vampire_cert_v1.core_native_proof
          native_core.Vampire_cert_v1.core_native_proposition
