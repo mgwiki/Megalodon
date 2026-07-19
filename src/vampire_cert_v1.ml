@@ -2047,6 +2047,47 @@ let rec same_mod_skolem_bound_names left right =
       same_mod_skolem_bound_names m n
   | _ -> false
 
+let rec normalize_bool_equality_orientation tm =
+  let normalize = normalize_bool_equality_orientation in
+  match tm with
+  | Ap (Ap (TpAp (TmH h, tp), left), TmH b)
+      when h = megalodon_eq_poly_hash && (b = "f__true" || b = "f__false") ->
+      Ap (Ap (TpAp (TmH h, tp), TmH b), normalize left)
+  | Ap (Ap (TpAp (TmH h, tp), left), right)
+      when h = megalodon_eq_poly_hash ->
+      Ap (Ap (TpAp (TmH h, tp), normalize left), normalize right)
+  | Ap (Ap (TmH "=", left), TmH h) when h = "f__true" || h = "f__false" ->
+      Ap (Ap (TmH "=", TmH h), normalize left)
+  | Ap (Ap (TmH "=", left), right) ->
+      Ap (Ap (TmH "=", normalize left), normalize right)
+  | TpAp (m, a) -> TpAp (normalize m, a)
+  | Ap (m, n) -> Ap (normalize m, normalize n)
+  | Lam (tp, body) -> Lam (tp, normalize body)
+  | Imp (left, right) -> Imp (normalize left, normalize right)
+  | All (tp, body) -> All (tp, normalize body)
+  | _ -> tm
+
+let rec normalize_equality_orientation tm =
+  let normalize = normalize_equality_orientation in
+  match tm with
+  | Ap (Ap (TpAp (TmH h, tp), left), right)
+      when h = megalodon_eq_poly_hash ->
+      let left = normalize left in
+      let right = normalize right in
+      if compare left right <= 0 then Ap (Ap (TpAp (TmH h, tp), left), right)
+      else Ap (Ap (TpAp (TmH h, tp), right), left)
+  | Ap (Ap (TmH "=", left), right) ->
+      let left = normalize left in
+      let right = normalize right in
+      if compare left right <= 0 then Ap (Ap (TmH "=", left), right)
+      else Ap (Ap (TmH "=", right), left)
+  | TpAp (m, a) -> TpAp (normalize m, a)
+  | Ap (m, n) -> Ap (normalize m, normalize n)
+  | Lam (tp, body) -> Lam (tp, normalize body)
+  | Imp (left, right) -> Imp (normalize left, normalize right)
+  | All (tp, body) -> All (tp, normalize body)
+  | _ -> tm
+
 let skolemize_formula_tm_matches_witness_multiset subst source result =
   (* Skolem certificates carry source variable names, but parsed existential
      binders are de Bruijn terms.  When exact named substitution cannot be
@@ -2059,9 +2100,22 @@ let skolemize_formula_tm_matches_witness_multiset subst source result =
     in
     go [] items
   in
+  let same_skolem_leaf source result =
+    source = result
+    || normalize_bool_equality_orientation source
+       = normalize_bool_equality_orientation result
+    || normalize_equality_orientation source
+       = normalize_equality_orientation result
+    || same_mod_skolem_bound_names source result
+    || same_mod_skolem_bound_names
+         (normalize_bool_equality_orientation source)
+         (normalize_bool_equality_orientation result)
+    || same_mod_skolem_bound_names
+         (normalize_equality_orientation source)
+         (normalize_equality_orientation result)
+  in
   let rec match_tm witnesses source result =
-    if source = result
-       || same_mod_skolem_bound_names source result then
+    if same_skolem_leaf source result then
       [witnesses]
     else
       match source, result with
@@ -2112,47 +2166,6 @@ let skolemize_formula_tm_matches_witness_multiset subst source result =
   in
   match_tm subst source result
   |> List.exists (function [] -> true | _ -> false)
-
-let rec normalize_bool_equality_orientation tm =
-  let normalize = normalize_bool_equality_orientation in
-  match tm with
-  | Ap (Ap (TpAp (TmH h, tp), left), TmH b)
-      when h = megalodon_eq_poly_hash && (b = "f__true" || b = "f__false") ->
-      Ap (Ap (TpAp (TmH h, tp), TmH b), normalize left)
-  | Ap (Ap (TpAp (TmH h, tp), left), right)
-      when h = megalodon_eq_poly_hash ->
-      Ap (Ap (TpAp (TmH h, tp), normalize left), normalize right)
-  | Ap (Ap (TmH "=", left), TmH h) when h = "f__true" || h = "f__false" ->
-      Ap (Ap (TmH "=", TmH h), normalize left)
-  | Ap (Ap (TmH "=", left), right) ->
-      Ap (Ap (TmH "=", normalize left), normalize right)
-  | TpAp (m, a) -> TpAp (normalize m, a)
-  | Ap (m, n) -> Ap (normalize m, normalize n)
-  | Lam (tp, body) -> Lam (tp, normalize body)
-  | Imp (left, right) -> Imp (normalize left, normalize right)
-  | All (tp, body) -> All (tp, normalize body)
-  | _ -> tm
-
-let rec normalize_equality_orientation tm =
-  let normalize = normalize_equality_orientation in
-  match tm with
-  | Ap (Ap (TpAp (TmH h, tp), left), right)
-      when h = megalodon_eq_poly_hash ->
-      let left = normalize left in
-      let right = normalize right in
-      if compare left right <= 0 then Ap (Ap (TpAp (TmH h, tp), left), right)
-      else Ap (Ap (TpAp (TmH h, tp), right), left)
-  | Ap (Ap (TmH "=", left), right) ->
-      let left = normalize left in
-      let right = normalize right in
-      if compare left right <= 0 then Ap (Ap (TmH "=", left), right)
-      else Ap (Ap (TmH "=", right), left)
-  | TpAp (m, a) -> TpAp (normalize m, a)
-  | Ap (m, n) -> Ap (normalize m, normalize n)
-  | Lam (tp, body) -> Lam (tp, normalize body)
-  | Imp (left, right) -> Imp (normalize left, normalize right)
-  | All (tp, body) -> All (tp, normalize body)
-  | _ -> tm
 
 let normalize_literal_equality_orientation = function
   | Pos atom -> Pos (normalize_equality_orientation atom)
