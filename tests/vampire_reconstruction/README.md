@@ -12,6 +12,20 @@ The replacement path is the small certificate calculus described in
 `reports/vampire-megalodon-certificate-spec.md`, with initial smoke tests in
 `tests/vampire_certificate/`.
 
+The strongest live check in this directory is currently:
+
+```sh
+VAMPIRE=/path/to/vampire \
+tests/vampire_reconstruction/run_live_certified_vampire_no_incomplete.sh
+```
+
+It builds a small original Megalodon source file under `/project/tmp`, uses
+real Vampire with `--proof megalodon` to close four `vampire` proof commands,
+and checks the file without `-allowincompleteqed`.  The fixture contains no
+`aby` or `admit` tokens and rejects bridge-style generated assumptions in the
+log.  This is still only a small E1-adjacent regression, not the broad
+100-theorem original-context milestone.
+
 This suite checks Megalodon's TH0 hammer obligations against Vampire proof
 output.
 
