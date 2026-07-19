@@ -9292,6 +9292,68 @@ let native_core_kernel_v1_skolem_branch_contract cert id index prefix =
         native_core_kernel_v1_tm_field
           cert id (prefix ^ "_contract_target_formula")
       in
+      let branch_choice_contracts_enabled =
+        Sys.getenv_opt "MEGALODON_CERT_ENABLE_BRANCH_CHOICE_CONTRACTS"
+        = Some "1"
+      in
+      let branch_choices =
+        match
+          if branch_choice_contracts_enabled then
+            native_core_kernel_v1_int_field
+              cert id (prefix ^ "_contract_branch_choice_count")
+          else
+            None
+        with
+        | None -> []
+        | Some count ->
+            if count < 0 then
+              error
+                (id ^ ": kernel_v1 metadata field "
+                 ^ prefix ^ "_contract_branch_choice_count is negative");
+            List.init count
+              (fun choice_index ->
+                 let choice_prefix =
+                   prefix ^ "_contract_branch_choice_"
+                   ^ string_of_int choice_index
+                 in
+                 let required_tm suffix =
+                   match
+                     native_core_kernel_v1_tm_field
+                       cert id (choice_prefix ^ suffix)
+                   with
+                   | Some tm -> tm
+                   | None ->
+                       error
+                         (id ^ ": kernel_v1 metadata requires "
+                          ^ choice_prefix ^ suffix)
+                 in
+                 let choice_type =
+                   match
+                     native_core_kernel_v1_tp_field
+                       cert id (choice_prefix ^ "_type")
+                   with
+                   | Some tp -> tp
+                   | None ->
+                       error
+                         (id ^ ": kernel_v1 metadata requires "
+                          ^ choice_prefix ^ "_type")
+                 in
+                 {
+                   Vampire_kernel_syntax.skolem_branch_choice_index =
+                     choice_index;
+                   skolem_branch_choice_symbol =
+                     native_core_kernel_v1_required_field
+                       cert id (choice_prefix ^ "_symbol");
+                   skolem_branch_choice_replaced_variable =
+                     native_core_kernel_v1_required_field
+                       cert id (choice_prefix ^ "_replaced_var");
+                   skolem_branch_choice_type = choice_type;
+                   skolem_branch_choice_predicate =
+                     required_tm "_predicate";
+                   skolem_branch_choice_body =
+                     required_tm "_body";
+                 })
+      in
       let normalized_branch_formula tm =
         tm_beta_eta_norm tm
       in
@@ -9324,6 +9386,47 @@ let native_core_kernel_v1_skolem_branch_contract cert id index prefix =
                     id index)
            | _ -> ())
         branch_propositions;
+      let introduced_symbol_names =
+        introduced_witnesses
+        |> List.map
+             (fun witness ->
+                witness.Vampire_kernel_syntax.skolem_witness_symbol)
+      in
+      List.iter
+        (fun choice ->
+           if choice.Vampire_kernel_syntax.skolem_branch_choice_symbol = "" then
+             error
+               (Printf.sprintf
+                  "%s: typed Skolem branch contract %d has an empty branch choice symbol"
+                  id index);
+           if choice.Vampire_kernel_syntax.skolem_branch_choice_replaced_variable = "" then
+             error
+               (Printf.sprintf
+                  "%s: typed Skolem branch contract %d has an empty branch choice replaced variable"
+                  id index);
+           if not
+                (List.mem
+                   choice.Vampire_kernel_syntax.skolem_branch_choice_symbol
+                   introduced_symbol_names) then
+             error
+               (Printf.sprintf
+                  "%s: typed Skolem branch contract %d choice symbol %s is not introduced by the branch"
+                  id index
+                  choice.Vampire_kernel_syntax.skolem_branch_choice_symbol);
+           let expected_predicate =
+             Lam
+               (choice.Vampire_kernel_syntax.skolem_branch_choice_type,
+                choice.Vampire_kernel_syntax.skolem_branch_choice_body)
+             |> tm_beta_eta_norm
+           in
+           if tm_beta_eta_norm
+                choice.Vampire_kernel_syntax.skolem_branch_choice_predicate
+              <> expected_predicate then
+             error
+               (Printf.sprintf
+                  "%s: typed Skolem branch contract %d choice predicate does not match its body"
+                  id index))
+        branch_choices;
       Some
         {
           Vampire_kernel_syntax.skolem_branch_index = index;
@@ -9342,6 +9445,7 @@ let native_core_kernel_v1_skolem_branch_contract cert id index prefix =
           skolem_branch_parent_instantiations = parent_instantiations;
           skolem_branch_introduced_witnesses = introduced_witnesses;
           skolem_branch_propositions = branch_propositions;
+          skolem_branch_choices = branch_choices;
         }
 
 let native_core_skolem_macro_edges cert id =
@@ -16176,7 +16280,7 @@ let native_core_skolem_refutation_cps_proof
            in
            prerr_endline
              (Printf.sprintf
-                "%s: native preprocess Skolem CPS branch contract #%d unit=%s parent=%s binders=%s parent_instantiations=%d witnesses=%s propositions=%d source_exists=%d target_exists=%d source_symbols=%s target_symbols=%s"
+                "%s: native preprocess Skolem CPS branch contract #%d unit=%s parent=%s binders=%s parent_instantiations=%d witnesses=%s propositions=%d choices=%d source_exists=%d target_exists=%d source_symbols=%s target_symbols=%s"
                 id
                 branch.Vampire_kernel_syntax.skolem_branch_index
                 (match branch.Vampire_kernel_syntax.skolem_branch_unit with
@@ -16193,6 +16297,8 @@ let native_core_skolem_refutation_cps_proof
                 (witness_set_text (branch_witness_symbols branch))
                 (List.length
                    branch.Vampire_kernel_syntax.skolem_branch_propositions)
+                (List.length
+                   branch.Vampire_kernel_syntax.skolem_branch_choices)
                 source_exists
                 target_exists
                 (witness_set_text source_symbols)

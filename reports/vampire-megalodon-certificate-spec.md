@@ -384,6 +384,27 @@ yet a complete proof object, but they are the next certificate surface needed
 to replace Megalodon-side guessing about which branch proposition each local
 proof variable proves.
 
+For direct existential branch sources, Vampire also emits explicit branch
+choice records:
+
+- `skolem_macro_edge_N_contract_branch_choice_count`
+- `skolem_macro_edge_N_contract_branch_choice_M_symbol`
+- `skolem_macro_edge_N_contract_branch_choice_M_replaced_var`
+- `skolem_macro_edge_N_contract_branch_choice_M_type`
+- `skolem_macro_edge_N_contract_branch_choice_M_predicate`
+- `skolem_macro_edge_N_contract_branch_choice_M_body`
+
+The current intended shape is a single direct branch source
+`vampire_exists_prop (fun x => body)`, where `symbol` is the Skolem symbol
+introduced for `x`, `predicate` is the emitted lambda, and `body` is the
+lambda body. Megalodon parses and validates these records only when
+`MEGALODON_CERT_ENABLE_BRANCH_CHOICE_CONTRACTS=1` is set. In that mode it
+checks that the choice symbol belongs to the branch-introduced witness set and
+that the predicate is the lambda over the emitted body. The flag is
+intentional while branch choices remain diagnostic metadata rather than a
+checked proof rule: the default reconstruction path must not change behavior
+from certificate fields that are not yet consumed as proof objects.
+
 ## Deferred from the Clausal Kernel: AVATAR
 
 AVATAR is not part of the first clausal small-kernel milestone. It is handled
