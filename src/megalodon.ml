@@ -10852,7 +10852,18 @@ let check_vampire_cert_v1_file fn =
                      binding.Vampire_cert_v1.core_native_source_proposition
                      <> TmH "")
                   native_preprocess.Vampire_cert_v1.core_native_source_bindings))
-            (if List.length native_preprocess.Vampire_cert_v1.core_native_source_bindings = 1 then "" else "s")
+            (if List.length native_preprocess.Vampire_cert_v1.core_native_source_bindings = 1 then "" else "s");
+          begin match
+            vampire_reconstruct_final_conjecture_from_native_core
+              !source_map_for_emit
+              !source_proofs_for_native
+              native_preprocess
+          with
+          | Some _ ->
+              Printf.printf
+                "Vampire certificate v1 native preprocess final conjecture proof term checked.\n"
+          | None -> ()
+          end
       | None ->
           raise (Vampire_cert_v1.Error "native preprocess proof term does not prove its proposition")
     end;

@@ -652,6 +652,69 @@ if ! rg -q 'Vampire certificate v1 native core source assumptions remaining 0' \
   exit 1
 fi
 
+known_goal_mg="$WORK_DIR/native_cert_v1_known_goal_source_context.mg"
+known_goal_th0="$WORK_DIR/native_cert_v1_known_goal_source_context.th0.p"
+known_goal_cert="$WORK_DIR/native_cert_v1_known_goal_source_context.sexp"
+cat > "$known_goal_mg" <<'EOF_KNOWN_GOAL_MG'
+Definition False : prop := forall r:prop, r.
+Axiom known_id : forall r:prop, r -> r.
+Axiom dneg : forall P:prop, ((P -> (forall r:prop, r)) -> (forall r:prop, r)) -> P.
+EOF_KNOWN_GOAL_MG
+known_goal_hash=$(bin/megalodon -pfgsummary2 "$known_goal_mg" \
+  | sed -n 's/^Known:\([0-9a-f][0-9a-f]*\)$/\1/p' \
+  | head -1)
+if [[ -z "$known_goal_hash" ]]; then
+  echo "native certificate v1 known-goal source-context smoke could not obtain the generated known hash" >&2
+  exit 1
+fi
+cat > "$known_goal_th0" <<EOF_KNOWN_GOAL_TH0
+% megalodon_origin ((file "$known_goal_mg") (line "1") (char "1") (kind "known_goal_source_context_smoke"))
+% megalodon_source_map (known "a1" "known_id" "$known_goal_hash")
+thf(a1,axiom,(! [R:\$o] : (R => R))). % $known_goal_hash
+% megalodon_source_map (negated_conjecture "ng" "goal_id" "")
+thf(ng,negated_conjecture,~(! [R:\$o] : (R => R))).
+EOF_KNOWN_GOAL_TH0
+cat > "$known_goal_cert" <<'EOF_KNOWN_GOAL_CERT'
+(certificate vampire-megalodon 1
+  (problem "known-goal-source-context")
+  (input "u1" (source axiom "a1")
+    (clause
+      (pos (ALL (PROP) (IMP (DB 0) (DB 0))))))
+  (formula_input "u2" (source negated_conjecture "ng")
+    (neg (ALL (PROP) (IMP (DB 0) (DB 0)))))
+  (cnf_literal "u3"
+    (parent "u2")
+    (result
+      (clause
+        (neg (ALL (PROP) (IMP (DB 0) (DB 0)))))))
+  (resolve "u4" (parents "u1" "u3") (pivot 0 0) (result (clause)))
+  (contradiction "u5" "u4"))
+EOF_KNOWN_GOAL_CERT
+
+bin/megalodon \
+  -vampirecertv1sourcecontextstrict \
+  -vampirecertv1preprocesspfcheck \
+  -vampirecertv1strict \
+  -vampirecertv1 "$known_goal_cert" \
+  -vampirecertv1source "$known_goal_th0" \
+  "$known_goal_mg" >"$WORK_DIR/native_cert_v1_known_goal_source_context_preprocess_pf.log"
+
+if ! rg -q 'source context audited total=2 known_checked=1 known_missing=0 known_mismatch=0' \
+    "$WORK_DIR/native_cert_v1_known_goal_source_context_preprocess_pf.log"; then
+  echo "native certificate v1 goal source-context audit did not resolve the hash-backed known premise" >&2
+  exit 1
+fi
+if ! rg -q 'Vampire certificate v1 native preprocess source assumptions remaining by kind known=0 local=0 definition=0 generated=0 conjecture=1 unresolved=0' \
+    "$WORK_DIR/native_cert_v1_known_goal_source_context_preprocess_pf.log"; then
+  echo "native certificate v1 preprocess checker did not leave exactly the negated conjecture assumption" >&2
+  exit 1
+fi
+if ! rg -q 'Vampire certificate v1 native preprocess final conjecture proof term checked\.' \
+    "$WORK_DIR/native_cert_v1_known_goal_source_context_preprocess_pf.log"; then
+  echo "native certificate v1 preprocess checker did not compose the checked refutation into the final conjecture" >&2
+  exit 1
+fi
+
 local_source_live_dir="$WORK_DIR/local_source_live"
 mkdir -p "$local_source_live_dir"
 cat >"$local_source_live_dir/fake_vampire" <<'EOF_LOCAL_SOURCE_FAKE_VAMPIRE'
