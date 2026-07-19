@@ -14987,6 +14987,11 @@ let rec native_core_direct_skolem_formula_proof
         let body, replacements =
           match substitution_name with
           | Some name when compact_named_body ->
+              let abstract_body = subst_named_tm name body in
+              let epsilon_witness =
+                Ap (TmH (native_core_eps_symbol tp), predicate_for_body abstract_body)
+              in
+              register_witness_replacement target_witness epsilon_witness;
               subst_tm [(name, target_witness)] body, replacements
           | Some name ->
               let body = subst_named_tm name body in
@@ -15125,6 +15130,13 @@ let rec native_core_direct_skolem_formula_proof
                 let body, replacements =
                   match substitution_name with
                   | Some name when compact_named_body ->
+                      let abstract_body = subst_named_tm name body in
+                      let epsilon_witness =
+                        Ap
+                          (TmH (native_core_eps_symbol tp),
+                           Lam (tp, checked_formula_prop (local_depth + 1) abstract_body))
+                      in
+                      register_witness_replacement target_witness epsilon_witness;
                       subst_tm [(name, target_witness)] body, replacements
                   | Some name ->
                       let body = subst_named_tm name body in
