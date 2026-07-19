@@ -21718,6 +21718,60 @@ let elaborate_preprocess_refutation_native
                |> tm_beta_eta_norm))
       |> List.sort_uniq compare
     in
+    let witness_replacements =
+      !skolem_witness_replacements
+      |> List.sort_uniq compare
+    in
+    let split_names = List.map fst split_replacements in
+    let witness_names = List.map fst witness_replacements in
+    if split_replacements = []
+       || witness_replacements = []
+       || not
+            (native_core_pf_contains_term_symbol
+               (split_names @ witness_names)
+               proof) then
+      proof
+    else
+      let split_replacements =
+        split_replacements
+        |> List.map
+             (fun (name, prop) ->
+                (name,
+                 native_core_replace_witness_symbols_in_tm
+                   witness_replacements
+                   prop))
+      in
+      let candidate =
+        native_core_replace_witness_symbols_in_pf
+          (split_replacements @ witness_replacements)
+          proof
+      in
+      if final_refutation_proof_checks candidate then begin
+        if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+          prerr_endline
+            ("native preprocess refutation discharged AVATAR split and Skolem witness symbols "
+             ^ String.concat ", " (split_names @ witness_names));
+        candidate
+      end else begin
+        if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+          prerr_endline
+            "native preprocess refutation combined AVATAR split/Skolem witness replacement candidate did not check";
+        proof
+      end
+  in
+  let proof =
+    let split_replacements =
+      avatar_definition_table
+      |> Hashtbl.to_seq_values
+      |> List.of_seq
+      |> List.map
+           (fun (split_name, _component_literals, component_prop, _definition_proof) ->
+              (split_name,
+               component_prop
+               |> native_core_normalize_bool_constants
+               |> tm_beta_eta_norm))
+      |> List.sort_uniq compare
+    in
     let split_names = List.map fst split_replacements in
     if split_replacements = []
        || not (native_core_pf_contains_term_symbol split_names proof) then
