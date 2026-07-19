@@ -3182,31 +3182,68 @@ let vampire_constructive_goal_search
   let rec prove depth cxtm cxpf goal =
     if depth <= 0 then None
     else
+      let church_or_branches proposition =
+        match expose proposition with
+        | All (Prop, Imp (Imp (left, DB 0), Imp (Imp (right, DB 0), DB 0))) ->
+            Some (tmsubst left 0 goal, tmsubst right 0 goal)
+        | _ -> None
+      in
       let prove_by_hypothesis () =
         let rec try_hypotheses = function
           | [] -> None
           | (proof, proposition) :: rest ->
-              begin match prove_from depth cxtm cxpf proof proposition goal with
+              if church_or_branches proposition <> None then
+                try_hypotheses rest
+              else begin match prove_from depth cxtm cxpf proof proposition goal with
               | Some _ as result -> result
               | None -> try_hypotheses rest
               end
         in
         try_hypotheses (ordered_hypotheses 0 cxpf)
       in
+      let prove_by_church_or_hypothesis () =
+        let rec try_hypotheses = function
+          | [] -> None
+          | (proof, proposition) :: rest ->
+              begin match church_or_branches proposition with
+              | None -> try_hypotheses rest
+              | Some (left, right) ->
+                  begin match
+                    prove (depth - 1) cxtm (left :: cxpf) goal,
+                    prove (depth - 1) cxtm (right :: cxpf) goal
+                  with
+                  | Some left_proof, Some right_proof ->
+                      Some
+                        (PPfAp
+                           (PPfAp
+                              (PTmAp (proof, goal),
+                               PLam (left, left_proof)),
+                            PLam (right, right_proof)))
+                  | _ -> try_hypotheses rest
+                  end
+              end
+        in
+        try_hypotheses (ordered_hypotheses 0 cxpf)
+      in
+      let prove_by_context () =
+        match prove_by_hypothesis () with
+        | Some _ as result -> result
+        | None -> prove_by_church_or_hypothesis ()
+      in
       let goal_view = expose goal in
       match goal_view with
       | Imp (assumption, conclusion) ->
           begin match prove (depth - 1) cxtm (assumption :: cxpf) conclusion with
           | Some proof -> Some (PLam (assumption, proof))
-          | None -> prove_by_hypothesis ()
+          | None -> prove_by_context ()
           end
       | All (tp, body) ->
           let shifted_cxpf = List.map (fun prop -> tmshift 0 1 prop) cxpf in
           begin match prove (depth - 1) (("", (tp, None)) :: cxtm) shifted_cxpf body with
           | Some proof -> Some (TLam (tp, proof))
-          | None -> prove_by_hypothesis ()
+          | None -> prove_by_context ()
           end
-      | _ -> prove_by_hypothesis ()
+      | _ -> prove_by_context ()
   and prove_from depth cxtm cxpf proof proposition goal =
     if convertible proposition goal then
       Some proof
@@ -4683,14 +4720,12 @@ let check_vampire_aby_native_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) ?(proof_
                     cxtm
                     cxpf
                 in
+                begin match constructive_fallback () with
+                | Some _ as result -> result
+                | None ->
                 try
-                  begin match
-                    vampire_certificate_reconstruct_aby_goal
-                      claimtm cxtm cxpf cert source_map source_audit
-                  with
-                  | Some _ as result -> result
-                  | None -> constructive_fallback ()
-                  end
+                  vampire_certificate_reconstruct_aby_goal
+                    claimtm cxtm cxpf cert source_map source_audit
                 with
                 | Vampire_cert_v1.Error msg ->
                     if !verbosity > 8 then
@@ -4716,6 +4751,7 @@ let check_vampire_aby_native_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) ?(proof_
                         flush stdout
                       end;
                     constructive_fallback ()
+                end
           in
           if !verbosity > 8 then
             begin
