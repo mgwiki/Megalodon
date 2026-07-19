@@ -11,6 +11,7 @@ let stm = ref "";;
 let mycnt = ref 0;;
 let archivefile = ref None;;
 let allowincompleteqed = ref false;;
+let trustdeclaredaxioms = ref false;;
 let doublecheckpf = ref true;;
 let maxbottlenecksreport = ref 3;;
 let removepfs = ref None;;
@@ -8147,7 +8148,10 @@ let evaluate_docitem_1 ditem =
             Printf.printf "Known:%s:%s:%s\n" x (Hash.hashval_hexstring pfgpure) (Hash.hashval_hexstring pfgahv);
         end;
 
-      if not (Hashtbl.mem indexknowns ahv) &&
+      if !trustdeclaredaxioms then
+        Hashtbl.replace istrustedhash ahv ();
+      if not !trustdeclaredaxioms &&
+           not (Hashtbl.mem indexknowns ahv) &&
            begin
              if i = 0 then
                let pfgahv = pfg_propid agtm in
@@ -11844,6 +11848,8 @@ let _ =
           end
         else if Sys.argv.(!j) = "-allowincompleteqed" then
           allowincompleteqed := true
+        else if Sys.argv.(!j) = "-trustdeclaredaxioms" then
+          trustdeclaredaxioms := true
         else if Sys.argv.(!j) = "-fof" then
           begin
 	    if !j < i-2 then
