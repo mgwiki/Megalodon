@@ -16242,54 +16242,15 @@ let native_core_replace_terms_in_pf replacements proof =
   replace_pf 0 proof
 
 let native_core_pf_contains_term_symbol names proof =
-  let rec tm_contains = function
-    | TmH name -> List.mem name names
-    | TpAp (body, _) -> tm_contains body
-    | Ap (left, right) | Imp (left, right) ->
-        tm_contains left || tm_contains right
-    | Lam (_, body) | All (_, body) -> tm_contains body
-    | DB _ | Prim _ -> false
-  in
-  let rec pf_contains = function
-    | PTpAp (body, _) -> pf_contains body
-    | PTmAp (body, tm) -> pf_contains body || tm_contains tm
-    | PPfAp (left, right) -> pf_contains left || pf_contains right
-    | PLam (prop, body) -> tm_contains prop || pf_contains body
-    | TLam (_, body) -> pf_contains body
-    | Hyp _ | Known _ -> false
-  in
-  pf_contains proof
+  Vampire_kernel_elab.proof_contains_term_symbol names proof
 
 let native_core_pf_contains_exact_term needle proof =
-  let needle =
-    needle
-    |> native_core_normalize_bool_constants
-    |> tm_beta_eta_norm
-  in
   let normalize tm =
     tm
     |> native_core_normalize_bool_constants
     |> tm_beta_eta_norm
   in
-  let rec tm_contains tm =
-    normalize tm = needle
-    ||
-    match tm with
-    | TpAp (body, _) -> tm_contains body
-    | Ap (left, right) | Imp (left, right) ->
-        tm_contains left || tm_contains right
-    | Lam (_, body) | All (_, body) -> tm_contains body
-    | DB _ | TmH _ | Prim _ -> false
-  in
-  let rec pf_contains = function
-    | PTpAp (body, _) -> pf_contains body
-    | PTmAp (body, tm) -> pf_contains body || tm_contains tm
-    | PPfAp (left, right) -> pf_contains left || pf_contains right
-    | PLam (prop, body) -> tm_contains prop || pf_contains body
-    | TLam (_, body) -> pf_contains body
-    | Hyp _ | Known _ -> false
-  in
-  pf_contains proof
+  Vampire_kernel_elab.proof_contains_exact_term ~normalize needle proof
 
 let native_core_tm_term_symbol_detail names tm =
   let rec tm_detail path enclosing = function
@@ -16427,46 +16388,9 @@ let native_core_pf_choice_witness_detail proof =
   pf_detail "root" proof
 
 let native_core_pf_first_choice_witness_term proof =
-  let rec tm_detail path enclosing = function
-    | TmH name when List.mem name native_core_choice_witness_symbols ->
-        Some (path, enclosing)
-    | TmH _ | DB _ | Prim _ -> None
-    | TpAp (body, _) as tm -> tm_detail (path ^ ".tp") tm body
-    | Ap (left, right) as tm ->
-        begin match tm_detail (path ^ ".left") tm left with
-        | Some _ as found -> found
-        | None -> tm_detail (path ^ ".right") tm right
-        end
-    | Lam (_, body) | All (_, body) as tm ->
-        tm_detail (path ^ ".body") tm body
-    | Imp (left, right) as tm ->
-        begin match tm_detail (path ^ ".left") tm left with
-        | Some _ as found -> found
-        | None -> tm_detail (path ^ ".right") tm right
-        end
-  in
-  let tm_detail path tm = tm_detail path tm tm in
-  let rec pf_detail path = function
-    | PTpAp (body, _) -> pf_detail (path ^ ".tp") body
-    | PTmAp (body, tm) ->
-        begin match pf_detail (path ^ ".proof") body with
-        | Some _ as found -> found
-        | None -> tm_detail (path ^ ".term") tm
-        end
-    | PPfAp (left, right) ->
-        begin match pf_detail (path ^ ".left") left with
-        | Some _ as found -> found
-        | None -> pf_detail (path ^ ".right") right
-        end
-    | PLam (prop, body) ->
-        begin match tm_detail (path ^ ".prop") prop with
-        | Some _ as found -> found
-        | None -> pf_detail (path ^ ".body") body
-        end
-    | TLam (_, body) -> pf_detail (path ^ ".body") body
-    | Hyp _ | Known _ -> None
-  in
-  pf_detail "root" proof
+  Vampire_kernel_elab.first_enclosing_term_with_symbol
+    native_core_choice_witness_symbols
+    proof
 
 let native_core_pf_choice_witness_terms proof =
   let normalize tm =
@@ -16474,41 +16398,10 @@ let native_core_pf_choice_witness_terms proof =
     |> native_core_normalize_bool_constants
     |> tm_beta_eta_norm
   in
-  let terms = ref [] in
-  let add_choice enclosing =
-    terms := normalize enclosing :: !terms
-  in
-  let rec tm_collect enclosing = function
-    | TmH name when List.mem name native_core_choice_witness_symbols ->
-        add_choice enclosing
-    | TmH _ | DB _ | Prim _ -> ()
-    | TpAp (body, _) as tm -> tm_collect tm body
-    | Ap (left, right) as tm ->
-        tm_collect tm left;
-        tm_collect tm right
-    | Lam (_, body) | All (_, body) as tm ->
-        tm_collect tm body
-    | Imp (left, right) as tm ->
-        tm_collect tm left;
-        tm_collect tm right
-  in
-  let tm_collect tm = tm_collect tm tm in
-  let rec pf_collect = function
-    | PTpAp (body, _) -> pf_collect body
-    | PTmAp (body, tm) ->
-        pf_collect body;
-        tm_collect tm
-    | PPfAp (left, right) ->
-        pf_collect left;
-        pf_collect right
-    | PLam (prop, body) ->
-        tm_collect prop;
-        pf_collect body
-    | TLam (_, body) -> pf_collect body
-    | Hyp _ | Known _ -> ()
-  in
-  pf_collect proof;
-  !terms |> List.sort_uniq compare
+  Vampire_kernel_elab.enclosing_terms_with_symbol
+    ~normalize
+    native_core_choice_witness_symbols
+    proof
 
 let native_core_pf_choice_witness_terms_with_depth proof =
   let normalize tm =
@@ -16516,41 +16409,10 @@ let native_core_pf_choice_witness_terms_with_depth proof =
     |> native_core_normalize_bool_constants
     |> tm_beta_eta_norm
   in
-  let terms = ref [] in
-  let add_choice depth enclosing =
-    terms := (depth, normalize enclosing) :: !terms
-  in
-  let rec tm_collect depth enclosing = function
-    | TmH name when List.mem name native_core_choice_witness_symbols ->
-        add_choice depth enclosing
-    | TmH _ | DB _ | Prim _ -> ()
-    | TpAp (body, _) as tm -> tm_collect depth tm body
-    | Ap (left, right) as tm ->
-        tm_collect depth tm left;
-        tm_collect depth tm right
-    | Lam (_, body) | All (_, body) as tm ->
-        tm_collect (depth + 1) tm body
-    | Imp (left, right) as tm ->
-        tm_collect depth tm left;
-        tm_collect depth tm right
-  in
-  let tm_collect depth tm = tm_collect depth tm tm in
-  let rec pf_collect depth = function
-    | PTpAp (body, _) -> pf_collect depth body
-    | PTmAp (body, tm) ->
-        pf_collect depth body;
-        tm_collect depth tm
-    | PPfAp (left, right) ->
-        pf_collect depth left;
-        pf_collect depth right
-    | PLam (prop, body) ->
-        tm_collect depth prop;
-        pf_collect depth body
-    | TLam (_, body) -> pf_collect (depth + 1) body
-    | Hyp _ | Known _ -> ()
-  in
-  pf_collect 0 proof;
-  !terms |> List.sort_uniq compare
+  Vampire_kernel_elab.enclosing_terms_with_symbol_depth
+    ~normalize
+    native_core_choice_witness_symbols
+    proof
 
 let native_core_pf_choice_known_detail proof =
   let choice_knowns =
@@ -16579,29 +16441,16 @@ let native_core_pf_choice_known_detail proof =
   pf_detail "root" proof
 
 let native_core_registered_choice_witness_term_replacements replacements proof =
-  let candidate_terms =
-    replacements
-    |> List.filter_map
-         (fun (name, witness) ->
-            let witness =
-              witness
-              |> native_core_normalize_bool_constants
-              |> tm_beta_eta_norm
-            in
-            let witness_choice_symbols =
-              native_core_choice_witness_symbols
-              |> List.filter (fun symbol -> tm_contains_symbol symbol witness)
-            in
-            if native_core_pf_contains_exact_term witness proof
-               || (witness_choice_symbols <> []
-                   && native_core_pf_contains_term_symbol
-                        witness_choice_symbols proof) then
-              Some (witness, TmH name)
-            else
-              None)
-    |> List.sort_uniq compare
+  let normalize tm =
+    tm
+    |> native_core_normalize_bool_constants
+    |> tm_beta_eta_norm
   in
-  candidate_terms
+  Vampire_kernel_elab.registered_witness_term_replacements
+    ~normalize
+    ~witness_symbols:native_core_choice_witness_symbols
+    replacements
+    proof
 
 let native_core_abstract_shifted_subproof needle proof =
   let replaced = ref false in

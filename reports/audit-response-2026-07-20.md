@@ -278,3 +278,40 @@ The audit's central architectural criticism still stands.  The next corrective
 step should move the relevant Skolem/choice transformation replay out of the
 monolithic importer and into the extracted small-kernel checker/elaborator
 modules before claiming additional counted proofs.
+
+## Skolem/Choice Traversal Extraction, 2026-07-20
+
+The first piece of that corrective step is now in place.  Generic proof-term
+inspection for certificate-local Skolem/choice witnesses has been moved from
+`vampire_cert_v1.ml` into `vampire_kernel_elab.ml`:
+
+- symbol containment in proof terms;
+- exact normalized term containment in proof terms;
+- first enclosing witness term discovery;
+- normalized enclosing witness-term collection;
+- binder-depth-aware witness-term collection;
+- registered witness-term replacement construction.
+
+The native-core importer now calls these extracted operations with the
+Megalodon/Vampire choice-symbol set and native-core normalizer instead of
+carrying private traversal copies.  This is not yet a full Smolka-style
+transformation checker, but it is the right direction: deterministic
+Skolem/choice replay state is migrating into the small-kernel elaboration
+boundary, while `vampire_cert_v1.ml` is reduced to native-core adaptation.
+
+Validation for this change:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_certified_vampire_no_incomplete.sh
+TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+```
+
+The honest frontier remains unchanged: the first three original hammer
+commands (`FalseE`, `andEL`, `andER`) pass in qualifying mode, and `and3I`
+still fails closed.  That is intentional reporting discipline.  The next
+architectural step is to extract the actual Skolem/choice transformation
+checking/elaboration, not merely the witness-term traversals.

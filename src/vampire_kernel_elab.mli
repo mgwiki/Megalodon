@@ -80,3 +80,38 @@ val replace_exact_terms_in_proof :
   (Syntax.tm * Syntax.tm) list ->
   Syntax.pf ->
   Syntax.pf
+
+val proof_contains_term_symbol :
+  string list ->
+  Syntax.pf ->
+  bool
+
+val proof_contains_exact_term :
+  normalize:(Syntax.tm -> Syntax.tm) ->
+  Syntax.tm ->
+  Syntax.pf ->
+  bool
+
+val first_enclosing_term_with_symbol :
+  string list ->
+  Syntax.pf ->
+  (string * Syntax.tm) option
+
+val enclosing_terms_with_symbol :
+  normalize:(Syntax.tm -> Syntax.tm) ->
+  string list ->
+  Syntax.pf ->
+  Syntax.tm list
+
+val enclosing_terms_with_symbol_depth :
+  normalize:(Syntax.tm -> Syntax.tm) ->
+  string list ->
+  Syntax.pf ->
+  (int * Syntax.tm) list
+
+val registered_witness_term_replacements :
+  normalize:(Syntax.tm -> Syntax.tm) ->
+  witness_symbols:string list ->
+  (string * Syntax.tm) list ->
+  Syntax.pf ->
+  (Syntax.tm * Syntax.tm) list
