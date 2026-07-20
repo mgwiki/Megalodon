@@ -224,3 +224,26 @@ the long search path.
 The frontier therefore remains three original-source qualifying proofs.  The
 next real proof milestone is still to make `and3I` close through deterministic
 source-goal composition, not to recover it by broad Megalodon-side search.
+
+## Qualifying Candidate-Search Freeze, 2026-07-20
+
+After re-reading the audit again on `vampire/megalodon6`, the source-binding
+candidate enumeration path was removed from qualifying mode.  If the direct
+guided refutation-to-goal bridge cannot explain the current theorem,
+qualifying mode now stops at
+`candidate_refutation_fallback:disabled_by_qualifying_mode` instead of trying
+candidate source-binding applications.
+
+This is an intentional downgrade, not a loss of useful debugging code.  The old
+candidate path remains available outside `-vampireabyqualifying` as a
+regression oracle, but it is no longer eligible for counted E1 evidence.  A new
+focused guard,
+`tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh`,
+checks that the first three original hammer commands still reconstruct and
+Qed-check, that the fourth command (`and3I`) fails under qualifying mode, and
+that the failure is specifically the fail-closed candidate-refutation guard.
+
+The honest qualifying frontier remains the three small original-source proofs:
+`FalseE`, `andEL`, and `andER`.  The next real progress must make `and3I` pass
+through the extracted small-kernel/Skolem transformation route, not by
+re-enabling Megalodon-side candidate search.

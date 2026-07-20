@@ -5942,154 +5942,162 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
           end;
         result
     | None ->
-    timing "candidate_refutation_fallback:start";
-    if debug_source_apply then
-      begin
-        Printf.printf
-          "Vampire native guided negated-conjecture reconstruction failed at line %d char %d; trying source binding applications.\n"
-          !lineno
-          !charno;
-        flush stdout
-      end;
-    let source_binding_applications_possible =
-      match remaining_bindings with
-      | [binding]
-          when vampire_source_binding_is_negated_conjecture binding
-               && vampire_source_proof
-                    source_audit
-                    binding.Vampire_cert_v1.core_native_source_step = None ->
-          false
-      | _ -> true
-    in
-    if not source_binding_applications_possible then
-      None
-    else
-    let rec try_candidates = function
-      | [] -> None
-      | (proof,proposition,candidate_remaining_bindings) :: rest ->
-        begin
-          let negated_goal_native = Imp(claimtm,vampire_native_core_false_tm) in
-          let negated_goal_context = Imp(claimtm,TmH(!fal)) in
-          let rec try_applied = function
-            | [] -> try_candidates rest
-            | (proof, proposition, [binding]) :: applied_rest
-                when binding.Vampire_cert_v1.core_native_certificate_source_kind = "negated_conjecture" ->
+        if !vampireabyqualifying then
+          begin
+            timing "candidate_refutation_fallback:disabled_by_qualifying_mode";
+            None
+          end
+        else
+          begin
+            timing "candidate_refutation_fallback:start";
+            if debug_source_apply then
+              begin
+                Printf.printf
+                  "Vampire native guided negated-conjecture reconstruction failed at line %d char %d; trying source binding applications.\n"
+                  !lineno
+                  !charno;
+                flush stdout
+              end;
+            let source_binding_applications_possible =
+              match remaining_bindings with
+              | [binding]
+                  when vampire_source_binding_is_negated_conjecture binding
+                       && vampire_source_proof
+                            source_audit
+                            binding.Vampire_cert_v1.core_native_source_step = None ->
+                  false
+              | _ -> true
+            in
+            if not source_binding_applications_possible then
+              None
+            else
+            let rec try_candidates = function
+              | [] -> None
+              | (proof,proposition,candidate_remaining_bindings) :: rest ->
                 begin
-                  let direct_negated_goal =
-                    match
-                      conv
-                        binding.Vampire_cert_v1.core_native_source_proposition
-                        negated_goal_native
-                        sigdelta
-                        [],
-                      conv
-                        binding.Vampire_cert_v1.core_native_source_proposition
-                        negated_goal_context
-                        sigdelta
-                        []
-                    with
-                    | Some _, _ | _, Some _ -> true
-                    | None, None -> false
-                  in
-                  if (not direct_negated_goal)
-                     && Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
-                    begin
-                      Printf.printf
-                        "Vampire native negated conjecture is not definitionally the current goal negation; trying checked goal transport.\nsource: %s\ngoal negation: %s\n"
-                        (tm_to_str binding.Vampire_cert_v1.core_native_source_proposition)
-                        (tm_to_str negated_goal_native);
-                      flush stdout
-                    end;
-                  match
-                          vampire_reconstruct_current_goal_from_refutation
-                            ~source_map
-                            ~extra_delta:reconstruction_delta
-                            ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
-                            claimtm
-                            cxtm
-                            cxpf
-                      proof
-                      proposition
-                  with
-                  | Some _ as result -> result
-                  | None ->
-                      begin match vampire_negated_conjecture_target binding with
-                      | Some source_target ->
-                          begin match
-                            vampire_reconstruct_goal_from_supplied_refutation
-                              ~source_map
-                              ~extra_delta:reconstruction_delta
-                              ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
-                              claimtm
-                              cxtm
-                              cxpf
-                              source_target
+                  let negated_goal_native = Imp(claimtm,vampire_native_core_false_tm) in
+                  let negated_goal_context = Imp(claimtm,TmH(!fal)) in
+                  let rec try_applied = function
+                    | [] -> try_candidates rest
+                    | (proof, proposition, [binding]) :: applied_rest
+                        when binding.Vampire_cert_v1.core_native_certificate_source_kind = "negated_conjecture" ->
+                        begin
+                          let direct_negated_goal =
+                            match
+                              conv
+                                binding.Vampire_cert_v1.core_native_source_proposition
+                                negated_goal_native
+                                sigdelta
+                                [],
+                              conv
+                                binding.Vampire_cert_v1.core_native_source_proposition
+                                negated_goal_context
+                                sigdelta
+                                []
+                            with
+                            | Some _, _ | _, Some _ -> true
+                            | None, None -> false
+                          in
+                          if (not direct_negated_goal)
+                             && Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+                            begin
+                              Printf.printf
+                                "Vampire native negated conjecture is not definitionally the current goal negation; trying checked goal transport.\nsource: %s\ngoal negation: %s\n"
+                                (tm_to_str binding.Vampire_cert_v1.core_native_source_proposition)
+                                (tm_to_str negated_goal_native);
+                              flush stdout
+                            end;
+                          match
+                                  vampire_reconstruct_current_goal_from_refutation
+                                    ~source_map
+                                    ~extra_delta:reconstruction_delta
+                                    ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
+                                    claimtm
+                                    cxtm
+                                    cxpf
                               proof
                               proposition
                           with
                           | Some _ as result -> result
                           | None ->
-                          begin match
-                            vampire_reconstruct_current_goal_from_refutation
-                              ~source_map
-                              ~extra_delta:reconstruction_delta
-                              ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
-                              source_target
-                              cxtm
-                              cxpf
-                              proof
-                              proposition
-                          with
-                          | Some source_target_proof ->
-                              begin match
-                                vampire_reconstruct_goal_from_proved_prop
-                                  ~source_map
-                                  ~extra_delta:reconstruction_delta
-                                  ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
-                                  claimtm
-                                  cxtm
-                                  cxpf
-                                  source_target_proof
-                                  source_target
-                              with
-                              | Some _ as result -> result
+                              begin match vampire_negated_conjecture_target binding with
+                              | Some source_target ->
+                                  begin match
+                                    vampire_reconstruct_goal_from_supplied_refutation
+                                      ~source_map
+                                      ~extra_delta:reconstruction_delta
+                                      ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
+                                      claimtm
+                                      cxtm
+                                      cxpf
+                                      source_target
+                                      proof
+                                      proposition
+                                  with
+                                  | Some _ as result -> result
+                                  | None ->
+                                  begin match
+                                    vampire_reconstruct_current_goal_from_refutation
+                                      ~source_map
+                                      ~extra_delta:reconstruction_delta
+                                      ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
+                                      source_target
+                                      cxtm
+                                      cxpf
+                                      proof
+                                      proposition
+                                  with
+                                  | Some source_target_proof ->
+                                      begin match
+                                        vampire_reconstruct_goal_from_proved_prop
+                                          ~source_map
+                                          ~extra_delta:reconstruction_delta
+                                          ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
+                                          claimtm
+                                          cxtm
+                                          cxpf
+                                          source_target_proof
+                                          source_target
+                                      with
+                                      | Some _ as result -> result
+                                      | None -> try_applied applied_rest
+                                      end
+                                  | None -> try_applied applied_rest
+                                  end
+                                  end
                               | None -> try_applied applied_rest
                               end
-                          | None -> try_applied applied_rest
-                          end
-                          end
-                      | None -> try_applied applied_rest
-                      end
+                        end
+                    | _ :: applied_rest -> try_applied applied_rest
+                  in
+                  try_applied
+                    (vampire_apply_available_source_bindings
+                       ~extra_delta:reconstruction_delta
+                       ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
+                       cxtm
+                       cxpf
+                       source_map
+                       source_audit
+                       proof
+                       proposition
+                       candidate_remaining_bindings)
                 end
-            | _ :: applied_rest -> try_applied applied_rest
-          in
-          try_applied
-            (vampire_apply_available_source_bindings
-               ~extra_delta:reconstruction_delta
-               ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
-               cxtm
-               cxpf
-               source_map
-               source_audit
-               proof
-               proposition
-               candidate_remaining_bindings)
-        end
-    in
-    let candidates =
-      vampire_instantiated_refutation_candidates
-        ~source_map
-        ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
-        ~candidate_props:[claimtm]
-        cxtm
-        native_core.Vampire_cert_v1.core_native_proof
-        core_proposition
-        remaining_bindings
-    in
-    timing "candidate_refutation_fallback:candidates_done";
-    let result = try_candidates candidates in
-    timing "candidate_refutation_fallback:done";
-    result
+            in
+            let candidates =
+              vampire_instantiated_refutation_candidates
+                ~source_map
+                ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
+                ~candidate_props:[claimtm]
+                cxtm
+                native_core.Vampire_cert_v1.core_native_proof
+                core_proposition
+                remaining_bindings
+            in
+            timing "candidate_refutation_fallback:candidates_done";
+            let result = try_candidates candidates in
+            timing "candidate_refutation_fallback:done";
+            result
+          end
   in
   match
     if !vampireabyqualifying then None
