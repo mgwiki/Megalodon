@@ -115,6 +115,13 @@ val term_scoped_under :
   Syntax.tm ->
   bool
 
+val dependent_witness_definition :
+  canonical_name:(string -> string option) ->
+  variables:(string * Syntax.tp) list ->
+  dependencies:(string * Syntax.tp) list ->
+  Syntax.tm ->
+  Syntax.tm
+
 type live_safe_delta_entry = {
   live_safe_delta_name : string;
   live_safe_delta_arity : int;

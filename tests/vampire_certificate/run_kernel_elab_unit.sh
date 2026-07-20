@@ -168,6 +168,30 @@ let () =
        (Vampire_kernel_elab.term_scoped_under
           ~context_depth:1
           (Ap (DB 1, DB 0))));
+  expect_equal
+    "dependent_witness_definition should close variables before dependency binders"
+    (Lam (Prop, Ap (TmH "wrap", Ap (DB 1, DB 0))))
+    (Vampire_kernel_elab.dependent_witness_definition
+       ~canonical_name:(fun name -> Some name)
+       ~variables:["x", Prop]
+       ~dependencies:["d", Prop]
+       (Ap (TmH "wrap", Ap (TmH "x", TmH "d"))));
+  expect_equal
+    "dependent_witness_definition should close dependency aliases"
+    (Lam (Prop, DB 0))
+    (Vampire_kernel_elab.dependent_witness_definition
+       ~canonical_name:(function "#d" -> Some "d" | "d" -> Some "d" | _ -> None)
+       ~variables:[]
+       ~dependencies:["d", Prop]
+       (TmH "#d"));
+  expect_equal
+    "dependent_witness_definition should not add binders without dependencies"
+    (Ap (DB 1, DB 0))
+    (Vampire_kernel_elab.dependent_witness_definition
+       ~canonical_name:(fun name -> Some name)
+       ~variables:["x", Prop; "y", Prop]
+       ~dependencies:[]
+       (Ap (TmH "x", TmH "y")));
   let live_safe_entries =
     [
       {

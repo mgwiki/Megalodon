@@ -919,6 +919,37 @@ should be a scoped transport proof object at the direct Skolem proof
 construction boundary, or richer Vampire-emitted small-kernel data from which
 that transport is deterministically elaborated.
 
+## Dependent Witness Definition Extraction, 2026-07-20
+
+The next small extraction moved dependent Skolem witness-definition
+construction into `vampire_kernel_elab.ml`.  The importer still supplies the
+native canonical-name function and already-normalized witness body, but the
+generic operation now lives at the small-kernel elaboration boundary:
+
+- close emitted named variables and dependency aliases such as `#d`;
+- normalize the closed witness body;
+- abstract explicit dependency binders in a deterministic order;
+- normalize the resulting definition.
+
+The unit test covers the binder discipline directly, including the case where
+source variables and dependency binders coexist and the case where the witness
+mentions a `#` alias.  The focused validation passed:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+WORK_DIR=/project/tmp/and_prefix_depwit_extract_1784573147 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+WORK_DIR=/project/tmp/prefix4_depwit_extract_1784573147 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+```
+
+This still does not increase the proof frontier.  The branch remains at three
+original-source qualifying proofs (`FalseE`, `andEL`, `andER`) with `and3I`
+failing closed.  The value is that another scoped Skolem/choice construction
+has moved out of `vampire_cert_v1.ml`, which reduces the surface that can hide
+implicit Megalodon-side reconstruction while the explicit witness transport is
+being designed.
+
 ## CPS Alias Hygiene, 2026-07-20
 
 One further bounded cleanup was made in the CPS Skolem replay path.  Witness

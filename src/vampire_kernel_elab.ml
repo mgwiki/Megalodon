@@ -277,6 +277,23 @@ let term_scoped_under ~context_depth tm =
   in
   scoped 0 tm
 
+let dependent_witness_definition
+    ~canonical_name
+    ~variables
+    ~dependencies
+    witness =
+  close_named_term
+    ~canonical_name
+    (variables @ dependencies)
+    witness
+  |> tm_beta_eta_norm
+  |> fun body ->
+      List.fold_right
+        (fun (_, tp) body -> Lam (tp, body))
+        dependencies
+        body
+  |> tm_beta_eta_norm
+
 type live_safe_delta_entry = {
   live_safe_delta_name : string;
   live_safe_delta_arity : int;

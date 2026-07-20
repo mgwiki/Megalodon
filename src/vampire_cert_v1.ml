@@ -10189,14 +10189,11 @@ let native_core_tm_scoped_under context_depth tm =
   Vampire_kernel_elab.term_scoped_under ~context_depth tm
 
 let native_core_dependent_witness_definition variables dependencies epsilon_witness =
-  native_core_close_tm (variables @ dependencies) epsilon_witness
-  |> tm_beta_eta_norm
-  |> fun body ->
-      List.fold_right
-        (fun (_, tp) body -> Lam (tp, body))
-        dependencies
-        body
-  |> tm_beta_eta_norm
+  Vampire_kernel_elab.dependent_witness_definition
+    ~canonical_name:native_core_ident_opt
+    ~variables
+    ~dependencies
+    (native_core_normalize_bool_constants epsilon_witness)
 
 let native_core_close_pf variables proof =
   let rec close depth = function
