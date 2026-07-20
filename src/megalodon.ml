@@ -1854,9 +1854,7 @@ let vampire_live_not_tm target =
   | None -> Imp (target, TmH (!fal))
 
 let vampire_live_case_not_tm target =
-  match Hashtbl.find_opt sigknh "notE" with
-  | Some _ -> vampire_live_not_tm target
-  | None -> Imp (target, TmH (!fal))
+  vampire_live_not_tm target
 
 let vampire_currently_proving name =
   match !proving with

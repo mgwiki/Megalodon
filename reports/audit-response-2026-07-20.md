@@ -378,3 +378,33 @@ TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/
 This still does not increase the counted proof frontier.  Its purpose is to
 make the next `and3I` work happen inside a reviewable Skolem helper and
 branch-choice pipeline rather than in unstructured native replay code.
+
+## Live `xm` Negation Alignment, 2026-07-20
+
+A focused `and3I` debug run then exposed a separate live-proof replay mismatch:
+the generated case split for `xm` sometimes used implication-to-`False` as the
+negative branch even when the loaded Megalodon context provided the library
+`not` theorem and the theorem statement was phrased through that live `not`.
+
+The branch now routes all such live case-negation terms through the same
+`vampire_live_not_tm` adapter used elsewhere.  This is intentionally a small
+normalization fix, not an inference-coverage extension: it aligns the generated
+proof term with the available Megalodon logical basis and falls back to
+implication-to-`False` only through the existing live-library adapter.
+
+Validation after this change:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_certified_vampire_no_incomplete.sh
+TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+```
+
+The result remains intentionally conservative.  The first three original
+hammer commands still pass in qualifying mode, and `and3I` still fails closed.
+The failure shape has moved past the earlier proof-of-prop mismatch and is now
+concentrated in guided negated-conjecture replay, with candidate fallback still
+disabled by qualifying mode.
