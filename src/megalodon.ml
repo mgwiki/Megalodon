@@ -2875,7 +2875,7 @@ let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxp
   in
   let live_expected =
     vampire_live_basis_tm_expander
-      (vampire_expand_returned_tm ?extra_delta cxtm source_map expected)
+      (vampire_expand_returned_tm ?extra_delta:live_extra_delta cxtm source_map expected)
   in
   let live_hyps =
     List.map

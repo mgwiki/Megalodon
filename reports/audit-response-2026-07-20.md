@@ -279,6 +279,32 @@ step should move the relevant Skolem/choice transformation replay out of the
 monolithic importer and into the extracted small-kernel checker/elaborator
 modules before claiming additional counted proofs.
 
+## Live Expected-Delta Consistency, 2026-07-20
+
+A subsequent focused `and3I` probe found one small live-checker inconsistency.
+`vampire_check_proof_of_prop` expanded the candidate proof with the live-safe
+certificate delta, but expanded the expected proposition with the full
+certificate delta before applying the live basis.  That is an avoidable
+asymmetry for generated Skolem symbols: the proof and the expected proposition
+should be compared after the same live-safe filtering.
+
+The branch now expands the live expected proposition with the same live-safe
+extra delta used for the proof.  This is a correctness guard for fail-closed
+checking, not a new proof-reconstruction feature.  The focused guards still show
+the same honest frontier:
+
+```text
+vampireaby qualifying guard checks passed
+LIVE_HAMMER_AND_PREFIX_QUALIFYING_PASS 3
+LIVE_HAMMER_PREFIX4_FAILCLOSED_QUALIFYING_PASS
+```
+
+`and3I` still fails closed at the proposition-valued Skolem/choice replay
+boundary.  A speculative change to split local and stored branch-choice witness
+definitions in `vampire_cert_v1.ml` was tested and removed because it did not
+move the failure and would continue growing the monolithic replay path that the
+audit warned against.
+
 ## Skolem/Choice Traversal Extraction, 2026-07-20
 
 The first piece of that corrective step is now in place.  Generic proof-term
