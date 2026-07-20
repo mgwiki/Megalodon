@@ -3648,34 +3648,23 @@ let clause_contains_literal_mod item clause =
 let check_subsumption_resolution checked id main_parent_id side_parent_id selected side_pivot side_subst result =
   let main_clause = lookup_clause checked main_parent_id in
   let side_clause = lookup_clause checked side_parent_id in
-  let main_rest =
-    remove_one_literal_mod selected main_clause (id ^ ": selected literal is not present in main parent")
+  let clause_matches expected actual =
+    same_clause_multiset expected actual || same_clause_set_mod_equality expected actual
   in
-  let expected_result_ok =
-    same_clause_multiset main_rest result
-    || same_clause_set_mod_equality main_rest result
-  in
-  if not expected_result_ok then
-    error (id ^ ": subsumption-resolution result does not match main parent after selected literal removal");
-  let side_pivot_sub = subst_literal side_subst side_pivot in
-  if not (complementary_mod_equality selected side_pivot_sub) then
-    error (id ^ ": side pivot does not complement selected literal under side substitution");
-  let rec check_side skipped_pivot = function
-    | [] ->
-        if not skipped_pivot then
-          error (id ^ ": side pivot is not present in side parent")
-    | literal :: rest ->
-        if not skipped_pivot && same_literal_mod_vampire_vars literal side_pivot then
-          check_side true rest
-        else
-          let substituted = subst_literal side_subst literal in
-          if complementary_mod_equality selected substituted
-             || clause_contains_literal_mod substituted result then
-            check_side skipped_pivot rest
-          else
-            error (id ^ ": side parent contains a literal not discharged by the selected literal or preserved in the result")
-  in
-  check_side false side_clause
+  try
+    Vampire_kernel_check.check_subsumption_resolution
+      ~id
+      ~same_literal:same_literal_mod_vampire_vars
+      ~complementary:complementary_mod_equality
+      ~clause_contains:clause_contains_literal_mod
+      ~clause_matches
+      ~main:main_clause
+      ~side:side_clause
+      ~selected
+      ~side_pivot
+      ~side_subst
+      ~result
+  with Vampire_kernel_check.Error msg -> error msg
 
 let clause_matches_native_trace left right =
   same_clause_multiset left right

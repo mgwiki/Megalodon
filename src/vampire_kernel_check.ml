@@ -185,6 +185,55 @@ let check_resolution ~id ~left ~right ~left_index ~right_index ~result =
   if not (same_clause_multiset expected result) then
     error (id ^ ": resolution result does not match parent clauses after pivot removal")
 
+let remove_one_literal ~same_literal item clause what =
+  let rec aux = function
+    | [] -> error what
+    | literal :: rest when same_literal literal item -> rest
+    | literal :: rest -> literal :: aux rest
+  in
+  aux clause
+
+let check_subsumption_resolution
+    ~id
+    ~same_literal
+    ~complementary
+    ~clause_contains
+    ~clause_matches
+    ~main
+    ~side
+    ~selected
+    ~side_pivot
+    ~side_subst
+    ~result =
+  let main_rest =
+    remove_one_literal
+      ~same_literal
+      selected
+      main
+      (id ^ ": selected literal is not present in main parent")
+  in
+  if not (clause_matches main_rest result) then
+    error (id ^ ": subsumption-resolution result does not match main parent after selected literal removal");
+  let side_pivot_sub = subst_literal side_subst side_pivot in
+  if not (complementary selected side_pivot_sub) then
+    error (id ^ ": side pivot does not complement selected literal under side substitution");
+  let rec check_side skipped_pivot = function
+    | [] ->
+        if not skipped_pivot then
+          error (id ^ ": side pivot is not present in side parent")
+    | literal :: rest ->
+        if not skipped_pivot && same_literal literal side_pivot then
+          check_side true rest
+        else
+          let substituted = subst_literal side_subst literal in
+          if complementary selected substituted
+             || clause_contains substituted result then
+            check_side skipped_pivot rest
+          else
+            error (id ^ ": side parent contains a literal not discharged by the selected literal or preserved in the result")
+  in
+  check_side false side
+
 let check_equality_resolution ~id ~equality_sides ~parent ~literal_index ~result =
   let literal = nth literal_index parent (id ^ " equality-resolution literal") in
   begin

@@ -106,6 +106,24 @@ val check_resolution :
   result:Vampire_kernel_syntax.clause ->
   unit
 
+val check_subsumption_resolution :
+  id:string ->
+  same_literal:
+    (Vampire_kernel_syntax.literal -> Vampire_kernel_syntax.literal -> bool) ->
+  complementary:
+    (Vampire_kernel_syntax.literal -> Vampire_kernel_syntax.literal -> bool) ->
+  clause_contains:
+    (Vampire_kernel_syntax.literal -> Vampire_kernel_syntax.clause -> bool) ->
+  clause_matches:
+    (Vampire_kernel_syntax.clause -> Vampire_kernel_syntax.clause -> bool) ->
+  main:Vampire_kernel_syntax.clause ->
+  side:Vampire_kernel_syntax.clause ->
+  selected:Vampire_kernel_syntax.literal ->
+  side_pivot:Vampire_kernel_syntax.literal ->
+  side_subst:(string * Syntax.tm) list ->
+  result:Vampire_kernel_syntax.clause ->
+  unit
+
 val check_equality_resolution :
   id:string ->
   equality_sides:(Syntax.tm -> (Syntax.tm * Syntax.tm) option) ->
