@@ -1624,3 +1624,36 @@ TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.s
 WORK_DIR=/project/tmp/and_prefix_validated_livepre_1784574259 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
 WORK_DIR=/project/tmp/prefix4_validated_livepre_1784574270 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
 ```
+
+## Live Basis Guard, 2026-07-20
+
+The next focused check separated the live logical basis from the contextual
+Skolem/choice replay problem.  A new diagnostic switch,
+`-vampirechecklivenotforall`, now checks the live Megalodon proof term for the
+native `not forall -> exists` transformation at representative witness types
+`set`, `prop`, and `set -> prop`.  The existing prop-choice check and this new
+not-forall check are now part of
+`tests/vampire_certificate/run_vampireaby_qualifying_guards.sh`.
+
+This matters because the current `and3I` failure still prints a deep
+application involving a live `not (...)` proposition, but the standalone live
+theorem itself checks after the hammer source has loaded.  The remaining
+blocker is therefore narrower than before: the proof term becomes invalid only
+after insertion into the contextual Skolem/choice transport replay for the
+supplied refutation.  That points back to the extracted branch-choice
+transport obligation and contextual body/witness shifting, not to a missing
+library theorem or a broken depth-zero `not_forall_exists` proof.
+
+Validation for this guard-only change:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+WORK_DIR=/project/tmp/and_prefix_livebasis_1784574765 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+WORK_DIR=/project/tmp/prefix4_livebasis_1784574765 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+```
+
+The honest frontier remains unchanged: `FalseE`, `andEL`, and `andER` pass
+under `-vampireabyqualifying`; `and3I` still fails closed.  This is a diagnostic
+and guardrail commit, not counted reconstruction progress.

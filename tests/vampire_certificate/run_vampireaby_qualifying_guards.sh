@@ -14,6 +14,27 @@ if [ ! -x bin/megalodon ]; then
   TMPDIR="$TMPDIR" ./makeopt
 fi
 
+bin/megalodon \
+  -allowincompleteqed \
+  -vampirechecklivepropchoice \
+  -vampirechecklivenotforall \
+  examples/hammer/100thms_12_h.mg \
+  >"$WORK_DIR/live_basis_checks.out" \
+  2>"$WORK_DIR/live_basis_checks.err"
+
+for expected in \
+  'Vampire native live prop-choice proof checked' \
+  'Vampire native live not-forall-exists proof checked for set' \
+  'Vampire native live not-forall-exists proof checked for prop' \
+  'Vampire native live not-forall-exists proof checked for set_prop'; do
+  if ! rg -q "$expected" "$WORK_DIR/live_basis_checks.out"; then
+    echo "live Vampire basis check did not report: $expected" >&2
+    cat "$WORK_DIR/live_basis_checks.out" >&2
+    cat "$WORK_DIR/live_basis_checks.err" >&2
+    exit 1
+  fi
+done
+
 if MEGALODON_CERT_ALLOW_TRANSITIONAL_PREPROCESS_KNOWN=1 \
     bin/megalodon \
       -vampireabyqualifying \

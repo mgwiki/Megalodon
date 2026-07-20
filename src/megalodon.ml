@@ -44,6 +44,7 @@ let vampirecertv1corepfcheck : bool ref = ref false;;
 let vampirecertv1preprocesspfcheck : bool ref = ref false;;
 let vampirecertv1emit : string option ref = ref None;;
 let vampirechecklivepropchoice : bool ref = ref false;;
+let vampirechecklivenotforall : bool ref = ref false;;
 let bushy = ref false;;
 let bushykdeps : (string,unit) Hashtbl.t = Hashtbl.create 10;;
 let bushyhdeps : (int,unit) Hashtbl.t = Hashtbl.create 10;;
@@ -2229,6 +2230,62 @@ let check_vampire_live_prop_choice_if_requested () =
             (tm_to_str proposition);
           flush stdout;
           raise (Failure "Vampire native live prop-choice proof did not check")
+    end
+
+let check_vampire_live_not_forall_if_requested () =
+  if !vampirechecklivenotforall then
+    begin
+      let check_one label tp =
+        let proposition =
+          All
+            (Ar (tp, Prop),
+             All
+               (Ar (tp, Prop),
+                Imp
+                  (All
+                     (tp,
+                      Imp
+                        (Imp (Ap (DB 2, DB 0), vampire_native_core_false_tm),
+                         Ap (DB 1, DB 0))),
+                   Imp
+                     (Imp (All (tp, Ap (DB 2, DB 0)), vampire_native_core_false_tm),
+                      vampire_native_core_exists tp (Ap (DB 1, DB 0))))))
+        in
+        match vampire_live_not_forall_exists_proof tp with
+        | None ->
+            Printf.printf
+              "Vampire native live not-forall-exists dependency xm: %s\n"
+              (if Hashtbl.mem sigknh "xm" then "present" else "missing");
+            Printf.printf
+              "Vampire native live not-forall-exists proof missing for %s: %s\n"
+              label
+              (tm_to_str proposition);
+            flush stdout;
+            raise (Failure "Vampire native live not-forall-exists proof missing")
+        | Some proof ->
+            begin match check_propofpf sigdelta sigtmof [] [] proof proposition [] with
+            | Some _ ->
+                Printf.printf
+                  "Vampire native live not-forall-exists proof checked for %s: %s\n"
+                  label
+                  (tm_to_str proposition);
+                flush stdout
+            | None ->
+                Printf.printf
+                  "Vampire native live not-forall-exists proof failed for %s: %s\n"
+                  label
+                  (tm_to_str proposition);
+                flush stdout;
+                raise (Failure "Vampire native live not-forall-exists proof did not check")
+            end
+      in
+      List.iter
+        (fun (label, tp) -> check_one label tp)
+        [
+          ("set", Set);
+          ("prop", Prop);
+          ("set_prop", Ar (Set, Prop));
+        ]
     end
 
 let rec vampire_live_basis_tm_expander = function
@@ -14220,6 +14277,8 @@ let _ =
           end
         else if Sys.argv.(!j) = "-vampirechecklivepropchoice" then
           vampirechecklivepropchoice := true
+        else if Sys.argv.(!j) = "-vampirechecklivenotforall" then
+          vampirechecklivenotforall := true
         else if Sys.argv.(!j) = "-fofallsubgoals" then
           begin
 	    if !j < i-2 then
@@ -14814,12 +14873,14 @@ let _ =
         begin
           check_main_file ();
           check_vampire_live_prop_choice_if_requested ();
+          check_vampire_live_not_forall_if_requested ();
           check_vampirecertv1_if_requested ()
         end
-      else if !vampirechecklivepropchoice then
+      else if !vampirechecklivepropchoice || !vampirechecklivenotforall then
         begin
           check_main_file ();
           check_vampire_live_prop_choice_if_requested ();
+          check_vampire_live_not_forall_if_requested ();
           check_vampirecertv1_if_requested ()
         end
       else
