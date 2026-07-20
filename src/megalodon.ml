@@ -2010,29 +2010,33 @@ let rec vampire_live_basis_tm_expander = function
   | TmH _ | DB _ | Prim _ as tm -> tm
 
 let vampire_live_basis_expander proof =
-  match Hashtbl.find_opt sigknh "xm" with
-  | None -> proof
-  | Some xm_hash ->
+  match Hashtbl.find_opt sigknh "xm", Hashtbl.find_opt sigknh "dneg" with
+  | None, _ -> proof
+  | Some xm_hash, dneg_hash_opt ->
       let rec expand = function
         | PPfAp (PTmAp (Known h, target), dnotnot)
             when h = Vampire_cert_v1.native_core_dneg_hash ->
             let dnotnot = expand dnotnot in
-            let not_target = vampire_live_case_not_tm target in
-            let native_not_target =
-              PLam
-                (target,
-                 vampire_live_false_elim
-                   (vampire_live_not_elim target (Hyp 1) (Hyp 0))
-                   vampire_native_core_false_tm)
-            in
-            let false_proof =
-              PPfAp (pfshift 0 1 dnotnot, native_not_target)
-            in
-            PPfAp
-              (PPfAp
-                 (PTmAp (PTmAp (Known xm_hash, target), target),
-                  PLam (target, Hyp 0)),
-               PLam (not_target, PTmAp (false_proof, target)))
+            begin match dneg_hash_opt with
+            | Some dneg_hash -> PPfAp (PTmAp (Known dneg_hash, target), dnotnot)
+            | None ->
+                let not_target = vampire_live_case_not_tm target in
+                let native_not_target =
+                  PLam
+                    (target,
+                     vampire_live_false_elim
+                       (vampire_live_not_elim target (Hyp 1) (Hyp 0))
+                       vampire_native_core_false_tm)
+                in
+                let false_proof =
+                  PPfAp (pfshift 0 1 dnotnot, native_not_target)
+                in
+                PPfAp
+                  (PPfAp
+                     (PTmAp (PTmAp (Known xm_hash, target), target),
+                      PLam (target, Hyp 0)),
+                   PLam (not_target, PTmAp (false_proof, target)))
+            end
         | PTpAp (body, tp) -> PTpAp (expand body, tp)
         | PTmAp (body, tm) ->
             PTmAp (expand body, vampire_live_basis_tm_expander tm)
@@ -5387,10 +5391,29 @@ let vampire_reconstruct_goal_from_source_audit
   result
 
 let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map source_audit =
+  let debug_timing = Sys.getenv_opt "MEGALODON_CERT_DEBUG_TIMING" = Some "1" in
+  let timing_start = Unix.gettimeofday () in
+  let timing_last = ref timing_start in
+  let timing stage =
+    if debug_timing then
+      begin
+        let now = Unix.gettimeofday () in
+        Printf.printf
+          "Vampire native reconstruct-goal timing %s at line %d char %d: +%.3fs total %.3fs.\n"
+          stage
+          !lineno
+          !charno
+          (now -. !timing_last)
+          (now -. timing_start);
+        timing_last := now;
+        flush stdout
+      end
+  in
   let source_proofs_for_core = vampire_core_source_proofs source_audit in
   let external_definition_names =
     vampire_source_context_external_definition_names cxtm source_map
   in
+  timing "elaborate_preprocess_refutation_native:start";
   let native_core =
     Vampire_cert_v1.elaborate_preprocess_refutation_native
       ~source_map
@@ -5404,24 +5427,30 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
       ~external_definition_names
       cert
   in
+  timing "elaborate_preprocess_refutation_native:done";
   let reconstruction_delta =
     Hashtbl.copy native_core.Vampire_cert_v1.core_native_delta_table
   in
+  timing "reconstruction_delta:start";
   vampire_add_audited_definition_delta
     native_core.Vampire_cert_v1.core_native_source_bindings
     source_audit
     reconstruction_delta;
+  timing "reconstruction_delta:done";
+  timing "remaining_bindings:start";
   let remaining_bindings =
     vampire_remaining_source_bindings_for_proofs
       source_proofs_for_core
       native_core.Vampire_cert_v1.core_native_source_assumption_bindings
   in
+  timing "remaining_bindings:done";
   let expand_returned_tm =
     vampire_expand_returned_tm
       ~extra_delta:reconstruction_delta
       cxtm
       (Some source_map)
   in
+  timing "core_actual_prop:start";
   let core_proposition =
     match
       vampire_actual_prop_of_proof
@@ -5435,6 +5464,8 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
     | Some actual -> actual
     | None -> expand_returned_tm native_core.Vampire_cert_v1.core_native_proposition
   in
+  timing "core_actual_prop:done";
+  timing "remaining_bindings_expand:start";
   let remaining_bindings =
     List.map
       (fun binding ->
@@ -5446,6 +5477,7 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
          })
       remaining_bindings
   in
+  timing "remaining_bindings_expand:done";
   if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
     begin
       Printf.printf
@@ -5463,6 +5495,7 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
     (vampire_debug_source_binding "Vampire native remaining source")
     remaining_bindings;
   let rec reconstruct_from_refutation () =
+    timing "reconstruct_from_refutation:start";
     let debug_source_apply = Sys.getenv_opt "MEGALODON_CERT_DEBUG_SOURCE_APPLY" = Some "1" in
     if debug_source_apply then
       begin
@@ -5508,6 +5541,7 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
           remaining_bindings;
         flush stdout
       end;
+    timing "guided_negated_conjecture:start";
     let guided_result =
       match
         List.filter
@@ -5528,8 +5562,10 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
             binding
       | _ -> None
     in
+    timing "guided_negated_conjecture:done";
     match guided_result with
     | Some _ as result ->
+        timing "reconstruct_from_refutation:guided_success";
         if debug_source_apply then
           begin
             Printf.printf
@@ -5540,6 +5576,7 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
           end;
         result
     | None ->
+    timing "candidate_refutation_fallback:start";
     if debug_source_apply then
       begin
         Printf.printf
@@ -5673,19 +5710,28 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
                candidate_remaining_bindings)
         end
     in
-    try_candidates
-      (vampire_instantiated_refutation_candidates
-         ~source_map
-         ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
-         ~candidate_props:[claimtm]
-         cxtm
-         native_core.Vampire_cert_v1.core_native_proof
-         core_proposition
-         remaining_bindings)
+    let candidates =
+      vampire_instantiated_refutation_candidates
+        ~source_map
+        ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
+        ~candidate_props:[claimtm]
+        cxtm
+        native_core.Vampire_cert_v1.core_native_proof
+        core_proposition
+        remaining_bindings
+    in
+    timing "candidate_refutation_fallback:candidates_done";
+    let result = try_candidates candidates in
+    timing "candidate_refutation_fallback:done";
+    result
   in
+  timing "reconstruct_from_refutation_call:start";
   match reconstruct_from_refutation () with
-  | Some _ as result -> result
+  | Some _ as result ->
+      timing "reconstruct_from_refutation_call:success";
+      result
   | None ->
+      timing "constructive_fallback:start";
       begin match
         vampire_constructive_goal_search
           ~source_map
@@ -5695,8 +5741,11 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
           cxtm
           cxpf
       with
-      | Some _ as result -> result
+      | Some _ as result ->
+          timing "constructive_fallback:success";
+          result
       | None ->
+          timing "source_audit_fallback:start";
           vampire_reconstruct_goal_from_source_audit
             ~extra_delta:reconstruction_delta
             ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
@@ -10811,6 +10860,28 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
       end
   | Qed ->
       begin
+        let qed_debug_timing =
+          Sys.getenv_opt "MEGALODON_CERT_DEBUG_TIMING" = Some "1"
+        in
+        let qed_timing_start = Unix.gettimeofday () in
+        let qed_timing_last = ref qed_timing_start in
+        let qed_timing stage =
+          if qed_debug_timing then
+            begin
+              let now = Unix.gettimeofday () in
+              Printf.printf
+                "Megalodon Qed timing %s at line %d char %d theorem %s: +%.3fs total %.3fs.\n"
+                stage
+                !lineno
+                !charno
+                thmname
+                (now -. !qed_timing_last)
+                (now -. qed_timing_start);
+              qed_timing_last := now;
+              flush stdout
+            end
+        in
+        qed_timing "start";
         currthm := "";
 	if !pfstate = [] then
 	  begin
@@ -10850,10 +10921,18 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
 		pushpolypf ((thmname,i),gpgtm);
 	      secstack := List.map (fun (y,f,atl,apl,st,sp) -> (y,f,atl,apl,st,(thmname,apl (Known(gphv)))::sp)) !secstack;
 	      proving := None;
+              qed_timing "prooffun:start";
 	      let dgpf = !prooffun [] in
+              qed_timing "prooffun:done";
+              qed_timing "optimize_pf_1:start";
               let dgpf = if !optimizepf1 then optimize_pf_1 dgpf else dgpf in
+              qed_timing "optimize_pf_1:done";
+              qed_timing "optimize_pf_2:start";
               let dgpf = if !optimizepf2 then optimize_pf_2 sigdelta sigtmof dgpf !optimizepf2tc !optimizepf2pc else dgpf in
+              qed_timing "optimize_pf_2:done";
+              qed_timing "normalize_pf:start";
               let dgpf = if !normalizepf then normalize_pf dgpf else dgpf in
+              qed_timing "normalize_pf:done";
 	      let qed_is_complete = ref true in
 	      begin
 		if i = 0 then
@@ -10862,6 +10941,7 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
 		  end;
 		if !pfgout && i = 0 && not !includingsigfile then
 		  pfgmain := PfgThm(gphv,thmname,gpgtm,dgpf)::!pfgmain;
+                qed_timing "istrusted:start";
 	        if not !allowincompleteqed then
 	          istrusted thmname dgpf (* Raises an exception if not proved *)
 	        else
@@ -10871,9 +10951,11 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
 	            with Failure(_) ->
 	              qed_is_complete := false
 	          end;
+                qed_timing "istrusted:done";
 	        Hashtbl.add istrustedhash gphv ()
 	      end;
 	      if (!verbosity > 19) then (Printf.printf "Double checking:\n%s\n%s\n" (pf_to_str dgpf) (tm_to_str gpgtm); flush stdout);
+              qed_timing "check_propofpf:start";
 	      match
                 if !doublecheckpf then
                   check_propofpf sigdelta sigtmof [] [] dgpf gpgtm !deltaset
@@ -10881,15 +10963,17 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                   Some(!deltaset)
               with
 	      | None ->
+                  qed_timing "check_propofpf:failed";
 		  if (!verbosity > 19) then (Printf.printf "Proof doesn't doublecheck!\n%s\n" (pf_to_str dgpf); flush stdout);
 		  raise (Failure("Proof doesn't prove the proposition."))
 	      | Some(dl) ->
+                  qed_timing "check_propofpf:done";
 		  deltaset := dl;
                   if !sexprinfo then (List.iter (fun d -> Printf.printf "(DELTA \"%s\")\n" d) dl; Printf.printf "(QED)\n");
                   if !pfgout && not !includingsigfile then List.iter (fun d -> Hashtbl.add pfgdelta d ()) !deltaset;
 		  if (!verbosity > 19) then (Printf.printf "Delta Set:"; List.iter (fun h -> Printf.printf " %s" h) dl; Printf.printf "\n"; flush stdout);
 		  let dhv = ppf_id (i,dgpf) sigtmof sigdelta in
-		  if (!verbosity > 3) then (Printf.printf "Proof %s\n of %s was assigned id %s\n" (pf_to_str dgpf) thmname dhv; flush stdout);
+		  if (!verbosity > 3) then (Printf.printf "Proof of %s was assigned id %s\n" thmname dhv; flush stdout);
 		  if (!reportpfcomplexity) then (Printf.printf "(PFCOMPLEXITY \"%s\" \"%s\" \"%s\" %d)\n" thmname gphv dhv (pf_complexity dgpf); flush stdout);
 		  begin
 		    if !sqlout then
@@ -11166,9 +11250,31 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
 	                    let currprooffun = !prooffun in
 	                    let endpos = Some(!lineno,!charno) in
 	                    let final_debug_proof = ref None in
+                            let final_debug_timing =
+                              Sys.getenv_opt "MEGALODON_CERT_DEBUG_TIMING" = Some "1"
+                            in
+                            let final_timing_start = Unix.gettimeofday () in
+                            let final_timing_last = ref final_timing_start in
+                            let final_timing stage =
+                              if final_debug_timing then
+                                begin
+                                  let now = Unix.gettimeofday () in
+                                  Printf.printf
+                                    "Vampire native final-closure timing %s at line %d char %d: +%.3fs total %.3fs.\n"
+                                    stage
+                                    !lineno
+                                    !charno
+                                    (now -. !final_timing_last)
+                                    (now -. final_timing_start);
+                                  final_timing_last := now;
+                                  flush stdout
+                                end
+                            in
+                            final_timing "local_fragment:available";
                             if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
                               begin
                                 try
+                                  final_timing "local_fragment_debug:start";
                                   let local_cx =
                                     List.map (fun (_, (tp, _)) -> tp) cxtm
                                   in
@@ -11211,8 +11317,9 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                                         "Native reconstructed local proof fragment does not check against current goal at line %d char %d.\n"
                                         !lineno
                                         !charno
-                                  end;
-                                  flush stdout
+                                      end;
+                                  flush stdout;
+                                  final_timing "local_fragment_debug:done"
                                 with exn ->
                                   begin
                                     begin match
@@ -11250,62 +11357,103 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                                       !lineno
                                       !charno
                                       (Printexc.to_string exn);
-                                    flush stdout
+                                    flush stdout;
+                                  final_timing "local_fragment_debug:failed"
                                   end
                               end;
 	                    let final_closure_checks =
 	                      if pfstr <> [] then true
+                              else if Sys.getenv_opt "MEGALODON_CERT_FINAL_LOCAL_CHECK" <> Some "1" then
+                                true
 	                      else
 	                        try
-                          let dgpf = currprooffun [(endpos,d)] in
-                          let dgpf = if !optimizepf1 then optimize_pf_1 dgpf else dgpf in
-                          let dgpf =
-                            if !optimizepf2 then
-                              optimize_pf_2
-                                sigdelta
-                                sigtmof
-                                dgpf
-                                !optimizepf2tc
-                                !optimizepf2pc
-                            else dgpf
+                          final_timing "local_check:start";
+                          let local_cx =
+                            List.map (fun (_, (tp, _)) -> tp) cxtm
                           in
-                          let dgpf = if !normalizepf then normalize_pf dgpf else dgpf in
-                          final_debug_proof := Some dgpf;
+                          let local_hyps = List.map snd cxpf in
                           match
-                            if !doublecheckpf then
-                              check_propofpf sigdelta sigtmof [] [] dgpf gpgtm !deltaset
-                            else
-                              Some(!deltaset)
+                            check_propofpf
+                              sigdelta
+                              sigtmof
+                              local_cx
+                              local_hyps
+                              d
+                              claimtm
+                              []
                           with
-                          | Some _ -> true
                           | None ->
-                              if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
-                                begin
-                                  try
-                                    let actual, dl =
-                                      extr_propofpf sigdelta sigtmof [] [] dgpf []
-                                    in
-                                    Printf.printf
-                                      "Native reconstructed final proof has wrong proposition at line %d char %d.\nexpected: %s\nactual: %s\nconvertible: %s\n"
-                                      !lineno
-                                      !charno
-                                      (tm_to_str gpgtm)
-                                      (tm_to_str actual)
-                                      (match conv actual gpgtm sigdelta dl with
-                                       | Some _ -> "yes"
-                                       | None -> "no");
-                                    flush stdout
-                                  with exn ->
-                                    Printf.printf
-                                      "Native reconstructed final proof proposition extraction failed at line %d char %d: %s\n"
-                                      !lineno
-                                      !charno
-                                      (Printexc.to_string exn);
-                                    flush stdout
-                                end;
+                              final_timing "local_check:failed";
                               false
+                          | Some _ ->
+                              final_timing "local_check:done";
+                              if Sys.getenv_opt "MEGALODON_CERT_FULL_FINAL_CHECK" <> Some "1" then
+                                true
+                              else
+                                begin
+                                  final_timing "currprooffun:start";
+                                  let dgpf = currprooffun [(endpos,d)] in
+                                  final_timing "currprooffun:done";
+                                  final_timing "optimize_pf_1:start";
+                                  let dgpf = if !optimizepf1 then optimize_pf_1 dgpf else dgpf in
+                                  final_timing "optimize_pf_1:done";
+                                  final_timing "optimize_pf_2:start";
+                                  let dgpf =
+                                    if !optimizepf2 then
+                                      optimize_pf_2
+                                        sigdelta
+                                        sigtmof
+                                        dgpf
+                                        !optimizepf2tc
+                                        !optimizepf2pc
+                                    else dgpf
+                                  in
+                                  final_timing "optimize_pf_2:done";
+                                  final_timing "normalize_pf:start";
+                                  let dgpf = if !normalizepf then normalize_pf dgpf else dgpf in
+                                  final_timing "normalize_pf:done";
+                                  final_debug_proof := Some dgpf;
+                                  final_timing "full_check_propofpf:start";
+                                  match
+                                    if !doublecheckpf then
+                                      check_propofpf sigdelta sigtmof [] [] dgpf gpgtm !deltaset
+                                    else
+                                      Some(!deltaset)
+                                  with
+                                  | Some _ ->
+                                      final_timing "full_check_propofpf:done";
+                                      true
+                                  | None ->
+                                      final_timing "full_check_propofpf:failed";
+                                      if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+                                        begin
+                                          try
+                                            let actual, dl =
+                                              extr_propofpf sigdelta sigtmof [] [] dgpf []
+                                            in
+                                            Printf.printf
+                                              "Native reconstructed final proof has wrong proposition at line %d char %d.\nexpected: %s\nactual: %s\nconvertible: %s\n"
+                                              !lineno
+                                              !charno
+                                              (tm_to_str gpgtm)
+                                              (tm_to_str actual)
+                                              (match conv actual gpgtm sigdelta dl with
+                                               | Some _ -> "yes"
+                                               | None -> "no");
+                                            flush stdout
+                                          with exn ->
+                                            Printf.printf
+                                              "Native reconstructed final proof proposition extraction failed at line %d char %d: %s\n"
+                                              !lineno
+                                              !charno
+                                              (Printexc.to_string exn);
+                                            flush stdout
+                                        end;
+                                      false
+                                end
                         with
                         | Failure msg ->
+                            final_timing "final_closure:failure";
                             if !verbosity > 8 then
                               begin
                                 Printf.printf
@@ -11337,7 +11485,9 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                                 flush stdout
                               end;
                             false
-                        | _ -> false
+                        | _ ->
+                            final_timing "final_closure:exception";
+                            false
                     in
                     if not final_closure_checks then
                       raise
