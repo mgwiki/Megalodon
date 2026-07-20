@@ -2656,8 +2656,48 @@ let vampire_debug_proof_variants prefix proof_delta symbol_table cx hyps expecte
          | Some detail ->
              Printf.printf "%s variant %d bad application: %s\n" prefix index detail
          | None -> ()
-         end)
+        end)
     variants
+
+let vampire_live_repair_direct_not_applications _proof_delta _symbol_table cx hyps proof =
+  let target_of_live_not prop =
+    match Hashtbl.find_opt sigtmh "not" with
+    | Some not_hash ->
+        begin match tm_beta_eta_norm prop with
+        | Ap (TmH hash, target) when hash = not_hash -> Some target
+        | _ -> None
+        end
+    | None -> None
+  in
+  let rec repair cxtm cxpf = function
+    | PPfAp (left, right) ->
+        let left = repair cxtm cxpf left in
+        let right = repair cxtm cxpf right in
+        begin match left with
+        | Hyp index ->
+            begin match List.nth_opt cxpf index with
+            | Some left_prop ->
+                begin match target_of_live_not left_prop with
+                | Some target -> vampire_live_not_elim target left right
+                | None -> PPfAp (left, right)
+                end
+            | None -> PPfAp (left, right)
+            end
+        | _ -> PPfAp (left, right)
+        end
+    | PTmAp (body, tm) -> PTmAp (repair cxtm cxpf body, tm)
+    | PTpAp (body, tp) -> PTpAp (repair cxtm cxpf body, tp)
+    | PLam (prop, body) -> PLam (prop, repair cxtm (prop :: cxpf) body)
+    | TLam (tp, body) ->
+        TLam
+          (tp,
+           repair
+             (tp :: cxtm)
+             (List.map (fun prop -> tmshift 0 1 prop) cxpf)
+             body)
+    | Hyp _ | Known _ as proof -> proof
+  in
+  repair cx hyps proof
 
 let vampire_check_current_goal_proof ?source_map ?extra_delta ?extra_symbols claimtm cxtm cxpf proof =
   let cx =
@@ -2743,6 +2783,14 @@ let vampire_check_current_goal_proof ?source_map ?extra_delta ?extra_symbols cla
   in
   let live_check proof =
     try
+      let proof =
+        vampire_live_repair_direct_not_applications
+          live_delta
+          live_symbol_table
+          cx
+          live_hyps
+          proof
+      in
       begin match extra_symbols with
       | Some extra_symbols ->
           begin match
@@ -3018,6 +3066,12 @@ let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxp
   let live_variant_result proof_for_check =
     let expanded_variants =
       vampire_expanded_prop_ext_variants ~delta:live_delta proof_expander proof_for_check
+      |> List.map
+           (vampire_live_repair_direct_not_applications
+              live_delta
+              live_symbol_table
+              cx
+              live_hyps)
     in
     match List.find_map live_check expanded_variants with
     | Some _ as result -> result

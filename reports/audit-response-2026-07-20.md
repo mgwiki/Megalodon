@@ -1727,3 +1727,37 @@ WORK_DIR=/project/tmp/prefix4_body_transport_1784575245 TMPDIR=/project/tmp VAMP
 ```
 
 The counted frontier remains unchanged.
+
+## Live Hypothesis `not` Application Repair, 2026-07-20
+
+The current `and3I` diagnostic repeatedly exposed proof applications where the
+left proof was a local hypothesis whose proposition was the live library
+`not A`, but the kernel application expected an implication-shaped proof.  A
+first extractor-based repair was rejected because it made the focused prefix4
+run enter a slow path.  The committed repair is deliberately narrower and
+linear in proof size: after live expansion, it rewrites only applications whose
+left proof is syntactically `Hyp i` and whose current local proof context says
+`Hyp i : not A`.
+
+Such applications are rewritten through the existing live `not` elimination
+adapter, so the argument conversion happens at the explicit
+`(A -> False) -> A -> False` boundary rather than by treating `not A` itself as
+a function.  The pass is applied only to live-expanded candidate proofs in the
+current-goal and proof-of-prop checkers.
+
+Validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+WORK_DIR=/project/tmp/and_prefix_livenotcheap_1784575531 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+WORK_DIR=/project/tmp/prefix4_livenotcheap_1784575531 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+```
+
+A debug prefix4 run showed the expected movement: the first live-expanded
+failure is now an implication argument mismatch in the contextual Skolem/choice
+proof, rather than the earlier direct "`left proposition is not implication:
+not (...)`" node.  The raw certificate-delta variant still prints the old
+failure, and `and3I` still fails closed.  The counted frontier remains three
+qualifying original-source proofs.
