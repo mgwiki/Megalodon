@@ -15287,6 +15287,7 @@ let native_core_reorder_skolem_substitution_by_source cert id subst =
 let rec native_core_direct_skolem_formula_proof
     ?(helper_formulas=[])
     ?(skolem_branch_choices=[])
+    ?(closing_variables=[])
     ?(normalize_formula_for_match=(fun _ tm -> tm))
     ?(register_witness_replacement=(fun _ _ -> ()))
     ?(ambient_shift=0)
@@ -15430,6 +15431,10 @@ let rec native_core_direct_skolem_formula_proof
   in
   let emitted_branch_choice_body
       local_depth replacements substitution_name target_witness tp =
+    let close_choice_body body =
+      if closing_variables = [] then body
+      else native_core_close_tm ~depth:(local_depth + 1) closing_variables body
+    in
     skolem_branch_choices
     |> List.find_map
          (fun choice ->
@@ -15448,6 +15453,7 @@ let rec native_core_direct_skolem_formula_proof
                 choice.Vampire_kernel_syntax.skolem_branch_choice_body
                 |> rewrite_witness_symbols_by_alias replacements 0
                 |> subst_named_tm variable
+                |> close_choice_body
               in
               let epsilon_witness =
                 Ap
@@ -16113,6 +16119,7 @@ let native_core_skolem_formula_proof
           native_core_direct_skolem_formula_proof
             ~helper_formulas
             ~skolem_branch_choices
+            ~closing_variables:(variables @ result_step_variables)
             ~normalize_formula_for_match
             ~register_witness_replacement
             ~ambient_shift:result_variable_count

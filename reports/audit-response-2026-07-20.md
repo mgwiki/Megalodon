@@ -199,3 +199,28 @@ commands (`FalseE`, `andEL`, and `andER`) under `-vampireabyqualifying`.
 This is useful progress toward the five-proof milestone, but it still should be
 reported as a small focused E1 candidate set, not as a revived 28-command or
 100-theorem result.
+
+## Qualifying Search-Cap Correction, 2026-07-20
+
+The next original-source hammer command, `and3I`, exposed two separate issues.
+First, the Skolem branch-choice elaborator consumed Vampire-emitted
+branch-choice bodies in a different variable representation from the already
+closed target formula.  The branch-choice body is now closed under the same live
+variables, at one additional local depth for the chosen witness binder, before
+it is used to build the proof term.  This removes the immediate
+`#P1`-versus-DB-variable orientation mismatch without adding a theorem-name
+special case.
+
+Second, after that representation mismatch was removed, qualifying mode could
+still spend tens of seconds in guided supplied-refutation search before failing
+`and3I`.  That is not acceptable as qualifying evidence and is contrary to the
+audit's deterministic replay requirement.  Qualifying mode now defaults the
+guided negated-conjecture reconstruction to one supplied-refutation attempt and
+depth one unless explicitly overridden by debugging environment variables.  A
+focused four-command probe still reconstructs `FalseE`, `andEL`, and `andER`,
+then fails at `and3I`, but it does so in about four seconds instead of entering
+the long search path.
+
+The frontier therefore remains three original-source qualifying proofs.  The
+next real proof milestone is still to make `and3I` close through deterministic
+source-goal composition, not to recover it by broad Megalodon-side search.

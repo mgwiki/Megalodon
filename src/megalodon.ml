@@ -5048,18 +5048,18 @@ let vampire_guided_negated_conjecture_reconstruction
     match Sys.getenv_opt "MEGALODON_CERT_GUIDED_SUPPLIED_REFUTATION_LIMIT" with
     | Some value ->
         begin
-          try int_of_string value with Failure _ -> 8
+          try int_of_string value with Failure _ -> if !vampireabyqualifying then 1 else 8
         end
-    | None -> 8
+    | None -> if !vampireabyqualifying then 1 else 8
   in
   let guided_supplied_refutation_attempts = ref 0 in
   let guided_depth_limit =
     match Sys.getenv_opt "MEGALODON_CERT_GUIDED_DEPTH_LIMIT" with
     | Some value ->
         begin
-          try int_of_string value with Failure _ -> 3
+          try int_of_string value with Failure _ -> if !vampireabyqualifying then 1 else 3
         end
-    | None -> 3
+    | None -> if !vampireabyqualifying then 1 else 3
   in
   let guided_limit_exhausted () =
     guided_supplied_refutation_attempt_limit >= 0
