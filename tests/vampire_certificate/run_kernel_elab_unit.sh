@@ -135,6 +135,39 @@ let () =
     "nested replacement should also rewrite proof propositions"
     (PLam (TmH "s1", Hyp 0))
     lambda_rewritten;
+  expect_equal
+    "close_named_term should close named variables in reverse binder order"
+    (Ap (DB 1, DB 0))
+    (Vampire_kernel_elab.close_named_term
+       ~canonical_name:(fun name -> Some name)
+       ["x", Prop; "y", Prop]
+       (Ap (TmH "x", TmH "y")));
+  expect_equal
+    "close_named_term should close # aliases through canonical names"
+    (DB 0)
+    (Vampire_kernel_elab.close_named_term
+       ~canonical_name:(function "#x" -> Some "x" | "x" -> Some "x" | _ -> None)
+       ["x", Prop]
+       (TmH "#x"));
+  expect_equal
+    "close_named_term should account for ambient term depth"
+    (Lam (Prop, Ap (DB 2, DB 0)))
+    (Vampire_kernel_elab.close_named_term
+       ~depth:1
+       ~canonical_name:(fun name -> Some name)
+       ["x", Prop]
+       (Lam (Prop, Ap (TmH "x", DB 0))));
+  expect_bool
+    "term_scoped_under should accept locally scoped de Bruijn variables"
+    (Vampire_kernel_elab.term_scoped_under
+       ~context_depth:1
+       (Lam (Prop, Ap (DB 1, DB 0))));
+  expect_bool
+    "term_scoped_under should reject escaping de Bruijn variables"
+    (not
+       (Vampire_kernel_elab.term_scoped_under
+          ~context_depth:1
+          (Ap (DB 1, DB 0))));
   let live_safe_entries =
     [
       {

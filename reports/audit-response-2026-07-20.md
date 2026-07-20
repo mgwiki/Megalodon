@@ -330,6 +330,31 @@ three original-source proofs, and the prefix4 guard still fails closed at
 logic has moved out of the large main module and is now directly testable in
 the extracted elaborator boundary.
 
+## Named-Variable Closing Extraction, 2026-07-20
+
+The scoped witness mismatch also depends on how Vampire-emitted named variables
+such as `X0`, `X1`, `sK0`, and `#sK0` are closed to de Bruijn indices before a
+proof term is checked.  That operation had remained embedded in
+`vampire_cert_v1.ml`, even though it is a deterministic small-kernel
+elaboration operation.
+
+This branch now moves the generic named-term closer and the de Bruijn scoping
+predicate into `vampire_kernel_elab.ml`.  The native importer still supplies
+Megalodon/Vampire-specific canonical-name normalization, but the indexing
+operation itself is now tested at the extracted boundary.  The new unit tests
+cover:
+
+- reverse binder order for named variables;
+- `#` aliases such as `#x`;
+- ambient term depth under binders;
+- acceptance and rejection of scoped de Bruijn terms.
+
+Again, this does not increase the counted proof frontier.  The first three
+original-source hammer commands still pass under `-vampireabyqualifying`, and
+`and3I` still fails closed.  It does, however, remove another core
+Skolem/choice scoping operation from the monolithic certificate importer before
+the next attempt to construct the explicit checked witness transport.
+
 ## Live Expected-Delta Consistency, 2026-07-20
 
 A subsequent focused `and3I` probe found one small live-checker inconsistency.

@@ -217,6 +217,66 @@ let replace_exact_terms_in_proof ~normalize replacements proof =
   in
   replace_pf 0 proof
 
+let close_named_term ?(depth=0) ~canonical_name variables tm =
+  let variable_count = List.length variables in
+  let rec variable_index name index = function
+    | [] -> None
+    | (candidate_name, _) :: rest ->
+        begin match variable_index name (index + 1) rest with
+        | Some found -> Some found
+        | None -> if candidate_name = name then Some index else None
+        end
+  in
+  let closeable_names name =
+    let stripped =
+      if String.length name > 1 && name.[0] = '#' then
+        [String.sub name 1 (String.length name - 1)]
+      else
+        []
+    in
+    name :: stripped
+  in
+  let variable_db_index local_depth name =
+    closeable_names name
+    |> List.find_map
+         (fun raw ->
+            match canonical_name raw with
+            | None -> None
+            | Some canonical ->
+                Option.map
+                  (fun outer_index ->
+                     local_depth + variable_count - outer_index - 1)
+                  (variable_index canonical 0 variables))
+  in
+  let rec close local_depth = function
+    | TmH name ->
+        begin match variable_db_index local_depth name with
+        | Some index -> DB index
+        | None -> TmH name
+        end
+    | TpAp (body, tp) -> TpAp (close local_depth body, tp)
+    | Ap (left, right) ->
+        Ap (close local_depth left, close local_depth right)
+    | Lam (tp, body) -> Lam (tp, close (local_depth + 1) body)
+    | Imp (left, right) ->
+        Imp (close local_depth left, close local_depth right)
+    | All (tp, body) -> All (tp, close (local_depth + 1) body)
+    | DB _ | Prim _ as tm -> tm
+  in
+  close depth tm
+
+let term_scoped_under ~context_depth tm =
+  let rec scoped local_depth = function
+    | DB index -> index < context_depth + local_depth
+    | TpAp (body, _) -> scoped local_depth body
+    | Ap (left, right) | Imp (left, right) ->
+        scoped local_depth left && scoped local_depth right
+    | Lam (_, body) | All (_, body) ->
+        scoped (local_depth + 1) body
+    | TmH _ | Prim _ -> true
+  in
+  scoped 0 tm
+
 type live_safe_delta_entry = {
   live_safe_delta_name : string;
   live_safe_delta_arity : int;

@@ -103,6 +103,18 @@ val replace_exact_terms_in_proof :
   Syntax.pf ->
   Syntax.pf
 
+val close_named_term :
+  ?depth:int ->
+  canonical_name:(string -> string option) ->
+  (string * Syntax.tp) list ->
+  Syntax.tm ->
+  Syntax.tm
+
+val term_scoped_under :
+  context_depth:int ->
+  Syntax.tm ->
+  bool
+
 type live_safe_delta_entry = {
   live_safe_delta_name : string;
   live_safe_delta_arity : int;

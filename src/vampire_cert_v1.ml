@@ -10179,62 +10179,14 @@ let rec native_core_normalize_bool_constants = function
   | DB _ | TmH _ | Prim _ as tm -> tm
 
 let native_core_close_tm ?(depth=0) variables tm =
-  let variable_count = List.length variables in
-  let rec variable_index index = function
-    | [] -> None
-    | (name, _) :: rest ->
-        begin match variable_index index rest with
-        | Some i -> Some (i + 1)
-        | None -> if name = index then Some 0 else None
-        end
-  in
-  let rec close depth = function
-    | TmH name ->
-        let closeable_names =
-          let stripped =
-            if String.length name > 1 && name.[0] = '#' then
-              [String.sub name 1 (String.length name - 1)]
-            else []
-          in
-          name :: stripped
-        in
-        let find_variable_name =
-          closeable_names
-          |> List.find_map
-               (fun raw ->
-                  Option.bind
-                    (native_core_ident_opt raw)
-                    (fun ident ->
-                       Option.map
-                         (fun index -> index)
-                         (variable_index ident variables)))
-        in
-        begin match find_variable_name with
-        | Some outer_index -> DB (depth + variable_count - outer_index - 1)
-        | None -> TmH name
-        end
-    | TpAp (m, a) -> TpAp (close depth m, a)
-    | Ap (m, n) -> Ap (close depth m, close depth n)
-    | Lam (a, body) -> Lam (a, close (depth + 1) body)
-    | Imp (m, n) -> Imp (close depth m, close depth n)
-    | All (a, body) -> All (a, close (depth + 1) body)
-    | tm -> tm
-  in
-  close depth (native_core_normalize_bool_constants tm)
+  Vampire_kernel_elab.close_named_term
+    ~depth
+    ~canonical_name:native_core_ident_opt
+    variables
+    (native_core_normalize_bool_constants tm)
 
 let native_core_tm_scoped_under context_depth tm =
-  let rec scoped local_depth = function
-    | DB index -> index < context_depth + local_depth
-    | TpAp (body, _) -> scoped local_depth body
-    | Ap (left, right)
-    | Imp (left, right) ->
-        scoped local_depth left && scoped local_depth right
-    | Lam (_, body)
-    | All (_, body) ->
-        scoped (local_depth + 1) body
-    | TmH _ | Prim _ -> true
-  in
-  scoped 0 tm
+  Vampire_kernel_elab.term_scoped_under ~context_depth tm
 
 let native_core_dependent_witness_definition variables dependencies epsilon_witness =
   native_core_close_tm (variables @ dependencies) epsilon_witness
