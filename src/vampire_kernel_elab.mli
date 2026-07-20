@@ -308,6 +308,27 @@ val skolem_branch_choice_for_witness :
   (Vampire_kernel_syntax.skolem_branch_contract
    * Vampire_kernel_syntax.skolem_branch_choice) option
 
+val skolem_branch_has_proposition_role :
+  string ->
+  Vampire_kernel_syntax.skolem_branch_contract ->
+  bool
+
+val skolem_branch_choice_matching_witness :
+  alias_names:(string -> string list) ->
+  string ->
+  Vampire_kernel_syntax.skolem_branch_contract ->
+  Vampire_kernel_syntax.skolem_branch_choice option
+
+val skolem_branch_contract_choice_for_witness :
+  alias_names:(string -> string list) ->
+  branch_matches_formula:(Syntax.tm -> Syntax.tm option -> bool) ->
+  witness:string ->
+  source:Syntax.tm ->
+  result:Syntax.tm ->
+  Vampire_kernel_syntax.skolem_branch_contract list ->
+  (Vampire_kernel_syntax.skolem_branch_contract
+   * Vampire_kernel_syntax.skolem_branch_choice option) option
+
 type skolem_branch_choice_instantiation = {
   skolem_choice_body : Syntax.tm;
   skolem_choice_predicate : Syntax.tm;

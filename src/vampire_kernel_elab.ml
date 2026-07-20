@@ -912,6 +912,60 @@ let skolem_branch_choice_for_witness
                     else
                       None))
 
+let skolem_branch_has_proposition_role role branch =
+  branch.skolem_branch_propositions
+  |> List.exists
+       (fun proposition ->
+          proposition.skolem_branch_prop_role = role)
+
+let skolem_branch_choice_matching_witness ~alias_names witness branch =
+  let witness_names = alias_names witness in
+  branch.skolem_branch_choices
+  |> List.find_opt
+       (fun choice ->
+          let choice_names =
+            alias_names choice.skolem_branch_choice_symbol
+          in
+          List.exists (fun name -> List.mem name choice_names) witness_names)
+
+let skolem_branch_contract_choice_for_witness
+    ~alias_names
+    ~branch_matches_formula
+    ~witness
+    ~source
+    ~result
+    branches =
+  let exact_matches =
+    branches
+    |> List.filter
+         (fun branch ->
+            skolem_branch_witness_symbols branch
+            |> List.sort_uniq String.compare
+            = [witness]
+            && branch_matches_formula
+                 source
+                 branch.skolem_branch_source_formula
+            && branch_matches_formula
+                 result
+                 branch.skolem_branch_target_formula
+            && skolem_branch_has_proposition_role "source" branch
+            && skolem_branch_has_proposition_role "target" branch)
+  in
+  match exact_matches with
+  | [branch] ->
+      Some
+        (branch,
+         skolem_branch_choice_matching_witness
+           ~alias_names
+           witness
+           branch)
+  | _ ->
+      skolem_branch_choice_for_witness
+        ~alias_names
+        branches
+        witness
+      |> Option.map (fun (branch, choice) -> branch, Some choice)
+
 type skolem_branch_choice_instantiation = {
   skolem_choice_body : tm;
   skolem_choice_predicate : tm;

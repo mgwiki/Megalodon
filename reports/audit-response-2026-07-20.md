@@ -1389,3 +1389,30 @@ TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.s
 WORK_DIR=/project/tmp/and_prefix_template_plan_extract_retry_1784570439 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
 WORK_DIR=/project/tmp/prefix4_template_plan_extract_retry_1784570420 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
 ```
+
+## Branch Contract Choice Selector Extraction, 2026-07-20
+
+The CPS Skolem replay path still had local logic for preferring an exact
+branch contract whose source formula, target formula, witness set, and
+source/target proposition roles matched the current transformation, then
+falling back to witness-only branch-choice selection.  That selector is now in
+`Vampire_kernel_elab.skolem_branch_contract_choice_for_witness`, with smaller
+helpers for branch proposition-role inspection and alias-aware choice matching.
+
+`vampire_cert_v1.ml` now delegates this deterministic branch/choice selection
+to the extracted elaborator and only performs the native-core adaptation around
+the returned contract.  This is intentionally not a proof-counting change: it
+does not enable the diagnostic template expansion path, does not add fallback
+search, and does not change the honest frontier.  The first three
+original-source hammer proofs still qualify, and the fourth theorem, `and3I`,
+still fails closed at the expected guard.
+
+Focused validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+WORK_DIR=/project/tmp/and_prefix_branch_selector_final_1784570773 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+WORK_DIR=/project/tmp/prefix4_branch_selector_final_1784570773 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+```

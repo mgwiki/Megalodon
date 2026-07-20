@@ -16552,36 +16552,14 @@ let native_core_skolem_refutation_cps_proof
         (native_core_normalize_bool_constants formula |> tm_beta_eta_norm)
     | None -> false
   in
-  let branch_has_proposition_role role branch =
-    branch.Vampire_kernel_syntax.skolem_branch_propositions
-    |> List.exists
-         (fun proposition ->
-            proposition.Vampire_kernel_syntax.skolem_branch_prop_role = role)
-  in
-  let matching_single_witness_branch_contract witness source result =
-    let matches =
-      skolem_branch_contracts
-      |> List.filter
-           (fun branch ->
-              branch_witness_symbols branch |> witness_set = [witness]
-              && branch_matches_formula
-                   source
-                   branch.Vampire_kernel_syntax.skolem_branch_source_formula
-              && branch_matches_formula
-                   result
-                   branch.Vampire_kernel_syntax.skolem_branch_target_formula
-              && branch_has_proposition_role "source" branch
-              && branch_has_proposition_role "target" branch)
-    in
-    match matches with
-    | [branch] -> Some branch
-    | _ -> None
-  in
-  let branch_choice_for_witness witness =
-    Vampire_kernel_elab.skolem_branch_choice_for_witness
+  let branch_contract_choice_for_witness witness source result =
+    Vampire_kernel_elab.skolem_branch_contract_choice_for_witness
       ~alias_names:native_core_symbol_name_aliases
+      ~branch_matches_formula
+      ~witness
+      ~source
+      ~result
       skolem_branch_contracts
-      witness
   in
   let debug_skolem_branch_candidates label term_depth proof_depth source result witnesses =
     if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1"
@@ -17428,28 +17406,7 @@ let native_core_skolem_refutation_cps_proof
           |> tm_beta_eta_norm
         in
         begin match
-          match matching_single_witness_branch_contract witness source result with
-          | Some branch ->
-              let branch_choice =
-                branch.Vampire_kernel_syntax.skolem_branch_choices
-                |> List.find_opt
-                     (fun choice ->
-                        let choice_names =
-                          native_core_symbol_name_aliases
-                            choice.Vampire_kernel_syntax.skolem_branch_choice_symbol
-                        in
-                        let witness_names =
-                          native_core_symbol_name_aliases witness
-                        in
-                        List.exists
-                          (fun name -> List.mem name choice_names)
-                          witness_names)
-              in
-              Some (branch, branch_choice)
-          | None ->
-              branch_choice_for_witness witness
-              |> Option.map
-                   (fun (branch, choice) -> (branch, Some choice))
+          branch_contract_choice_for_witness witness source result
         with
         | Some (branch, branch_choice) ->
             let branch_choice_witness_term =

@@ -512,7 +512,19 @@ let () =
             skolem_witness_term = Some (TmH "#s0");
           };
         ];
-      skolem_branch_propositions = [];
+      skolem_branch_propositions =
+        [
+          {
+            Vampire_kernel_syntax.skolem_branch_prop_index = 0;
+            skolem_branch_prop_role = "source";
+            skolem_branch_prop_formula = TmH "src";
+          };
+          {
+            Vampire_kernel_syntax.skolem_branch_prop_index = 1;
+            skolem_branch_prop_role = "target";
+            skolem_branch_prop_formula = TmH "dst";
+          };
+        ];
       skolem_branch_choices = [branch_choice];
     }
   in
@@ -527,6 +539,40 @@ let () =
        ~alias_names:aliases
        [branch_contract]
        "#s0");
+  expect_bool
+    "skolem_branch_has_proposition_role should inspect branch proposition roles"
+    (Vampire_kernel_elab.skolem_branch_has_proposition_role
+       "source"
+       branch_contract);
+  expect_equal
+    "skolem_branch_choice_matching_witness should select choices through aliases"
+    (Some branch_choice)
+    (Vampire_kernel_elab.skolem_branch_choice_matching_witness
+       ~alias_names:aliases
+       "#s0"
+       branch_contract);
+  expect_equal
+    "skolem_branch_contract_choice_for_witness should prefer exact source and target contracts"
+    (Some (branch_contract, Some branch_choice))
+    (Vampire_kernel_elab.skolem_branch_contract_choice_for_witness
+       ~alias_names:aliases
+       ~branch_matches_formula:(fun formula candidate ->
+         candidate = Some formula)
+       ~witness:"s0"
+       ~source:(TmH "src")
+       ~result:(TmH "dst")
+       [branch_contract]);
+  expect_equal
+    "skolem_branch_contract_choice_for_witness should fall back to witness-only choice selection"
+    (Some (branch_contract, Some branch_choice))
+    (Vampire_kernel_elab.skolem_branch_contract_choice_for_witness
+       ~alias_names:aliases
+       ~branch_matches_formula:(fun formula candidate ->
+         candidate = Some formula)
+       ~witness:"#s0"
+       ~source:(TmH "other_src")
+       ~result:(TmH "other_dst")
+       [branch_contract]);
   expect_equal
     "skolem_branch_choice_body should select, rewrite aliases, and bind the replaced variable"
     (Some (Ap (DB 0, TmH "a")))
