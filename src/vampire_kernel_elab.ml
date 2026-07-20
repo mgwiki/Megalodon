@@ -452,3 +452,172 @@ let skolem_branch_choice_body
                |> substitute_named_term variable)
           else
             None)
+
+type skolem_helper_record = {
+  skolem_helper_index : int;
+  skolem_helper_tps : tp list;
+  skolem_helper_source : tm;
+  skolem_helper_target : tm;
+}
+
+let skolem_helper_records formulas =
+  let rec peel_foralls tps = function
+    | All (tp, body) -> peel_foralls (tps @ [tp]) body
+    | Imp (source, target) -> Some (tps, source, target)
+    | _ -> None
+  in
+  formulas
+  |> List.mapi (fun index formula -> index, peel_foralls [] formula)
+  |> List.filter_map
+       (fun (index, helper) ->
+          match helper with
+          | Some (tps, source, target) ->
+              Some
+                {
+                  skolem_helper_index = index;
+                  skolem_helper_tps = tps;
+                  skolem_helper_source = source;
+                  skolem_helper_target = target;
+                }
+          | None -> None)
+
+let rec term_contains_exists_head exists_head = function
+  | Ap (TmH head, Lam _) when head = exists_head -> true
+  | TpAp (body, _) -> term_contains_exists_head exists_head body
+  | Ap (left, right) | Imp (left, right) ->
+      term_contains_exists_head exists_head left
+      || term_contains_exists_head exists_head right
+  | Lam (_, body) | All (_, body) ->
+      term_contains_exists_head exists_head body
+  | DB _ | TmH _ | Prim _ -> false
+
+let replace_exact_terms_in_term replacements tm =
+  let rec replace_top_opt depth tm =
+    match
+      replacements
+      |> List.find_opt
+           (fun (needle, _) -> tm = tmshift 0 depth needle)
+    with
+    | Some (_, replacement) -> tmshift 0 depth replacement
+    | None -> tm
+  in
+  let rec replace depth tm =
+    let replaced = replace_top_opt depth tm in
+    if replaced <> tm then replaced
+    else
+      match tm with
+      | TpAp (body, tp) -> TpAp (replace depth body, tp)
+      | Ap (left, right) -> Ap (replace depth left, replace depth right)
+      | Lam (tp, body) -> Lam (tp, replace (depth + 1) body)
+      | Imp (left, right) -> Imp (replace depth left, replace depth right)
+      | All (tp, body) -> All (tp, replace (depth + 1) body)
+      | DB _ | TmH _ | Prim _ -> tm
+  in
+  replace 0 tm
+
+let rec skolem_helper_target_compatible
+    ~normalize_at_depth
+    ~exists_head
+    local_depth
+    helper_target
+    target =
+  normalize_at_depth local_depth helper_target
+  = normalize_at_depth local_depth target
+  ||
+  match helper_target, target with
+  | All (helper_tp, helper_body), All (target_tp, target_body)
+      when helper_tp = target_tp ->
+      skolem_helper_target_compatible
+        ~normalize_at_depth
+        ~exists_head
+        (local_depth + 1)
+        helper_body
+        target_body
+  | Imp (helper_left, helper_right), Imp (target_left, target_right) ->
+      skolem_helper_target_compatible
+        ~normalize_at_depth
+        ~exists_head
+        local_depth
+        helper_left
+        target_left
+      &&
+      skolem_helper_target_compatible
+        ~normalize_at_depth
+        ~exists_head
+        local_depth
+        helper_right
+        target_right
+  | Ap (Ap (TmH "vampire_and", helper_left), helper_right),
+    Ap (Ap (TmH "vampire_and", target_left), target_right)
+  | Ap (Ap (TmH "vampire_or", helper_left), helper_right),
+    Ap (Ap (TmH "vampire_or", target_left), target_right) ->
+      skolem_helper_target_compatible
+        ~normalize_at_depth
+        ~exists_head
+        local_depth
+        helper_left
+        target_left
+      &&
+      skolem_helper_target_compatible
+        ~normalize_at_depth
+        ~exists_head
+        local_depth
+        helper_right
+        target_right
+  | Ap (TmH head, Lam _), _ when head = exists_head ->
+      true
+  | _ -> false
+
+let matching_skolem_helper
+    ~normalize_at_depth
+    ~raw_normalize
+    ~exists_head
+    ~local_depth
+    ~replacements
+    ~source
+    ~target
+    helpers =
+  let normalized_with_replacements local_depth replacements tm =
+    replace_exact_terms_in_term replacements tm
+    |> normalize_at_depth local_depth
+  in
+  let helper_target_matches_current helper_target target =
+    let helper_target = replace_exact_terms_in_term replacements helper_target in
+    let target = replace_exact_terms_in_term replacements target in
+    if term_contains_exists_head exists_head helper_target then
+      skolem_helper_target_compatible
+        ~normalize_at_depth
+        ~exists_head
+        local_depth
+        helper_target
+        target
+    else
+      raw_normalize helper_target = raw_normalize target
+  in
+  let rec matching = function
+    | [] -> None
+    | helper :: rest ->
+        if normalize_at_depth local_depth source
+           = normalized_with_replacements
+               local_depth
+               replacements
+               helper.skolem_helper_source
+           && helper_target_matches_current
+                helper.skolem_helper_target
+                target
+           && normalized_with_replacements
+                local_depth
+                replacements
+                helper.skolem_helper_source
+              <> normalized_with_replacements
+                   local_depth
+                   replacements
+                   helper.skolem_helper_target then
+          Some (helper, rest)
+        else
+          begin match matching rest with
+          | Some (found, remaining) -> Some (found, helper :: remaining)
+          | None -> None
+          end
+  in
+  matching helpers

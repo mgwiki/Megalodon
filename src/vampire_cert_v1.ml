@@ -15399,29 +15399,8 @@ let rec native_core_direct_skolem_formula_proof
              ^ tm_to_str target_witness);
         Some (body, (target_witness, epsilon_witness) :: replacements)
   in
-  let rec formula_contains_exists = function
-    | Ap (TmH "vampire_exists_prop", Lam _) -> true
-    | TpAp (tm, _) -> formula_contains_exists tm
-    | Ap (left, right) | Imp (left, right) ->
-        formula_contains_exists left || formula_contains_exists right
-    | Lam (_, body) | All (_, body) -> formula_contains_exists body
-    | DB _ | TmH _ | Prim _ -> false
-  in
   let helper_records =
-    if helper_formulas = [] then []
-    else
-      let rec peel_foralls tps = function
-        | All (tp, body) -> peel_foralls (tps @ [tp]) body
-        | Imp (source, target) -> Some (tps, source, target)
-        | _ -> None
-      in
-      helper_formulas
-      |> List.mapi (fun index formula -> index, peel_foralls [] formula)
-      |> List.filter_map
-           (fun (index, helper) ->
-              match helper with
-              | Some (tps, source, target) -> Some (index, tps, source, target)
-              | None -> None)
+    Vampire_kernel_elab.skolem_helper_records helper_formulas
   in
   let shape_tag tm =
     match tm with
@@ -15445,31 +15424,6 @@ let rec native_core_direct_skolem_formula_proof
        ^ shape_tag source
        ^ " target_shape="
        ^ shape_tag target);
-  let rec helper_target_compatible local_depth helper_target target =
-    normalized_formula_for_helper local_depth helper_target
-    = normalized_formula_for_helper local_depth target
-    ||
-    match helper_target, target with
-    | All (helper_tp, helper_body), All (target_tp, target_body)
-        when helper_tp = target_tp ->
-        helper_target_compatible (local_depth + 1) helper_body target_body
-    | Imp (helper_left, helper_right), Imp (target_left, target_right) ->
-        helper_target_compatible local_depth helper_left target_left
-        && helper_target_compatible local_depth helper_right target_right
-    | Ap (Ap (TmH "vampire_and", helper_left), helper_right),
-      Ap (Ap (TmH "vampire_and", target_left), target_right)
-    | Ap (Ap (TmH "vampire_or", helper_left), helper_right),
-      Ap (Ap (TmH "vampire_or", target_left), target_right) ->
-        helper_target_compatible local_depth helper_left target_left
-        && helper_target_compatible local_depth helper_right target_right
-    | Ap (TmH "vampire_exists_prop", Lam _), _ ->
-        true
-    | _ -> false
-  in
-  let normalized_formula_with_replacements local_depth replacements tm =
-    rewrite_witnesses replacements local_depth tm
-    |> normalized_formula_for_helper local_depth
-  in
   let replace_exact_terms_in_proof replacements proof =
     let normalize tm =
       tm
@@ -15481,29 +15435,16 @@ let rec native_core_direct_skolem_formula_proof
       replacements
       proof
   in
-  let helper_target_matches_current local_depth replacements helper_target target =
-    let helper_target = rewrite_witnesses replacements local_depth helper_target in
-    let target = rewrite_witnesses replacements local_depth target in
-    if formula_contains_exists helper_target then
-      helper_target_compatible local_depth helper_target target
-    else
-      raw_formula_for_helper helper_target = raw_formula_for_helper target
-  in
-  let rec matching_helper local_depth replacements source target helpers =
-    match helpers with
-    | [] -> None
-    | ((_, _, helper_source, helper_target) as helper) :: rest ->
-        if normalized_formula_for_helper local_depth source
-           = normalized_formula_with_replacements local_depth replacements helper_source
-           && helper_target_matches_current local_depth replacements helper_target target
-           && normalized_formula_with_replacements local_depth replacements helper_source
-              <> normalized_formula_with_replacements local_depth replacements helper_target then
-          Some (helper, rest)
-        else
-          begin match matching_helper local_depth replacements source target rest with
-          | Some (found, remaining) -> Some (found, helper :: remaining)
-          | None -> None
-          end
+  let matching_helper local_depth replacements source target helpers =
+    Vampire_kernel_elab.matching_skolem_helper
+      ~normalize_at_depth:normalized_formula_for_helper
+      ~raw_normalize:raw_formula_for_helper
+      ~exists_head:"vampire_exists_prop"
+      ~local_depth
+      ~replacements
+      ~source
+      ~target
+      helpers
   in
   let rec choose_basic local_depth current_target remaining_substitution source proof replacements used_choice =
     match source with
@@ -15619,7 +15560,17 @@ let rec native_core_direct_skolem_formula_proof
     let rec try_helpers helpers =
       match matching_helper local_depth replacements source target helpers with
       | None -> None
-      | Some ((helper_index, tps, helper_source, helper_target), remaining_helpers) ->
+      | Some (helper, remaining_helpers) ->
+          let helper_index =
+            helper.Vampire_kernel_elab.skolem_helper_index
+          in
+          let tps = helper.Vampire_kernel_elab.skolem_helper_tps in
+          let helper_source =
+            helper.Vampire_kernel_elab.skolem_helper_source
+          in
+          let helper_target =
+            helper.Vampire_kernel_elab.skolem_helper_target
+          in
           if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
             prerr_endline
               (id

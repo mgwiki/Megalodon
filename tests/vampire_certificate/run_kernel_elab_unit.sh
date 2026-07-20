@@ -171,7 +171,66 @@ let () =
        ~substitution_name:(Some "X")
        ~target_witness:(TmH "#s0")
        ~witness_type:Prop
-       [branch_choice])
+       [branch_choice]);
+  let helper_formula =
+    All
+      (Prop,
+       Imp
+         (Ap (TmH "vampire_exists_prop", Lam (Prop, DB 0)),
+          Ap (TmH "done", DB 0)))
+  in
+  let helper_records =
+    Vampire_kernel_elab.skolem_helper_records [TmH "ignored"; helper_formula]
+  in
+  expect_equal
+    "skolem_helper_records should peel forall prefixes and implication bodies"
+    [
+      {
+        Vampire_kernel_elab.skolem_helper_index = 1;
+        skolem_helper_tps = [Prop];
+        skolem_helper_source =
+          Ap (TmH "vampire_exists_prop", Lam (Prop, DB 0));
+        skolem_helper_target = Ap (TmH "done", DB 0);
+      }
+    ]
+    helper_records;
+  expect_bool
+    "term_contains_exists_head should find configured existential heads"
+    (Vampire_kernel_elab.term_contains_exists_head
+       "vampire_exists_prop"
+       helper_formula);
+  expect_equal
+    "replace_exact_terms_in_term should replace closed witnesses under binders"
+    (All (Prop, Ap (TmH "eps0", DB 0)))
+    (Vampire_kernel_elab.replace_exact_terms_in_term
+       [TmH "#s0", TmH "eps0"]
+       (All (Prop, Ap (TmH "#s0", DB 0))));
+  expect_bool
+    "skolem_helper_target_compatible should accept existential helper targets"
+    (Vampire_kernel_elab.skolem_helper_target_compatible
+       ~normalize_at_depth:(fun _ tm -> tm)
+       ~exists_head:"vampire_exists_prop"
+       0
+       (Ap (TmH "vampire_exists_prop", Lam (Prop, DB 0)))
+       (TmH "anything"));
+  begin match helper_records with
+  | [helper] ->
+      expect_equal
+        "matching_skolem_helper should return the selected helper and preserve the rest"
+        (Some (helper, []))
+        (Vampire_kernel_elab.matching_skolem_helper
+           ~normalize_at_depth:(fun _ tm -> tm)
+           ~raw_normalize:(fun tm -> tm)
+           ~exists_head:"vampire_exists_prop"
+           ~local_depth:0
+           ~replacements:[]
+           ~source:(Ap (TmH "vampire_exists_prop", Lam (Prop, DB 0)))
+           ~target:(Ap (TmH "done", DB 0))
+           helper_records)
+  | _ ->
+      prerr_endline "kernel_elab unit failure: helper_records shape";
+      exit 1
+  end
 EOF_OCAML
 
 ocamlopt \

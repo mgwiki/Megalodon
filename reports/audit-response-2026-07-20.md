@@ -347,3 +347,34 @@ fail-closed `and3I`.  The next extraction target should be the transformation
 driver that consumes these branch-choice bodies and produces the proof-term
 orientation, so the eventual `and3I` fix is explained by the small-kernel
 Skolem path rather than by local importer search.
+
+## Skolem Helper-Matching Extraction, 2026-07-20
+
+The helper-formula matcher used by Skolem replay has also moved into
+`vampire_kernel_elab.ml`.  The extracted code now:
+
+- peels quantified helper implications into explicit helper records;
+- detects configured existential-head occurrences;
+- performs exact witness-term replacement in formulas;
+- checks structural compatibility of helper targets under forall,
+  implication, conjunction, disjunction and existential targets;
+- selects the first matching helper while preserving the remaining helper list.
+
+`vampire_cert_v1.ml` still supplies the native-core normalizers and continues
+to build the actual Megalodon proof term, but the deterministic decision about
+which emitted helper implication applies is no longer local importer logic.
+
+The same focused validation passed after the extraction:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_certified_vampire_no_incomplete.sh
+TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+```
+
+This still does not increase the counted proof frontier.  Its purpose is to
+make the next `and3I` work happen inside a reviewable Skolem helper and
+branch-choice pipeline rather than in unstructured native replay code.

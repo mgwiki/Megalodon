@@ -147,3 +147,43 @@ val skolem_branch_choice_body :
   witness_type:Syntax.tp ->
   Vampire_kernel_syntax.skolem_branch_choice list ->
   Syntax.tm option
+
+type skolem_helper_record = {
+  skolem_helper_index : int;
+  skolem_helper_tps : Syntax.tp list;
+  skolem_helper_source : Syntax.tm;
+  skolem_helper_target : Syntax.tm;
+}
+
+val skolem_helper_records :
+  Syntax.tm list ->
+  skolem_helper_record list
+
+val term_contains_exists_head :
+  string ->
+  Syntax.tm ->
+  bool
+
+val replace_exact_terms_in_term :
+  (Syntax.tm * Syntax.tm) list ->
+  Syntax.tm ->
+  Syntax.tm
+
+val skolem_helper_target_compatible :
+  normalize_at_depth:(int -> Syntax.tm -> Syntax.tm) ->
+  exists_head:string ->
+  int ->
+  Syntax.tm ->
+  Syntax.tm ->
+  bool
+
+val matching_skolem_helper :
+  normalize_at_depth:(int -> Syntax.tm -> Syntax.tm) ->
+  raw_normalize:(Syntax.tm -> Syntax.tm) ->
+  exists_head:string ->
+  local_depth:int ->
+  replacements:(Syntax.tm * Syntax.tm) list ->
+  source:Syntax.tm ->
+  target:Syntax.tm ->
+  skolem_helper_record list ->
+  (skolem_helper_record * skolem_helper_record list) option
