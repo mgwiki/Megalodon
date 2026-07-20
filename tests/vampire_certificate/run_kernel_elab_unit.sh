@@ -164,6 +164,11 @@ let () =
     (Vampire_kernel_elab.skolem_witness_transport_symbol_replacements
        transports);
   expect_equal
+    "skolem_witness_transport_term_replacements should rewrite directly to the backed definition"
+    [closed_binder_witness, TmH "def1"]
+    (Vampire_kernel_elab.skolem_witness_transport_term_replacements
+       transports);
+  expect_equal
     "substitute_named_term should preserve vLAM binder convention"
     (Ap (TmH "vLAM", Ap (DB 0, TmH "z")))
     (Vampire_kernel_elab.substitute_named_term

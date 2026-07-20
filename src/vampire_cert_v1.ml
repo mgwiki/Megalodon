@@ -23094,9 +23094,18 @@ let elaborate_preprocess_refutation_native
 	                 candidate
                @ (branch_choice_candidate_replacements
                   |> List.map
-                       (fun (replacement_name, actual_choice, _definition,
-                             _local_template) ->
-                          (actual_choice, TmH replacement_name)))
+                       (fun (replacement_name, actual_choice, definition,
+                             local_template) ->
+                          {
+                            Vampire_kernel_elab.skolem_transport_name =
+                              replacement_name;
+                            skolem_transport_choice_occurrence =
+                              actual_choice;
+                            skolem_transport_definition = definition;
+                            skolem_transport_local_template =
+                              local_template;
+                          })
+                  |> Vampire_kernel_elab.skolem_witness_transport_term_replacements)
                |> List.sort_uniq compare
 	             in
              let branch_choice_expanded_candidate =

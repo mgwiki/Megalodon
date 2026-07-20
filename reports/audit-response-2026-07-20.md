@@ -739,3 +739,38 @@ another branch-choice matcher.  It is a scoped proof-term transport from the
 epsilon witness proposition to the Skolem-symbol proposition, or an equivalent
 proof construction that eliminates the Skolem symbol before the returned proof
 enters live Qed checking.
+
+## Direct Transport Rewrite, 2026-07-20
+
+The latest `vampire/megalodon6` adjustment removes one more dependency on
+temporary Skolem-symbol conversion during branch-choice cleanup.  The extracted
+kernel elaborator now exposes
+`skolem_witness_transport_term_replacements`, which rewrites a Vampire-emitted
+local choice occurrence directly to its contract-backed definition.  The
+importer uses this extracted operation when cleaning branch-choice witnesses,
+instead of first replacing the local choice occurrence by a temporary `sK`
+symbol and relying on a temporary delta entry for that symbol.
+
+This is intentionally not counted as new proof coverage.  It is a soundness and
+architecture cleanup in the direction requested by the audit: the deterministic
+transport fact is represented in `vampire_kernel_elab.ml`, and the monolithic
+importer only consumes the resulting exact rewrite list.  The focused
+validation passed:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+WORK_DIR=/project/tmp/prefix4_direct_transport.1784558035 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+WORK_DIR=/project/tmp/and_prefix_direct_transport.1784558035 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+```
+
+The result remains the same source-bound frontier: `FalseE`, `andEL`, and
+`andER` reconstruct in qualifying mode; `and3I` fails closed.  A debug probe at
+`/project/tmp/prefix4_direct_transport_debug.1784558056` confirms that the
+remaining failure is the deeper proof-level mismatch: the live checker still
+sees a proof application whose expected implication argument contains `#sK1`,
+while the available branch-choice proof is the checked Megalodon epsilon-choice
+proof over `Eps_prop (...)`.  The next change should therefore be an explicit
+small-kernel proof transport for that scoped proposition, not another cleanup
+or fallback.

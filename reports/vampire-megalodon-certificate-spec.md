@@ -404,6 +404,14 @@ default. The checker verifies that the choice symbol belongs to the
 branch-introduced witness set and that the emitted predicate/body/witness data
 are mutually consistent after alias rewriting.
 
+When a branch-choice occurrence is backed by such a contract, Megalodon now
+extracts a typed `skolem_witness_transport` record in `vampire_kernel_elab.ml`.
+That record has two deliberately separate projections.  The legacy symbol
+projection preserves the Skolem name and local template for diagnostics and
+compatibility.  The qualifying-oriented term projection rewrites the emitted
+local choice occurrence directly to the contract-backed definition, avoiding a
+cleanup path whose correctness depends on a temporary `sK` delta entry.
+
 This metadata is still not enough for a qualifying Skolem proof by itself.  A
 qualifying branch-choice step must also include, or deterministically elaborate,
 an explicit witness-transport proof object for the local equation
@@ -563,3 +571,13 @@ the focused prefix from three reconstructed commands to one.  The next design
 step is therefore a real small-kernel witness-transport proof object, not
 broader default search over local choice terms and not a blanket fail-fast
 toggle.
+
+Additional evidence on 2026-07-20: direct term projection for
+contract-backed branch-choice transports is implemented and unit-tested, and
+the focused qualifying harnesses still pass the three-proof frontier.  The
+original-source `and3I` prefix still fails closed.  Its current debug trace
+shows the remaining mismatch is proof-level, not selection-level: the expected
+implication argument contains `#sK1`, while the available checked proof was
+constructed through Megalodon's `Eps_prop` choice witness.  The next accepted
+milestone must therefore construct or emit the scoped proof transport between
+those propositions.

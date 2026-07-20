@@ -416,6 +416,14 @@ let skolem_witness_transport_symbol_replacements transports =
            transport.skolem_transport_local_template))
   |> List.sort_uniq compare
 
+let skolem_witness_transport_term_replacements transports =
+  transports
+  |> List.map
+       (fun transport ->
+          (transport.skolem_transport_choice_occurrence,
+           transport.skolem_transport_definition))
+  |> List.sort_uniq compare
+
 let substitute_named_term name tm =
   let rec subst depth = function
     | TmH candidate when candidate = name -> DB depth

@@ -143,6 +143,10 @@ val skolem_witness_transport_symbol_replacements :
   skolem_witness_transport list ->
   (string * Syntax.tm * Syntax.tm * Syntax.tm) list
 
+val skolem_witness_transport_term_replacements :
+  skolem_witness_transport list ->
+  (Syntax.tm * Syntax.tm) list
+
 val substitute_named_term :
   string ->
   Syntax.tm ->
