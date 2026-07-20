@@ -13832,7 +13832,6 @@ let native_core_cnf_formula_clause_proof
   in
   let result = List.map close_literal result in
   let result_prop = native_core_clause_prop id result in
-  let result_variable_count = List.length result_step_variables in
   let db_for_result_variable name tp =
     Vampire_kernel_elab.db_for_result_variable ~result_step_variables name tp
   in
@@ -13874,12 +13873,14 @@ let native_core_cnf_formula_clause_proof
     |> subst_tm parent_variable_args
   in
   let parent_proof =
-    List.fold_left
-      (fun proof (name, tp) ->
-         let arg = List.assoc name parent_variable_args in
-         PTmAp (proof, arg))
-      (if shift_parent_proof then pftmshift 0 result_variable_count proof else proof)
+    native_core_apply_parent_step_variables
+      ~shift_parent_proof
       parent_step_variables
+      result_step_variables
+      (fun name _ -> List.assoc_opt name parent_variable_args)
+      (fun name ->
+         id ^ ": native preprocess proof-term cnf_formula_clause cannot instantiate parent variable " ^ name)
+      proof
   in
   let quantifier_candidates pending tp =
     let rec collect acc prefix = function
