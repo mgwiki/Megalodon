@@ -342,7 +342,25 @@ let () =
       expect_equal
         "skolem_branch_choice_instantiation should return the emitted witnessed body"
         (Some (Ap (TmH "#s0", TmH "a")))
-        instantiation.Vampire_kernel_elab.skolem_choice_witnessed_body
+        instantiation.Vampire_kernel_elab.skolem_choice_witnessed_body;
+      let transport_terms =
+        Vampire_kernel_elab.skolem_choice_transport_terms
+          ~normalize:(fun tm -> tm)
+          ~eps_symbol:"eps"
+          instantiation
+      in
+      expect_equal
+        "skolem_choice_transport_terms should expose the epsilon witness"
+        (Ap (TmH "eps", Lam (Prop, Ap (DB 0, TmH "a"))))
+        transport_terms.Vampire_kernel_elab.skolem_transport_epsilon_witness;
+      expect_equal
+        "skolem_choice_transport_terms should instantiate the body with epsilon"
+        (Ap (Ap (TmH "eps", Lam (Prop, Ap (DB 0, TmH "a"))), TmH "a"))
+        transport_terms.Vampire_kernel_elab.skolem_transport_epsilon_body;
+      expect_equal
+        "skolem_choice_transport_terms should preserve the emitted witnessed body"
+        (Some (Ap (TmH "#s0", TmH "a")))
+        transport_terms.Vampire_kernel_elab.skolem_transport_witnessed_body
   | None ->
       prerr_endline
         "kernel_elab unit failure: skolem_branch_choice_instantiation should keep emitted predicate and body aligned";

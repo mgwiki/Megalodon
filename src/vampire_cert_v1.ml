@@ -15317,10 +15317,31 @@ let rec native_core_direct_skolem_formula_proof
               error
                 (id ^ ": emitted Skolem branch choice predicate is not a lambda")
         in
-        let epsilon_witness =
-          Ap (TmH (native_core_eps_symbol tp), predicate)
+        let transport_terms =
+          Vampire_kernel_elab.skolem_choice_transport_terms
+            ~normalize:(fun tm ->
+              tm
+              |> native_core_normalize_bool_constants
+              |> tm_beta_eta_norm)
+            ~eps_symbol:(native_core_eps_symbol tp)
+            {
+              Vampire_kernel_elab.skolem_choice_body = body;
+              skolem_choice_predicate = predicate;
+              skolem_choice_witnessed_body =
+                Option.map
+                  (fun witnessed_body ->
+                     if closing_variables = [] then witnessed_body
+                     else
+                       native_core_close_tm
+                         ~depth:local_depth
+                         closing_variables
+                         witnessed_body)
+                  instantiation.Vampire_kernel_elab.skolem_choice_witnessed_body;
+            }
         in
-        register_witness_replacement target_witness epsilon_witness;
+        register_witness_replacement
+          target_witness
+          transport_terms.Vampire_kernel_elab.skolem_transport_epsilon_witness;
         if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
           prerr_endline
             (id
@@ -15330,7 +15351,11 @@ let rec native_core_direct_skolem_formula_proof
              ^ string_of_int local_depth
              ^ " ambient_shift="
              ^ string_of_int ambient_shift);
-        Some (body, predicate, (target_witness, epsilon_witness) :: replacements)
+        Some
+          (body, predicate,
+           (target_witness,
+            transport_terms.Vampire_kernel_elab.skolem_transport_epsilon_witness)
+           :: replacements)
   in
   let helper_records =
     Vampire_kernel_elab.skolem_helper_records helper_formulas

@@ -582,6 +582,36 @@ type skolem_branch_choice_instantiation = {
   skolem_choice_witnessed_body : tm option;
 }
 
+type skolem_choice_transport_terms = {
+  skolem_transport_epsilon_witness : tm;
+  skolem_transport_epsilon_body : tm;
+  skolem_transport_witnessed_body : tm option;
+}
+
+let skolem_choice_transport_terms
+    ~normalize
+    ~eps_symbol
+    instantiation =
+  match instantiation.skolem_choice_predicate with
+  | Lam _ ->
+      let epsilon_witness =
+        Ap (TmH eps_symbol, instantiation.skolem_choice_predicate)
+        |> normalize
+      in
+      {
+        skolem_transport_epsilon_witness = epsilon_witness;
+        skolem_transport_epsilon_body =
+          tmsubst
+            instantiation.skolem_choice_body
+            0
+            epsilon_witness
+          |> normalize;
+        skolem_transport_witnessed_body =
+          Option.map normalize instantiation.skolem_choice_witnessed_body;
+      }
+  | _ ->
+      error "Skolem choice transport predicate is not a lambda"
+
 let lift_skolem_branch_choice_instantiation ~ambient_shift instantiation =
   if ambient_shift = 0 then instantiation
   else

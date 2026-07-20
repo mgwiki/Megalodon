@@ -203,6 +203,18 @@ type skolem_branch_choice_instantiation = {
   skolem_choice_witnessed_body : Syntax.tm option;
 }
 
+type skolem_choice_transport_terms = {
+  skolem_transport_epsilon_witness : Syntax.tm;
+  skolem_transport_epsilon_body : Syntax.tm;
+  skolem_transport_witnessed_body : Syntax.tm option;
+}
+
+val skolem_choice_transport_terms :
+  normalize:(Syntax.tm -> Syntax.tm) ->
+  eps_symbol:string ->
+  skolem_branch_choice_instantiation ->
+  skolem_choice_transport_terms
+
 val lift_skolem_branch_choice_instantiation :
   ambient_shift:int ->
   skolem_branch_choice_instantiation ->
