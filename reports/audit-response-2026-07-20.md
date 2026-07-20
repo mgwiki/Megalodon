@@ -104,10 +104,15 @@ kept deliberately architectural rather than coverage-driven:
 - The shared `open_step_theorem` proof-term operation was moved from
   `vampire_cert_v1.ml` into `vampire_kernel_elab.ml`; the importer now only
   supplies certificate-specific variable lists and term-closing logic.
+- Skolem replay now uses the shared result-variable lookup helpers in
+  `vampire_kernel_elab.ml` instead of carrying a local duplicate.
 - The validating checks were focused: both FOOL fixtures pass, the valid
   derived-resolution open-step proof term still checks, the dropped-parent
   open-step regression still fails closed, and the existing strict smoke case
   still passes.
+- The Skolem lookup extraction was validated with the direct Skolem preprocess
+  fixture, the `hammer.1032.16` preprocess fixture, and the existing 28-step
+  strict smoke case.
 
 This still does not make the project complete, and it does not rehabilitate the
 old 28-command prefix as E1 evidence.  It is, however, the intended correction
