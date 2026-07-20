@@ -2286,3 +2286,29 @@ Validation:
 TMPDIR=/project/tmp ./makeopt
 WORK_DIR=/project/tmp/prefix9_live_actual2_1784582382 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire MEGALODON_CERT_DEBUG=1 MEGALODON_CERT_DEBUG_GUIDED=1 MEGALODON_CERT_DEBUG_SUPPLIED=1 MEGALODON_CERT_DEBUG_SOURCE_APPLY=1 MEGALODON_CERT_DEBUG_LIVE_SAFE_DELTA=1 tests/vampire_reconstruction/run_live_hammer_prefix9_failclosed_qualifying.sh
 ```
+
+## Source-Local Depth Diagnostic, 2026-07-20 Late
+
+I added one more fail-closed diagnostic to the live proof checker: bad
+applications now report the term-context depth and proof-context depth at the
+first mismatching application.  The focused `or3E` run reports the same
+`DB index 12 <> 15` mismatch at `term_depth=11` and `proof_depth=8`.
+
+This rules out the simple hypothesis that the mismatch is only caused by the
+two-pass returned-proof expander.  I tested a temporary single-pass expansion
+variant for the qualifying pre-expanded refutation, and the frontier was
+unchanged: the first eight commands still reconstructed, while `or3E` still
+failed closed with the same de Bruijn difference.
+
+The current best diagnosis is therefore narrower: the branch-choice/Skolem
+transport candidate contains a source-local body that has been shifted by the
+three original source locals twice.  The next proof-changing patch should be
+in the deterministic branch-choice transport/localization boundary, not in a
+generic post-hoc DB rebasing repair.
+
+Validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+WORK_DIR=/project/tmp/prefix9_ctxdiag_1784582926 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire MEGALODON_CERT_DEBUG=1 MEGALODON_CERT_DEBUG_GUIDED=1 MEGALODON_CERT_DEBUG_SUPPLIED=1 MEGALODON_CERT_DEBUG_SOURCE_APPLY=1 MEGALODON_CERT_DEBUG_LIVE_SAFE_DELTA=1 tests/vampire_reconstruction/run_live_hammer_prefix9_failclosed_qualifying.sh
+```

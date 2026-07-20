@@ -2554,6 +2554,12 @@ let vampire_debug_bad_proof_application proof_delta symbol_table cx hyps proof =
     ^ name_notes
     ^ "]"
   in
+  let context_note cxtm cxpf =
+    "; term_depth="
+    ^ string_of_int (List.length cxtm)
+    ^ "; proof_depth="
+    ^ string_of_int (List.length cxpf)
+  in
   let rec find path cxtm cxpf proof =
     match proof with
     | PPfAp (left, right) ->
@@ -2594,6 +2600,7 @@ let vampire_debug_bad_proof_application proof_delta symbol_table cx hyps proof =
                                    ^ short_pf left
                                    ^ "; right proof "
                                    ^ short_pf right
+                                   ^ context_note cxtm cxpf
                                    ^ delta_note expected right_prop dl2)
                             end
                           with exn ->
