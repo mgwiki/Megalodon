@@ -3163,6 +3163,7 @@ let vampire_actual_prop_of_proof ?source_map ?extra_delta ?extra_symbols cxtm cx
   in
   match live_result with
   | Some actual -> Some actual
+  | None when !vampireabyqualifying && extra_symbols <> None -> None
   | None ->
   let hyps =
     List.map

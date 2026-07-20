@@ -401,6 +401,13 @@ TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/
 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
 ```
 
+Follow-up hardening: in `-vampireabyqualifying` mode, if this live-safe actual
+proposition extraction fails while Vampire extra symbols are present, the
+oracle now returns `None` instead of falling back to the full certificate-delta
+proposition.  This preserves the three-proof frontier and keeps `and3I` at the
+same fail-closed guard, but removes another certificate-local steering route
+from counted qualifying reconstruction.
+
 This still does not increase the counted proof frontier.  Its purpose is to
 make the next `and3I` work happen inside a reviewable Skolem helper and
 branch-choice pipeline rather than in unstructured native replay code.
