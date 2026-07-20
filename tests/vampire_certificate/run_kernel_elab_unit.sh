@@ -36,6 +36,16 @@ let () =
     "nested term replacement should revisit parent after rewriting children"
     (PTmAp (Known "k", TmH "s1"))
     rewritten;
+  let outer_first_rewritten =
+    Vampire_kernel_elab.replace_exact_terms_in_proof
+      ~normalize:(fun tm -> tm)
+      [inner_choice, TmH "s0"; outer_before_inner, TmH "s1"]
+      proof
+  in
+  expect_equal
+    "outer exact replacement should fire before child rewrites change the match"
+    (PTmAp (Known "k", TmH "s1"))
+    outer_first_rewritten;
   let lambda_proof = PLam (outer_before_inner, Hyp 0) in
   let lambda_rewritten =
     Vampire_kernel_elab.replace_exact_terms_in_proof

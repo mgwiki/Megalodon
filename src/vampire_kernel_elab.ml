@@ -125,7 +125,7 @@ let open_step_theorem_body_in_result_context
     parent_step_variables
 
 let replace_exact_terms_in_proof ~normalize replacements proof =
-  let rec replace_top depth tm =
+  let rec replace_top_opt depth tm =
     match
       replacements
       |> List.find_opt
@@ -136,20 +136,23 @@ let replace_exact_terms_in_proof ~normalize replacements proof =
     | None -> tm
   in
   let rec replace_tm depth tm =
-    let rewritten =
-      match tm with
-      | TmH _ | DB _ | Prim _ -> tm
-      | TpAp (body, tp) -> TpAp (replace_tm depth body, tp)
-      | Ap (left, right) ->
-          Ap (replace_tm depth left, replace_tm depth right)
-      | Lam (tp, body) ->
-          Lam (tp, replace_tm (depth + 1) body)
-      | Imp (left, right) ->
-          Imp (replace_tm depth left, replace_tm depth right)
-      | All (tp, body) ->
-          All (tp, replace_tm (depth + 1) body)
-    in
-    replace_top depth rewritten
+    let replaced = replace_top_opt depth tm in
+    if replaced <> tm then replaced
+    else
+      let rewritten =
+        match tm with
+        | TmH _ | DB _ | Prim _ -> tm
+        | TpAp (body, tp) -> TpAp (replace_tm depth body, tp)
+        | Ap (left, right) ->
+            Ap (replace_tm depth left, replace_tm depth right)
+        | Lam (tp, body) ->
+            Lam (tp, replace_tm (depth + 1) body)
+        | Imp (left, right) ->
+            Imp (replace_tm depth left, replace_tm depth right)
+        | All (tp, body) ->
+            All (tp, replace_tm (depth + 1) body)
+      in
+      replace_top_opt depth rewritten
   in
   let rec replace_pf depth proof =
     match proof with
