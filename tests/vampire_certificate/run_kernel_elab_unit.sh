@@ -102,13 +102,35 @@ let () =
        ["#s0", outer_before_inner]
        proof);
   expect_equal
-    "registered_witness_term_replacements should also use emitted witness-symbol contracts"
-    [Ap (TmH "eps", TmH "other"), TmH "#s1"]
+    "registered_witness_term_replacements should not guess from symbol-only matches"
+    []
     (Vampire_kernel_elab.registered_witness_term_replacements
        ~normalize:(fun tm -> tm)
        ~witness_symbols:choice_symbols
        ["#s1", Ap (TmH "eps", TmH "other")]
        proof);
+  expect_equal
+    "contract_backed_branch_choice_term_replacements should reject binder-dependent local templates"
+    []
+    (Vampire_kernel_elab.contract_backed_branch_choice_term_replacements
+       ~normalize:(fun tm -> tm)
+       ~choice_symbols:choice_symbols
+       ~replacement_names:["#s1"]
+       ~definition:(TmH "def1")
+       binder_proof);
+  let closed_binder_witness = Ap (TmH "eps", TmH "closed") in
+  let closed_binder_proof =
+    TLam (Prop, PTmAp (Known "k", closed_binder_witness))
+  in
+  expect_equal
+    "contract_backed_branch_choice_term_replacements should collect liftable scoped local templates"
+    [("#s1", closed_binder_witness, TmH "def1", closed_binder_witness)]
+    (Vampire_kernel_elab.contract_backed_branch_choice_term_replacements
+       ~normalize:(fun tm -> tm)
+       ~choice_symbols:choice_symbols
+       ~replacement_names:["#s1"]
+       ~definition:(TmH "def1")
+       closed_binder_proof);
   expect_equal
     "substitute_named_term should preserve vLAM binder convention"
     (Ap (TmH "vLAM", Ap (DB 0, TmH "z")))

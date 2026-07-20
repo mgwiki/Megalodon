@@ -116,6 +116,14 @@ val registered_witness_term_replacements :
   Syntax.pf ->
   (Syntax.tm * Syntax.tm) list
 
+val contract_backed_branch_choice_term_replacements :
+  normalize:(Syntax.tm -> Syntax.tm) ->
+  choice_symbols:string list ->
+  replacement_names:string list ->
+  definition:Syntax.tm ->
+  Syntax.pf ->
+  (string * Syntax.tm * Syntax.tm * Syntax.tm) list
+
 val substitute_named_term :
   string ->
   Syntax.tm ->

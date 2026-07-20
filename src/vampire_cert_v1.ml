@@ -23158,26 +23158,13 @@ let elaborate_preprocess_refutation_native
                   end;
                   if branch_choice_justified
                      && List.length staged_branch_replacements_for_entry = 1 then begin
-                    let actual_choices =
-                      native_core_pf_choice_witness_terms_with_depth candidate
-                    in
                     let tentative =
-                      replacement_names
-                      |> List.concat_map
-                           (fun replacement_name ->
-                              actual_choices
-                              |> List.filter_map
-                                   (fun (depth, actual_choice) ->
-                                      try
-                                        let local_template =
-                                          tmshift 0 (-depth) actual_choice
-                                          |> tm_beta_eta_norm
-                                        in
-                                        Some
-                                          (replacement_name, actual_choice,
-                                           closed_witness, local_template)
-                                      with _ -> None))
-                      |> List.sort_uniq compare
+                      Vampire_kernel_elab.contract_backed_branch_choice_term_replacements
+                        ~normalize:(fun tm -> tm_beta_eta_norm tm)
+                        ~choice_symbols:native_core_choice_witness_symbols
+                        ~replacement_names
+                        ~definition:closed_witness
+                        candidate
                     in
                     branch_choice_candidate_replacements :=
                       tentative @ !branch_choice_candidate_replacements

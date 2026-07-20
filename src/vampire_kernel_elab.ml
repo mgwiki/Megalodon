@@ -325,31 +325,56 @@ let enclosing_terms_with_symbol_depth ~normalize names proof =
 
 let registered_witness_term_replacements
     ~normalize
-    ~witness_symbols
+    ~witness_symbols:_
     replacements
     proof =
-  let rec tm_contains_symbol name = function
-    | TmH candidate -> candidate = name
-    | TpAp (body, _) -> tm_contains_symbol name body
-    | Ap (left, right) | Imp (left, right) ->
-        tm_contains_symbol name left || tm_contains_symbol name right
-    | Lam (_, body) | All (_, body) -> tm_contains_symbol name body
-    | DB _ | Prim _ -> false
-  in
   replacements
   |> List.filter_map
        (fun (name, witness) ->
           let witness = normalize witness in
-          let witness_choice_symbols =
-            witness_symbols
-            |> List.filter (fun symbol -> tm_contains_symbol symbol witness)
-          in
-          if proof_contains_exact_term ~normalize witness proof
-             || (witness_choice_symbols <> []
-                 && proof_contains_term_symbol witness_choice_symbols proof) then
+          if proof_contains_exact_term ~normalize witness proof then
             Some (witness, TmH name)
           else
             None)
+  |> List.sort_uniq compare
+
+let contract_backed_branch_choice_term_replacements
+    ~normalize
+    ~choice_symbols
+    ~replacement_names
+    ~definition
+    proof =
+  let rec can_shift_down amount cutoff = function
+    | DB index -> index < cutoff || index >= cutoff + amount
+    | TpAp (body, _) -> can_shift_down amount cutoff body
+    | Ap (left, right) | Imp (left, right) ->
+        can_shift_down amount cutoff left
+        && can_shift_down amount cutoff right
+    | Lam (_, body) | All (_, body) ->
+        can_shift_down amount (cutoff + 1) body
+    | TmH _ | Prim _ -> true
+  in
+  enclosing_terms_with_symbol_depth
+    ~normalize
+    choice_symbols
+    proof
+  |> List.concat_map
+       (fun (depth, actual_choice) ->
+          replacement_names
+          |> List.filter_map
+               (fun replacement_name ->
+                  try
+                    if can_shift_down depth 0 actual_choice then
+                      let local_template =
+                        tmshift 0 (-depth) actual_choice
+                        |> normalize
+                      in
+                      Some
+                        (replacement_name, actual_choice, definition,
+                         local_template)
+                    else
+                      None
+                  with _ -> None))
   |> List.sort_uniq compare
 
 let substitute_named_term name tm =

@@ -524,3 +524,35 @@ construct the live witness proof at the same scoped proposition as the emitted
 branch-choice predicate, inside the extracted small-kernel elaboration path.
 No broader candidate search, source-audit fallback, or monolithic Skolem
 heuristic should be counted as progress.
+
+## Exact Choice-Replacement Guard, 2026-07-20
+
+The next correction was deliberately conservative.  The extracted
+`registered_witness_term_replacements` helper no longer treats "the proof
+contains some choice symbol also mentioned by a registered witness definition"
+as enough evidence to build a replacement.  It now emits a replacement only
+when the registered witness term itself occurs exactly after normalization.
+This removes a symbol-only guessing path from the reusable Skolem/choice
+elaboration boundary.
+
+The contract-backed branch-choice candidate collector was also moved into
+`vampire_kernel_elab.ml`.  The extracted collector now refuses to lift a choice
+term out of a term-binder scope when that term depends on the binder; the unit
+test covers both the rejected binder-dependent case and a liftable closed
+choice term.  `vampire_cert_v1.ml` still adapts native-core state and checks the
+candidate proof, but it no longer owns this traversal.
+
+This is not new proof coverage.  It is an audit-aligned reduction in implicit
+Megalodon-side guessing and a guard against manufacturing invalid de Bruijn
+templates.  The focused checks still show the honest frontier:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+```
+
+The first three original hammer commands still pass in qualifying mode, and
+`and3I` still fails closed at the Skolem/choice proof-of-proposition boundary.
