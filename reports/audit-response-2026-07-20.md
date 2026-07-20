@@ -556,3 +556,34 @@ TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/
 
 The first three original hammer commands still pass in qualifying mode, and
 `and3I` still fails closed at the Skolem/choice proof-of-proposition boundary.
+
+## Live Actual-Proposition Alignment, 2026-07-20
+
+The next focused probe showed that the goal-reconstruction wrapper could still
+ask `vampire_actual_prop_of_proof` for the proposition of a proof under the full
+certificate delta, even though the final proof checker would later require the
+same proof to survive live-safe expansion.  That is a bad steering signal for
+Skolem/choice cases: it can guide reconstruction with a proposition containing
+certificate-local Skolem symbols while the live proof body has already expanded
+those definitions to choice witnesses.
+
+`vampire_actual_prop_of_proof` now first tries to extract the actual
+proposition from the live-expanded proof under the live-safe extra delta when
+Vampire supplies extra certificate symbols.  It rejects both proof terms and
+actual propositions that still mention certificate-only symbols before falling
+back to the older certificate-delta extraction path.
+
+This again does not close `and3I`.  The current failure still shows that the
+direct Skolem proof shape obtains `P (Eps P)` from the choice axiom and then
+relies on certificate-local definitional equality to use it as `P sK`.  The
+remaining fix must make that local definition explicit in the small-kernel
+Skolem transformation or avoid returning a proof whose live checking depends on
+the `sK := Eps P` delta.  The bounded validation after this change was:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+```

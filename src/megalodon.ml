@@ -3071,6 +3071,99 @@ let vampire_actual_prop_of_proof ?source_map ?extra_delta ?extra_symbols cxtm cx
            if not (Hashtbl.mem symbol_table h) then Hashtbl.add symbol_table h v)
         extra_symbols
   end;
+  let live_delta = vampire_source_context_delta_with_locals cxtm in
+  let live_symbol_table =
+    match source_map with
+    | None -> Hashtbl.copy sigtmof
+    | Some source_map -> vampire_source_context_symbol_table_with_source_map source_map
+  in
+  let empty_extra_delta = Hashtbl.create 1 in
+  let certificate_delta =
+    match extra_delta with
+    | Some extra_delta -> extra_delta
+    | None -> empty_extra_delta
+  in
+  let returned_body_expander tm =
+    vampire_live_basis_tm_expander
+      (vampire_expand_returned_tm cxtm source_map tm)
+  in
+  let live_extra_delta =
+    match extra_delta, extra_symbols with
+    | Some extra_delta, Some extra_symbols ->
+        Some
+          (vampire_live_safe_extra_delta
+             ~body_expander:returned_body_expander
+             live_symbol_table
+             extra_symbols
+             extra_delta)
+    | Some extra_delta, None -> Some extra_delta
+    | None, _ -> None
+  in
+  let live_hyps =
+    List.map
+      (vampire_expand_returned_tm ?extra_delta:live_extra_delta cxtm source_map)
+      hyps
+  in
+  let live_result =
+    match extra_symbols with
+    | None -> None
+    | Some extra_symbols ->
+        let proof_expander =
+          vampire_expand_returned_proof
+            ?extra_delta:live_extra_delta
+            cxtm
+            source_map
+        in
+        let rec try_live_variants = function
+          | [] -> None
+          | proof_for_check :: rest ->
+              let expanded_variants =
+                vampire_expanded_prop_ext_variants
+                  ~delta:live_delta
+                  proof_expander
+                  proof_for_check
+              in
+              let rec try_expanded = function
+                | [] -> try_live_variants rest
+                | expanded :: expanded_rest ->
+                    begin match
+                      vampire_certificate_only_symbol_in_proof
+                        live_symbol_table
+                        certificate_delta
+                        extra_symbols
+                        expanded
+                    with
+                    | Some _ -> try_expanded expanded_rest
+                    | None ->
+                        try
+                          let actual, _ =
+                            extr_propofpf
+                              live_delta
+                              live_symbol_table
+                              cx
+                              live_hyps
+                              expanded
+                              []
+                          in
+                          begin match
+                            vampire_certificate_only_symbol_in_tm
+                              live_symbol_table
+                              extra_symbols
+                              actual
+                          with
+                          | Some _ -> try_expanded expanded_rest
+                          | None -> Some actual
+                          end
+                        with _ -> try_expanded expanded_rest
+                    end
+              in
+              try_expanded expanded_variants
+        in
+        try_live_variants (vampire_prop_ext_variants ~delta:proof_delta proof)
+  in
+  match live_result with
+  | Some actual -> Some actual
+  | None ->
   let hyps =
     List.map
       (vampire_expand_returned_tm ?extra_delta cxtm source_map)
