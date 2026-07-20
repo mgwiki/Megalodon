@@ -594,3 +594,26 @@ TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.s
 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
 ```
+
+## Returned-Proof Expansion Order, 2026-07-20
+
+A fresh `and3I` debug probe then exposed an expansion-order problem in the
+live checker.  Returned proof terms were first expanded with the certificate
+delta and only then passed through the source-map/local-name expander.  If the
+source-map pass reintroduced a certificate alias such as `#sK1`, the
+certificate delta did not get another chance to expand it before live checking.
+
+`vampire_expand_returned_proof` now applies the reconstruction delta once more
+after source-map/local expansion.  This is not a Skolem proof rule and it does
+not special-case `and3I`; it is an idempotent returned-proof normalization step
+that keeps certificate-local definitions from surviving only because they were
+introduced by the later source-map pass.
+
+This does not increase the qualifying proof count.  The first three original
+hammer commands still pass, and `and3I` still fails closed.  The failure has
+moved to the real scoped Skolem/choice boundary: live-expanded candidates now
+reach a de Bruijn-depth mismatch inside expanded choice predicates instead of
+stopping only at raw `#sK1` versus `Eps_prop` naming.  The next implementation
+step remains an extracted small-kernel Skolem/choice transformation that proves
+or eliminates the local witness definitions explicitly, rather than relying on
+certificate-local conversion.

@@ -1024,8 +1024,11 @@ let vampire_expand_returned_proof ?extra_delta cxtm source_map proof =
       let expanded = vampire_extra_delta_expander merged_delta proof in
       timing "extra_delta:done";
       timing "base:start";
-      let result = base_expander expanded in
+      let based = base_expander expanded in
       timing "base:done";
+      timing "extra_delta:after_base:start";
+      let result = vampire_extra_delta_expander merged_delta based in
+      timing "extra_delta:after_base:done";
       result
 
 let vampire_expand_returned_tm ?extra_delta cxtm source_map tm =
