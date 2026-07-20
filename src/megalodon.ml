@@ -14214,6 +14214,10 @@ let _ =
         raise (Failure("-vampireabyqualifying cannot be combined with -allowincompleteqed"));
       if !vampireabyqualifying && !vampireabytargetstop then
         raise (Failure("-vampireabyqualifying cannot be combined with -vampireabytargetstop"));
+      if !vampireabyqualifying && !vampireabyproof <> "megalodon" then
+        raise (Failure("-vampireabyqualifying requires -vampireabyproof megalodon"));
+      if !vampireabyqualifying && !vampireabytimeout > 10 then
+        raise (Failure("-vampireabyqualifying requires -vampireabytimeout <= 10"));
       if !vampireabyqualifying
          && Sys.getenv_opt "MEGALODON_CERT_ALLOW_TRANSITIONAL_PREPROCESS_KNOWN" = Some "1" then
         raise

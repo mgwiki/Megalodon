@@ -66,4 +66,38 @@ if ! rg -q -- '-vampireabyqualifying cannot be combined with -vampireabytargetst
   exit 1
 fi
 
+if bin/megalodon \
+    -vampireabyqualifying \
+    -vampireabyproof tptp \
+    examples/egal/PfgENov2021Preambles.mg \
+    >"$WORK_DIR/proof_mode_override_allowed.out" \
+    2>"$WORK_DIR/proof_mode_override_allowed.err"; then
+  echo "qualifying mode accepted a non-Megalodon Vampire proof mode" >&2
+  exit 1
+fi
+
+if ! rg -q -- '-vampireabyqualifying requires -vampireabyproof megalodon' \
+    "$WORK_DIR/proof_mode_override_allowed.err"; then
+  echo "qualifying mode failed for the wrong reason with a proof-mode override" >&2
+  cat "$WORK_DIR/proof_mode_override_allowed.err" >&2
+  exit 1
+fi
+
+if bin/megalodon \
+    -vampireabyqualifying \
+    -vampireabytimeout 11 \
+    examples/egal/PfgENov2021Preambles.mg \
+    >"$WORK_DIR/timeout_override_allowed.out" \
+    2>"$WORK_DIR/timeout_override_allowed.err"; then
+  echo "qualifying mode accepted a Vampire timeout above 10 seconds" >&2
+  exit 1
+fi
+
+if ! rg -q -- '-vampireabyqualifying requires -vampireabytimeout <= 10' \
+    "$WORK_DIR/timeout_override_allowed.err"; then
+  echo "qualifying mode failed for the wrong reason with a timeout override" >&2
+  cat "$WORK_DIR/timeout_override_allowed.err" >&2
+  exit 1
+fi
+
 echo "vampireaby qualifying guard checks passed"
