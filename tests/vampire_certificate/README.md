@@ -100,7 +100,14 @@ tests/vampire_reconstruction/run_native_aby_targets_parallel.sh
 This runs the selected `examples/hammer/100thms_12_h.mg` targets in parallel
 with `-vampireabytargetstop`, `--proof megalodon`, strict native checking, a
 10-second Vampire timeout, and `/project/tmp` artifacts. The default target set
-contains the current strict-native pass cases `172:4`, `183:4`, and `233:4`.
+contains the current strict-native pass cases `172:4`, `183:4`, `233:4`,
+`10978:17`, and `11106:19`. The last two are real after-`xm` hammer obligations
+whose certificates use original local facts and source-map-backed library
+facts; they exercise the certificate/refutation replay path before constructive
+fallback. This targetstop harness still runs with `-allowincompleteqed` only so
+earlier unrelated hammer `aby` sites can be skipped. Its passes are therefore
+proof-command reconstruction checkpoints, not counted no-incomplete E1 source
+theorem closures.
 The `233:4` case covers a Skolem/CPS replay where the delayed sibling branch
 must be shifted into the current term context.
 For line-233-style Skolem replay debugging, add
