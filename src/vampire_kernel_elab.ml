@@ -972,10 +972,16 @@ type skolem_branch_choice_instantiation = {
   skolem_choice_witnessed_body : tm option;
 }
 
+type skolem_choice_transport_obligation = {
+  skolem_transport_from_body : tm;
+  skolem_transport_to_body : tm;
+}
+
 type skolem_choice_transport_terms = {
   skolem_transport_epsilon_witness : tm;
   skolem_transport_epsilon_body : tm;
   skolem_transport_witnessed_body : tm option;
+  skolem_transport_obligation : skolem_choice_transport_obligation option;
 }
 
 let skolem_choice_transport_terms
@@ -988,16 +994,31 @@ let skolem_choice_transport_terms
         Ap (TmH eps_symbol, instantiation.skolem_choice_predicate)
         |> normalize
       in
+      let epsilon_body =
+        tmsubst
+          instantiation.skolem_choice_body
+          0
+          epsilon_witness
+        |> normalize
+      in
+      let witnessed_body =
+        Option.map normalize instantiation.skolem_choice_witnessed_body
+      in
+      let obligation =
+        match witnessed_body with
+        | Some witnessed_body when witnessed_body <> epsilon_body ->
+            Some
+              {
+                skolem_transport_from_body = epsilon_body;
+                skolem_transport_to_body = witnessed_body;
+              }
+        | _ -> None
+      in
       {
         skolem_transport_epsilon_witness = epsilon_witness;
-        skolem_transport_epsilon_body =
-          tmsubst
-            instantiation.skolem_choice_body
-            0
-            epsilon_witness
-          |> normalize;
-        skolem_transport_witnessed_body =
-          Option.map normalize instantiation.skolem_choice_witnessed_body;
+        skolem_transport_epsilon_body = epsilon_body;
+        skolem_transport_witnessed_body = witnessed_body;
+        skolem_transport_obligation = obligation;
       }
   | _ ->
       error "Skolem choice transport predicate is not a lambda"

@@ -1458,3 +1458,27 @@ The guard passed on the current frontier:
 TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
 WORK_DIR=/project/tmp/and_prefix_delta_only_guard_1784571317 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
 ```
+
+## Choice Transport Obligation Extraction, 2026-07-20
+
+The extracted Skolem/choice elaborator now records the next proof obligation
+explicitly.  `Vampire_kernel_elab.skolem_choice_transport_terms` still returns
+the Megalodon epsilon witness and the epsilon-instantiated body, but it now also
+returns a typed `skolem_choice_transport_obligation` when Vampire's emitted
+`witnessed_body` differs from the epsilon-instantiated body.
+
+This does not close `and3I` and does not count as proof coverage.  Its purpose
+is to stop treating the remaining blocker as an importer-side term-inspection
+problem.  The next proof-producing step should elaborate this extracted
+`epsilon_body -> witnessed_body` obligation into a checked Megalodon transport
+proof, using the already validated Vampire branch-choice metadata.
+
+Focused validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+WORK_DIR=/project/tmp/and_prefix_transport_obligation_1784571458 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+WORK_DIR=/project/tmp/prefix4_transport_obligation_1784571458 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+```

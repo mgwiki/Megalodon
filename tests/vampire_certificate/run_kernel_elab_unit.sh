@@ -624,7 +624,16 @@ let () =
       expect_equal
         "skolem_choice_transport_terms should preserve the emitted witnessed body"
         (Some (Ap (TmH "#s0", TmH "a")))
-        transport_terms.Vampire_kernel_elab.skolem_transport_witnessed_body
+        transport_terms.Vampire_kernel_elab.skolem_transport_witnessed_body;
+      expect_equal
+        "skolem_choice_transport_terms should expose an explicit body transport obligation"
+        (Some
+           {
+             Vampire_kernel_elab.skolem_transport_from_body =
+               Ap (Ap (TmH "eps", Lam (Prop, Ap (DB 0, TmH "a"))), TmH "a");
+             skolem_transport_to_body = Ap (TmH "#s0", TmH "a");
+           })
+        transport_terms.Vampire_kernel_elab.skolem_transport_obligation
   | None ->
       prerr_endline
         "kernel_elab unit failure: skolem_branch_choice_instantiation should keep emitted predicate and body aligned";

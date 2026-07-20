@@ -335,10 +335,16 @@ type skolem_branch_choice_instantiation = {
   skolem_choice_witnessed_body : Syntax.tm option;
 }
 
+type skolem_choice_transport_obligation = {
+  skolem_transport_from_body : Syntax.tm;
+  skolem_transport_to_body : Syntax.tm;
+}
+
 type skolem_choice_transport_terms = {
   skolem_transport_epsilon_witness : Syntax.tm;
   skolem_transport_epsilon_body : Syntax.tm;
   skolem_transport_witnessed_body : Syntax.tm option;
+  skolem_transport_obligation : skolem_choice_transport_obligation option;
 }
 
 val skolem_choice_transport_terms :

@@ -15353,14 +15353,26 @@ let rec native_core_direct_skolem_formula_proof
           target_witness
           transport_terms.Vampire_kernel_elab.skolem_transport_epsilon_witness;
         if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
-          prerr_endline
-            (id
-             ^ ": native core skolem used emitted branch choice for "
-             ^ tm_to_str target_witness
-             ^ " at local_depth="
-             ^ string_of_int local_depth
-             ^ " ambient_shift="
-             ^ string_of_int ambient_shift);
+          begin
+            prerr_endline
+              (id
+               ^ ": native core skolem used emitted branch choice for "
+               ^ tm_to_str target_witness
+               ^ " at local_depth="
+               ^ string_of_int local_depth
+               ^ " ambient_shift="
+               ^ string_of_int ambient_shift);
+            begin match
+              transport_terms
+                .Vampire_kernel_elab.skolem_transport_obligation
+            with
+            | Some _ ->
+                prerr_endline
+                  (id
+                   ^ ": native core skolem emitted branch choice carries an explicit epsilon-to-witness body transport obligation")
+            | None -> ()
+            end
+          end;
         Some
           (body, predicate,
            (target_witness,
