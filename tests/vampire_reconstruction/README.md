@@ -34,9 +34,9 @@ VAMPIRE=/path/to/vampire \
 tests/vampire_reconstruction/run_live_hammer_prefix_no_incomplete.sh
 ```
 
-It copies the prefix of `examples/hammer/100thms_12_h.mg` through `or3E` to
-`/project/tmp`, rewrites the nine early `aby.` commands to `vampire.`, and
-checks the prefix without `-allowincompleteqed`. It passes
+It copies the prefix of `examples/hammer/100thms_12_h.mg` through `Empty_eq`
+by default to `/project/tmp`, rewrites the early `aby` commands to `vampire`,
+and checks the prefix without `-allowincompleteqed`. It passes
 `-trustdeclaredaxioms`, which makes source-level `Axiom` declarations trusted
 library assumptions for Qed dependency checking. This flag is explicit so the
 default Megalodon behavior still rejects theorems that depend on
@@ -50,13 +50,25 @@ VAMPIRE=/path/to/vampire \
 tests/vampire_reconstruction/run_live_hammer_prefix_no_incomplete.sh
 ```
 
-The default gate now reconstructs the prefix through `or3E`. The `or3E`
-certificate is AVATAR-heavy, but the command closes through a checked
-source-level Church-disjunction eliminator before the expensive generic
-constructive search. The next source-command frontier is after line 205,
-where the hammer file starts using explicit `aby` arguments such as
-`aby and3I.`; this harness intentionally rewrites only bare `aby.` commands
-until explicit proof-command arguments are supported by the native path.
+The default gate now reconstructs 28 proof commands through `Empty_eq` at line
+289. This keeps a frequently run no-incomplete check available without making
+ordinary development iterations depend on the slower union certificates.
+
+The current stronger opt-in gate extends the same no-incomplete source prefix
+through `UnionI`:
+
+```sh
+VAMPIRE=/path/to/vampire \
+tests/vampire_reconstruction/run_live_hammer_prefix_through_unionI_no_incomplete.sh
+```
+
+This reconstructs 29 proof commands through line 294. It is slower than the
+default prefix because the `UnionI` certificate currently spends substantial
+time in source/refutation composition and final proof checking, but it is the
+strongest checked live-prefix regression in this directory at the time of this
+note. The next source-command frontier is `UnionE` at line 297; Vampire
+produces the proof output, but the current no-incomplete prefix attempt times
+out while reconstructing/checking that theorem.
 
 This suite checks Megalodon's TH0 hammer obligations against Vampire proof
 output.
