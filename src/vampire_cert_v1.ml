@@ -7676,11 +7676,13 @@ let validate_primitive_expansion_contracts cert =
         let count = field_int "primitive_expansion_requires_count" in
         if count < 0 then
           fail "primitive_expansion_requires_count is negative";
+        let indexed_primitives = ref [] in
         for index = 0 to count - 1 do
           let primitive =
             field_required
               ("primitive_expansion_requires_" ^ string_of_int index)
           in
+          indexed_primitives := primitive :: !indexed_primitives;
           if not (Vampire_kernel_syntax.is_primitive_rule primitive) then
             fail
               ("primitive_expansion_requires_" ^ string_of_int index
@@ -7689,7 +7691,14 @@ let validate_primitive_expansion_contracts cert =
             fail
               ("requires a " ^ primitive
                ^ " primitive step with prefix " ^ prefix)
-        done
+        done;
+        begin match field_value "primitive_expansion_requires" fields with
+        | Some primitive when not (List.mem primitive !indexed_primitives) ->
+            fail
+              ("primitive_expansion_requires_count does not include "
+               ^ "primitive_expansion_requires " ^ primitive)
+        | Some _ | None -> ()
+        end
     end
   in
   let validate_subsumption_resolution_primitive_chain id fields =

@@ -3054,6 +3054,22 @@ fi
 
 if bin/megalodon \
   -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_primitive_expansion_requires_count_mismatch_bad.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_primitive_expansion_requires_count_mismatch_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_primitive_expansion_requires_count_mismatch_bad.err"; then
+  echo "strict native certificate v1 checker accepted indexed primitive requirements that omit the singular required primitive" >&2
+  exit 1
+fi
+
+if ! rg -q 'primitive_expansion_requires_count does not include primitive_expansion_requires resolve' \
+    "$WORK_DIR/native_cert_v1_primitive_expansion_requires_count_mismatch_bad.err"; then
+  echo "strict native certificate v1 primitive-expansion failure did not explain the indexed/singular mismatch" >&2
+  exit 1
+fi
+
+if bin/megalodon \
+  -vampirecertv1strict \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_urr_primitive_chain_count_bad.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_valid.th0.p \
   "$dummy" >"$WORK_DIR/native_cert_v1_urr_primitive_chain_count_bad.out" \
