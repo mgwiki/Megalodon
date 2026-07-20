@@ -3,6 +3,10 @@
 open Syntax
 open Vampire_kernel_syntax
 
+exception Error of string
+
+let error msg = raise (Error msg)
+
 type clause_formula_basis = {
   false_tm : tm;
   or_tm : tm -> tm -> tm;
@@ -34,3 +38,40 @@ let input_step basis ~id ~clause proof =
     step_prop = clause_prop basis clause;
     step_proof = proof;
   }
+
+let open_step_theorem_body_in_result_context
+    ?(shift_parent_proof=true)
+    ~id
+    ~parent_step_variables
+    ~result_step_variables
+    ~subst
+    ~close_witness
+    proof =
+  let result_variable_count = List.length result_step_variables in
+  let db_for_result_variable name tp =
+    let rec find index = function
+      | [] -> None
+      | (candidate_name, candidate_tp) :: rest ->
+          if candidate_name = name && candidate_tp = tp then
+            Some (DB (result_variable_count - index - 1))
+          else find (index + 1) rest
+    in
+    find 0 result_step_variables
+  in
+  List.fold_left
+    (fun proof (name, tp) ->
+       let witness =
+         match List.assoc_opt name subst with
+         | Some tm -> close_witness tm
+         | None ->
+             begin match db_for_result_variable name tp with
+             | Some tm -> tm
+             | None ->
+                 error
+                   (id ^ ": native core open_step_theorem cannot instantiate dropped parent variable "
+                    ^ name ^ " without an explicit substitution")
+             end
+       in
+       PTmAp (proof, witness))
+    (if shift_parent_proof then pftmshift 0 result_variable_count proof else proof)
+    parent_step_variables

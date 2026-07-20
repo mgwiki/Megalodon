@@ -18420,37 +18420,17 @@ let native_core_open_step_theorem_body_in_result_context
      substituted by Vampire metadata. *)
   let parent_step_variables = native_core_step_variables cert parent_id in
   let result_step_variables = native_core_step_variables cert id in
-  let result_variable_count = List.length result_step_variables in
-  let db_for_result_variable name tp =
-    let rec find index = function
-      | [] -> None
-      | (candidate_name, candidate_tp) :: rest ->
-          if candidate_name = name && candidate_tp = tp then
-            Some (DB (result_variable_count - index - 1))
-          else find (index + 1) rest
-    in
-    find 0 result_step_variables
-  in
-  let close_witness tm =
-    native_core_close_tm (variables @ result_step_variables) tm
-  in
-  List.fold_left
-    (fun proof (name, tp) ->
-       let witness =
-         match List.assoc_opt name subst with
-         | Some tm -> close_witness tm
-         | None ->
-             begin match db_for_result_variable name tp with
-             | Some tm -> tm
-             | None ->
-                 error
-                   (id ^ ": native core open_step_theorem cannot instantiate dropped parent variable "
-                    ^ name ^ " without an explicit substitution")
-             end
-       in
-       PTmAp (proof, witness))
-    (if shift_parent_proof then pftmshift 0 result_variable_count proof else proof)
-    parent_step_variables
+  let close_witness tm = native_core_close_tm (variables @ result_step_variables) tm in
+  try
+    Vampire_kernel_elab.open_step_theorem_body_in_result_context
+      ~shift_parent_proof
+      ~id
+      ~parent_step_variables
+      ~result_step_variables
+      ~subst
+      ~close_witness
+      proof
+  with Vampire_kernel_elab.Error msg -> error msg
 
 let native_core_truth_conflict_in_result_context
     cert id variables parent_id parent_clause parent_proof literal_index result =

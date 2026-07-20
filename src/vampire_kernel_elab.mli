@@ -1,5 +1,7 @@
 (*** Deterministic proof-term boundary for the Vampire/Megalodon small kernel. ***)
 
+exception Error of string
+
 type clause_formula_basis = {
   false_tm : Syntax.tm;
   or_tm : Syntax.tm -> Syntax.tm -> Syntax.tm;
@@ -31,3 +33,13 @@ val input_step :
   clause:Vampire_kernel_syntax.clause ->
   Syntax.pf ->
   proof_step
+
+val open_step_theorem_body_in_result_context :
+  ?shift_parent_proof:bool ->
+  id:string ->
+  parent_step_variables:(string * Syntax.tp) list ->
+  result_step_variables:(string * Syntax.tp) list ->
+  subst:(string * Syntax.tm) list ->
+  close_witness:(Syntax.tm -> Syntax.tm) ->
+  Syntax.pf ->
+  Syntax.pf
