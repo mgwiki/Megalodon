@@ -3270,7 +3270,7 @@ let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols ?(alread
   in
   try_variants (vampire_prop_ext_variants ~delta:proof_delta proof)
 
-let vampire_actual_prop_of_proof ?source_map ?extra_delta ?extra_symbols cxtm cxpf proof =
+let vampire_actual_prop_of_proof ?source_map ?extra_delta ?extra_symbols ?(already_live=false) cxtm cxpf proof =
   let cx =
     List.filter_map
       (fun (_, (tp, definition)) ->
@@ -3340,19 +3340,23 @@ let vampire_actual_prop_of_proof ?source_map ?extra_delta ?extra_symbols cxtm cx
     | None, _ -> None
   in
   let live_hyps =
-    List.map
-      (vampire_expand_returned_tm ?extra_delta:live_extra_delta cxtm source_map)
-      hyps
+    if already_live then List.map vampire_live_basis_tm_expander hyps
+    else
+      List.map
+        (vampire_expand_returned_tm ?extra_delta:live_extra_delta cxtm source_map)
+        hyps
   in
   let live_result =
     match extra_symbols with
     | None -> None
     | Some extra_symbols ->
         let proof_expander =
-          vampire_expand_returned_proof
-            ?extra_delta:live_extra_delta
-            cxtm
-            source_map
+          if already_live then vampire_live_basis_expander
+          else
+            vampire_expand_returned_proof
+              ?extra_delta:live_extra_delta
+              cxtm
+              source_map
         in
         let rec try_live_variants = function
           | [] -> None
@@ -3406,9 +3410,11 @@ let vampire_actual_prop_of_proof ?source_map ?extra_delta ?extra_symbols cxtm cx
   | None when !vampireabyqualifying && extra_symbols <> None -> None
   | None ->
   let hyps =
-    List.map
-      (vampire_expand_returned_tm ?extra_delta cxtm source_map)
-      hyps
+    if already_live then List.map vampire_live_basis_tm_expander hyps
+    else
+      List.map
+        (vampire_expand_returned_tm ?extra_delta cxtm source_map)
+        hyps
   in
   let rec try_variants = function
     | [] -> None
@@ -3451,6 +3457,7 @@ let vampire_xm_double_negation_elim_to ?source_map ?extra_delta ?extra_symbols ?
           ?source_map
           ?extra_delta
           ?extra_symbols
+          ~already_live
           cxtm
           cxpf
           dnotnot

@@ -2253,3 +2253,36 @@ TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.s
 WORK_DIR=/project/tmp/and_prefix_doc_update_1784581922 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
 WORK_DIR=/project/tmp/prefix9_doc_update_1784581922 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix9_failclosed_qualifying.sh
 ```
+
+## Live-Diagnostic Narrowing, 2026-07-20 Late
+
+I made one further audit-aligned diagnostic change rather than adding another
+reconstruction heuristic.  The actual-proposition diagnostic used by the
+double-negation bridge now accepts the same `already_live` mode as the real
+checker.  In that mode it uses the live basis expander and live hypotheses
+instead of applying returned-proof expansion again.  This is diagnostic-only:
+it does not change the accepted proof path, does not add any fallback, and does
+not install certificate-local definitions globally.
+
+The focused prefix9 guard still fails closed at `or3E`, with the same checked
+boundary:
+
+```text
+Vampire native proof-of-prop live bad application: ... DB index 12 <> 15
+Vampire native deterministic replay did not close current proof goal at line 203 char 8; qualifying mode disabled candidate source-binding fallback.
+```
+
+This confirms that the current blocker is not a missing raw clause replay
+step.  The native certificate still reaches the final refutation step; the
+failure is the scoped live theorem-context transport from the Skolem/predicate
+definition frontier into the original command.  The right next implementation
+is therefore a deterministic transport object carried from the Vampire
+certificate (`sP0`, `sF3`, `#sK1`) into the Megalodon proof term before
+`xm`/`dneg`, not more Megalodon-side guessing.
+
+Validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+WORK_DIR=/project/tmp/prefix9_live_actual2_1784582382 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire MEGALODON_CERT_DEBUG=1 MEGALODON_CERT_DEBUG_GUIDED=1 MEGALODON_CERT_DEBUG_SUPPLIED=1 MEGALODON_CERT_DEBUG_SOURCE_APPLY=1 MEGALODON_CERT_DEBUG_LIVE_SAFE_DELTA=1 tests/vampire_reconstruction/run_live_hammer_prefix9_failclosed_qualifying.sh
+```
