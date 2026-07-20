@@ -1248,6 +1248,15 @@ let skolem_choice_replay_step
     | Some witness -> witness
     | None -> transport_terms.skolem_transport_epsilon_witness
   in
+  let transport_replacements =
+    match transport_terms.skolem_transport_obligation with
+    | Some obligation ->
+        [
+          obligation.skolem_transport_to_body,
+          obligation.skolem_transport_from_body;
+        ]
+    | None -> []
+  in
   {
     skolem_replay_body = instantiation.skolem_choice_body;
     skolem_replay_predicate = instantiation.skolem_choice_predicate;
@@ -1258,7 +1267,8 @@ let skolem_choice_replay_step
       tmsubst instantiation.skolem_choice_body 0 choice_witness;
     skolem_replay_replacements =
       if record_replacement then
-        (target_witness, registered_witness) :: replacements
+        ((target_witness, registered_witness) :: transport_replacements)
+        @ replacements
       else
         replacements;
     skolem_replay_transport_obligation =

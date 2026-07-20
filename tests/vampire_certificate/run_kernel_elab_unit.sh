@@ -801,9 +801,11 @@ let () =
         (Ap (Ap (TmH "eps", Lam (Prop, Ap (DB 0, TmH "a"))), TmH "a"))
         replay_step.Vampire_kernel_elab.skolem_replay_instantiated_body;
       expect_equal
-        "skolem_choice_replay_step should prepend the target witness replacement"
+        "skolem_choice_replay_step should prepend witness and body replacements"
         [
           TmH "#s0", Ap (TmH "eps", Lam (Prop, Ap (DB 0, TmH "a")));
+          Ap (TmH "#s0", TmH "a"),
+          Ap (Ap (TmH "eps", Lam (Prop, Ap (DB 0, TmH "a"))), TmH "a");
           TmH "old", TmH "old_eps";
         ]
         replay_step.Vampire_kernel_elab.skolem_replay_replacements;

@@ -1693,3 +1693,37 @@ frontier remains three qualifying original-source proofs and a fail-closed
 `and3I`.  The next proof-producing step should consume the extracted transport
 obligation to justify replacing the epsilon body by Vampire's witnessed body in
 the contextual Skolem replay.
+
+## Contract-Backed Body Transport Replacement, 2026-07-20
+
+The extracted replay step now consumes the first piece of the emitted transport
+obligation: when Vampire's branch-choice contract supplies both an
+epsilon-instantiated body and a witnessed body, the replay step adds the exact
+body replacement
+
+```text
+witnessed_body -> epsilon_body
+```
+
+next to the existing witness-symbol replacement.  This is deliberately not a
+search heuristic and not a library-specific rewrite.  The replacement is
+available only when the branch-choice contract has already matched the witness
+and emitted both sides of the transport obligation.
+
+This did not close `and3I`, but it is still a concrete move toward the audited
+architecture: the importer no longer merely logs the obligation and later tries
+cleanup around witness symbols; the extracted replay record now carries a
+contract-derived body replacement that downstream Skolem replay can apply
+deterministically.
+
+Validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+WORK_DIR=/project/tmp/and_prefix_body_transport_1784575245 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+WORK_DIR=/project/tmp/prefix4_body_transport_1784575245 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+```
+
+The counted frontier remains unchanged.
