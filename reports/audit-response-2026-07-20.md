@@ -1167,3 +1167,26 @@ TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.s
 WORK_DIR=/project/tmp/prefix4_exists_map.1784567181 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
 WORK_DIR=/project/tmp/and_prefix_exists_map.1784567199 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
 ```
+
+## Transport-Symbol Bad-Application Diagnostics, 2026-07-20
+
+The final refutation checker now reports the first choice/Skolem transport
+symbol found on each side of a bad proof application.  This is debug-only
+instrumentation, but it removes ambiguity in the current `and3I` failure.
+
+A focused probe at
+`/project/tmp/and3I_transport_symbols_debug_1784567604` shows the failing
+application precisely:
+
+```text
+expected transport symbol ... Eps_prop in (#Eps_prop ...)
+actual transport symbol ... #sK0 in ((_0 (forall _:prop, (_0 -> _0))) ##sK0)
+```
+
+So the remaining failure is not missing branch-choice metadata, not missing
+fixed-basis aliases, and not only an exact epsilon occurrence that can be
+rewritten globally.  The proof argument itself is still typed at the
+certificate Skolem witness while the choice theorem expects the epsilon
+witness.  The next implementation step must construct a local proof transport
+for that argument or build the branch proof directly at the epsilon
+proposition.

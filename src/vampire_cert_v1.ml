@@ -20831,6 +20831,42 @@ let elaborate_preprocess_refutation_native
       in
       find "root" left right
     in
+    let first_transport_symbol tm =
+      let interesting_name name =
+        List.mem name native_core_choice_witness_symbols
+        || String.length name >= 2
+           && name.[0] = 's'
+           && name.[1] = 'K'
+        || String.length name >= 3
+           && name.[0] = '#'
+           && name.[1] = 's'
+           && name.[2] = 'K'
+      in
+      let rec find path enclosing = function
+        | TmH name when interesting_name name ->
+            Some
+              (path
+               ^ ": "
+               ^ name
+               ^ " in "
+               ^ short_tm enclosing)
+        | TmH _ | DB _ | Prim _ -> None
+        | TpAp (body, _) as tm -> find (path ^ ".tp") tm body
+        | Ap (left, right) as tm ->
+            begin match find (path ^ ".left") tm left with
+            | Some _ as found -> found
+            | None -> find (path ^ ".right") tm right
+            end
+        | Lam (_, body) | All (_, body) as tm ->
+            find (path ^ ".body") tm body
+        | Imp (left, right) as tm ->
+            begin match find (path ^ ".left") tm left with
+            | Some _ as found -> found
+            | None -> find (path ^ ".right") tm right
+            end
+      in
+      find "root" tm tm
+    in
 	    let find_bad_application proof =
 	      let rec find path cxtm cxpf proof =
         match proof with
@@ -20867,6 +20903,17 @@ let elaborate_preprocess_refutation_native
                                 ^ "; diff actual "
                                 ^ short_tm diff_actual
                           in
+                          let transport_symbols =
+                            (match first_transport_symbol expected with
+                             | Some detail ->
+                                 "; expected transport symbol " ^ detail
+                             | None -> "")
+                            ^
+                            (match first_transport_symbol right_prop with
+                             | Some detail ->
+                                 "; actual transport symbol " ^ detail
+                             | None -> "")
+                          in
                           let context_sample =
                             cxpf
                             |> List.mapi (fun index prop -> "__" ^ string_of_int index ^ ":" ^ short_tm prop)
@@ -20885,6 +20932,7 @@ let elaborate_preprocess_refutation_native
                              ^ "; actual "
                              ^ short_tm right_prop
                              ^ diff
+                             ^ transport_symbols
                              ^ "; term ctx depth "
                              ^ string_of_int (List.length cxtm)
                              ^ "; proof ctx depth "
