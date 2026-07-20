@@ -997,7 +997,20 @@ let vampire_live_safe_extra_delta ?(body_expander=(fun tm -> tm)) live_symbols e
   let filtered = Hashtbl.create (Hashtbl.length extra_delta) in
   let debug = Sys.getenv_opt "MEGALODON_CERT_DEBUG_LIVE_SAFE_DELTA" = Some "1" in
   let add_filtered_definition name arity body =
-    Hashtbl.replace filtered name (arity, body_expander body)
+    let body = body_expander body in
+    let add name =
+      Hashtbl.replace filtered name (arity, body)
+    in
+    add name;
+    let alias =
+      if String.length name > 0 && name.[0] = '#' then
+        String.sub name 1 (String.length name - 1)
+      else
+        "#" ^ name
+    in
+    if alias <> name
+       && not (Hashtbl.mem live_symbols alias) then
+      add alias
   in
   let rec unsafe_symbol_in_tm = function
     | TmH name
@@ -1577,6 +1590,9 @@ let vampire_live_not_elim target not_proof target_proof =
          target_proof)
   | None -> PPfAp (not_proof, target_proof)
 
+let vampire_live_prop_choice_witness predicate =
+  vampire_live_case_not_tm (Ap (predicate, TmH (!fal)))
+
 let vampire_native_exists_intro tp predicate witness witness_proof =
   TLam
     (Prop,
@@ -1672,6 +1688,231 @@ let vampire_live_exists_set_choice_proof () =
                            Hyp 0)))))))
   | _ -> None
 
+let vampire_live_prop_ext_eq_proof left right left_to_right right_to_left =
+  match Hashtbl.find_opt sigknh "prop_ext_2" with
+  | Some prop_ext_2_hash ->
+      Some
+        (PPfAp
+           (PPfAp
+              (PTmAp (PTmAp (Known prop_ext_2_hash, left), right),
+               left_to_right),
+            right_to_left))
+  | None ->
+      begin match Hashtbl.find_opt sigknh "prop_ext" with
+      | Some prop_ext_hash ->
+          Some
+            (PPfAp
+               (PTmAp (PTmAp (Known prop_ext_hash, left), right),
+                vampire_iff_intro_proof
+                  left
+                  right
+                  left_to_right
+                  right_to_left))
+      | None -> None
+      end
+
+let vampire_prop_pred_transport pred source target eq_target_source source_proof =
+  let motive =
+    Lam
+      (Prop,
+       Lam (Prop, Ap (tmshift 0 2 pred, DB 0)))
+  in
+  PPfAp (PTmAp (eq_target_source, motive), source_proof)
+
+let vampire_live_exists_prop_choice_proof () =
+  match Hashtbl.find_opt sigknh "xm" with
+  | None -> None
+  | Some xm_hash ->
+      let false_tm = TmH (!fal) in
+      let predicate = DB 0 in
+      let p_false = Ap (predicate, false_tm) in
+      let not_p_false = vampire_live_prop_choice_witness predicate in
+      let target = Ap (predicate, not_p_false) in
+      let exists_predicate =
+        vampire_native_core_exists Prop (Ap (DB 1, DB 0))
+      in
+      let left_branch () =
+        let not_to_false =
+          PLam
+            (not_p_false,
+             vampire_live_not_elim p_false (Hyp 0) (Hyp 1))
+        in
+        let false_to_not =
+          PLam
+            (false_tm,
+             vampire_live_false_elim (Hyp 0) not_p_false)
+        in
+        match
+          vampire_live_prop_ext_eq_proof
+            not_p_false
+            false_tm
+            not_to_false
+            false_to_not
+        with
+        | None -> None
+        | Some eq_not_false ->
+            Some
+              (vampire_prop_pred_transport
+                 predicate
+                 false_tm
+                 not_p_false
+                 eq_not_false
+                 (Hyp 0))
+      in
+      let true_witness_branch () =
+        let x = DB 0 in
+        let predicate = DB 1 in
+        let not_p_false = vampire_live_prop_choice_witness predicate in
+        let not_to_x = PLam (not_p_false, Hyp 1) in
+        let x_to_not = PLam (x, Hyp 3) in
+        match
+          vampire_live_prop_ext_eq_proof
+            not_p_false
+            x
+            not_to_x
+            x_to_not
+        with
+        | None -> None
+        | Some eq_not_x ->
+            Some
+              (vampire_prop_pred_transport
+                 predicate
+                 x
+                 not_p_false
+                 eq_not_x
+                 (Hyp 1))
+      in
+      let false_witness_branch () =
+        let x = DB 0 in
+        let predicate = DB 1 in
+        let not_p_false = vampire_live_prop_choice_witness predicate in
+        let target = Ap (predicate, not_p_false) in
+        let false_to_x =
+          PLam
+            (false_tm,
+             vampire_live_false_elim (Hyp 0) x)
+        in
+        let x_to_false =
+          PLam
+            (x,
+             vampire_live_not_elim x (Hyp 1) (Hyp 0))
+        in
+        match
+          vampire_live_prop_ext_eq_proof
+            false_tm
+            x
+            false_to_x
+            x_to_false
+        with
+        | None -> None
+        | Some eq_false_x ->
+            let p_false_proof =
+              vampire_prop_pred_transport
+                predicate
+                x
+                false_tm
+                eq_false_x
+                (Hyp 1)
+            in
+            let contradiction = PPfAp (Hyp 2, p_false_proof) in
+            Some (vampire_live_false_elim contradiction target)
+      in
+      begin match left_branch (), true_witness_branch (), false_witness_branch () with
+      | Some left_case, Some true_case, Some false_case ->
+          let witness_case_target =
+            Ap (DB 1, vampire_live_prop_choice_witness (DB 1))
+          in
+          let witness_case =
+            PPfAp
+              (PPfAp
+                 (PTmAp (PTmAp (Known xm_hash, DB 0), witness_case_target),
+                  PLam (DB 0, true_case)),
+               PLam (vampire_live_case_not_tm (DB 0), false_case))
+          in
+          let right_case =
+            PPfAp
+              (PTmAp (Hyp 1, target),
+               TLam
+                 (Prop,
+                  PLam
+                    (Ap (DB 1, DB 0),
+                     witness_case)))
+          in
+          Some
+            (TLam
+               (Ar (Prop, Prop),
+                PLam
+                  (exists_predicate,
+                   PPfAp
+                     (PPfAp
+                        (PTmAp (PTmAp (Known xm_hash, p_false), target),
+                         PLam (p_false, left_case)),
+                      PLam (vampire_live_case_not_tm p_false, right_case)))))
+      | _ -> None
+      end
+
+let vampire_live_exists_prop_choice_checked_cache : pf option option ref = ref None
+
+let vampire_live_exists_prop_choice_prop () =
+  let predicate = DB 0 in
+  let target =
+    Ap (predicate, vampire_live_prop_choice_witness predicate)
+  in
+  All
+    (Ar (Prop, Prop),
+     Imp
+       (vampire_native_core_exists Prop (Ap (DB 1, DB 0)),
+        target))
+
+let vampire_live_exists_prop_choice_checked_proof () =
+  match !vampire_live_exists_prop_choice_checked_cache with
+  | Some result -> result
+  | None ->
+      let result =
+        match vampire_live_exists_prop_choice_proof () with
+        | None -> None
+        | Some proof ->
+            let proposition = vampire_live_exists_prop_choice_prop () in
+            begin match check_propofpf sigdelta sigtmof [] [] proof proposition [] with
+            | Some _ -> Some proof
+            | None ->
+                if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1"
+                   || Sys.getenv_opt "MEGALODON_CERT_DEBUG_PROP_CHOICE" = Some "1" then
+                  begin
+                    Printf.printf
+                      "Vampire native live prop-choice proof did not check for proposition: %s\n"
+                      (tm_to_str proposition);
+                    flush stdout
+                  end;
+                None
+            end
+      in
+      vampire_live_exists_prop_choice_checked_cache := Some result;
+      result
+
+let vampire_live_has_checked_prop_choice () =
+  match vampire_live_exists_prop_choice_checked_proof () with
+  | Some _ -> true
+  | None -> false
+
+let rec vampire_live_basis_tm_expander = function
+  | Ap (TmH "Eps_prop", predicate)
+      when vampire_live_has_checked_prop_choice () ->
+      vampire_live_prop_choice_witness
+        (vampire_live_basis_tm_expander predicate)
+  | TpAp (body, tp) -> TpAp (vampire_live_basis_tm_expander body, tp)
+  | Ap (left, right) ->
+      Ap
+        (vampire_live_basis_tm_expander left,
+         vampire_live_basis_tm_expander right)
+  | Lam (tp, body) -> Lam (tp, vampire_live_basis_tm_expander body)
+  | All (tp, body) -> All (tp, vampire_live_basis_tm_expander body)
+  | Imp (left, right) ->
+      Imp
+        (vampire_live_basis_tm_expander left,
+         vampire_live_basis_tm_expander right)
+  | TmH _ | DB _ | Prim _ as tm -> tm
+
 let vampire_live_basis_expander proof =
   match Hashtbl.find_opt sigknh "xm" with
   | None -> proof
@@ -1697,9 +1938,11 @@ let vampire_live_basis_expander proof =
                   PLam (target, Hyp 0)),
                PLam (not_target, PTmAp (false_proof, target)))
         | PTpAp (body, tp) -> PTpAp (expand body, tp)
-        | PTmAp (body, tm) -> PTmAp (expand body, tm)
+        | PTmAp (body, tm) ->
+            PTmAp (expand body, vampire_live_basis_tm_expander tm)
         | PPfAp (left, right) -> PPfAp (expand left, expand right)
-        | PLam (prop, body) -> PLam (prop, expand body)
+        | PLam (prop, body) ->
+            PLam (vampire_live_basis_tm_expander prop, expand body)
         | TLam (tp, body) -> TLam (tp, expand body)
         | Known h ->
             begin match vampire_native_core_not_forall_exists_hash_tp h with
@@ -1711,6 +1954,11 @@ let vampire_live_basis_expander proof =
             | None ->
                 if h = Vampire_cert_v1.native_core_exists_choice_hash Set then
                   begin match vampire_live_exists_set_choice_proof () with
+                  | Some proof -> proof
+                  | None -> Known h
+                  end
+                else if h = Vampire_cert_v1.native_core_exists_choice_hash Prop then
+                  begin match vampire_live_exists_prop_choice_checked_proof () with
                   | Some proof -> proof
                   | None -> Known h
                   end
@@ -2045,7 +2293,10 @@ let vampire_check_current_goal_proof ?source_map ?extra_delta ?extra_symbols cla
       (vampire_expand_returned_tm ?extra_delta cxtm source_map)
       hyps
   in
-  let returned_body_expander = vampire_expand_returned_tm cxtm source_map in
+  let returned_body_expander tm =
+    vampire_live_basis_tm_expander
+      (vampire_expand_returned_tm cxtm source_map tm)
+  in
   let live_extra_delta =
     match extra_delta, extra_symbols with
     | Some extra_delta, Some extra_symbols ->
@@ -2274,7 +2525,10 @@ let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxp
       (vampire_expand_returned_tm ?extra_delta cxtm source_map)
       hyps
   in
-  let returned_body_expander = vampire_expand_returned_tm cxtm source_map in
+  let returned_body_expander tm =
+    vampire_live_basis_tm_expander
+      (vampire_expand_returned_tm cxtm source_map tm)
+  in
   let live_extra_delta =
     match extra_delta, extra_symbols with
     | Some extra_delta, Some extra_symbols ->
@@ -3967,8 +4221,9 @@ let vampire_reconstruct_goal_from_supplied_refutation
                 | Some source_map ->
                     vampire_source_context_symbol_table_with_source_map source_map
               in
-              let returned_body_expander =
-                vampire_expand_returned_tm cxtm source_map
+              let returned_body_expander tm =
+                vampire_live_basis_tm_expander
+                  (vampire_expand_returned_tm cxtm source_map tm)
               in
               let live_extra_delta =
                 match extra_delta, extra_symbols with
