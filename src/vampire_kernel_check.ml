@@ -178,6 +178,49 @@ let check_resolution ~id ~left ~right ~left_index ~right_index ~result =
   if not (same_clause_multiset expected result) then
     error (id ^ ": resolution result does not match parent clauses after pivot removal")
 
+let check_equality_resolution ~id ~equality_sides ~parent ~literal_index ~result =
+  let literal = nth literal_index parent (id ^ " equality-resolution literal") in
+  begin
+    match literal with
+    | Neg atom ->
+        begin
+          match equality_sides atom with
+          | Some (left, right) when left = right -> ()
+          | Some _ -> error (id ^ ": equality-resolution equality is not reflexive")
+          | None -> error (id ^ ": equality-resolution literal is not an equality atom")
+        end
+    | Pos _ -> error (id ^ ": equality-resolution literal must be negative")
+  end;
+  let expected = remove_at literal_index parent (id ^ " equality-resolution literal") in
+  if not (same_clause_multiset expected result) then
+    error (id ^ ": equality-resolution result does not match parent after literal removal")
+
+let check_truth_conflict
+    ~id
+    ~equality_sides
+    ~true_tm
+    ~false_tm
+    ~parent
+    ~literal_index
+    ~result =
+  let literal = nth literal_index parent (id ^ " truth-conflict literal") in
+  begin
+    match literal with
+    | Pos atom ->
+        begin
+          match equality_sides atom with
+          | Some (left, right)
+              when (left = true_tm && right = false_tm)
+                || (left = false_tm && right = true_tm) -> ()
+          | Some _ -> error (id ^ ": truth-conflict equality is not true = false")
+          | None -> error (id ^ ": truth-conflict literal is not an equality atom")
+        end
+    | Neg _ -> error (id ^ ": truth-conflict literal must be positive")
+  end;
+  let expected = remove_at literal_index parent (id ^ " truth-conflict literal") in
+  if not (same_clause_multiset expected result) then
+    error (id ^ ": truth-conflict result does not match parent after literal removal")
+
 let check_definition_rewrite_chain
     ~id
     ~equality_sides

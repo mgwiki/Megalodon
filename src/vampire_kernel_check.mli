@@ -102,6 +102,24 @@ val check_resolution :
   result:Vampire_kernel_syntax.clause ->
   unit
 
+val check_equality_resolution :
+  id:string ->
+  equality_sides:(Syntax.tm -> (Syntax.tm * Syntax.tm) option) ->
+  parent:Vampire_kernel_syntax.clause ->
+  literal_index:int ->
+  result:Vampire_kernel_syntax.clause ->
+  unit
+
+val check_truth_conflict :
+  id:string ->
+  equality_sides:(Syntax.tm -> (Syntax.tm * Syntax.tm) option) ->
+  true_tm:Syntax.tm ->
+  false_tm:Syntax.tm ->
+  parent:Vampire_kernel_syntax.clause ->
+  literal_index:int ->
+  result:Vampire_kernel_syntax.clause ->
+  unit
+
 val check_definition_rewrite_chain :
   id:string ->
   equality_sides:(Syntax.tm -> (Syntax.tm * Syntax.tm) option) ->

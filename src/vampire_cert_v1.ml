@@ -3617,21 +3617,14 @@ let check_inequality_split checked id source_id splits result =
 
 let check_equality_resolution checked id parent_id literal_index result =
   let parent_clause = lookup_clause checked parent_id in
-  let literal = nth literal_index parent_clause (id ^ " equality-resolution literal") in
-  begin
-    match literal with
-    | Neg atom ->
-        begin
-          match equality_sides atom with
-          | Some (left, right) when left = right -> ()
-          | Some _ -> error (id ^ ": equality-resolution equality is not reflexive")
-          | None -> error (id ^ ": equality-resolution literal is not an equality atom")
-        end
-    | Pos _ -> error (id ^ ": equality-resolution literal must be negative")
-  end;
-  let expected = remove_at literal_index parent_clause (id ^ " equality-resolution literal") in
-  if not (same_clause_multiset expected result) then
-    error (id ^ ": equality-resolution result does not match parent after literal removal")
+  try
+    Vampire_kernel_check.check_equality_resolution
+      ~id
+      ~equality_sides
+      ~parent:parent_clause
+      ~literal_index
+      ~result
+  with Vampire_kernel_check.Error msg -> error msg
 
 let same_literal_mod_vampire_vars left right =
   match left, right with
@@ -3936,22 +3929,16 @@ let check_equality_factoring_constraints checked id parent_id selected_index oth
 
 let check_truth_conflict checked id parent_id literal_index result =
   let parent_clause = lookup_clause checked parent_id in
-  let literal = nth literal_index parent_clause (id ^ " truth-conflict literal") in
-  begin
-    match literal with
-    | Pos atom ->
-        begin
-          match equality_sides atom with
-          | Some (TmH "f__true", TmH "f__false")
-          | Some (TmH "f__false", TmH "f__true") -> ()
-          | Some _ -> error (id ^ ": truth-conflict equality is not true = false")
-          | None -> error (id ^ ": truth-conflict literal is not an equality atom")
-        end
-    | Neg _ -> error (id ^ ": truth-conflict literal must be positive")
-  end;
-  let expected = remove_at literal_index parent_clause (id ^ " truth-conflict literal") in
-  if not (same_clause_multiset expected result) then
-    error (id ^ ": truth-conflict result does not match parent after literal removal")
+  try
+    Vampire_kernel_check.check_truth_conflict
+      ~id
+      ~equality_sides
+      ~true_tm:(TmH "f__true")
+      ~false_tm:(TmH "f__false")
+      ~parent:parent_clause
+      ~literal_index
+      ~result
+  with Vampire_kernel_check.Error msg -> error msg
 
 let check_equality_symmetry checked id parent_id literal_index result =
   let parent_clause = lookup_clause checked parent_id in
