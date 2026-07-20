@@ -4530,6 +4530,15 @@ let vampire_reconstruct_goal_from_supplied_refutation
         | Some terms -> terms
         | None -> []
       in
+      let supplied_refutation_depth_limit =
+        match Sys.getenv_opt "MEGALODON_CERT_SUPPLIED_REFUTATION_DEPTH_LIMIT" with
+        | Some value ->
+            begin
+              try int_of_string value
+              with Failure _ -> if !vampireabyqualifying then 1 else 6
+            end
+        | None -> if !vampireabyqualifying then 1 else 6
+      in
       let remove_term tm terms =
         List.filter (fun candidate -> candidate <> tm) terms
       in
@@ -4947,7 +4956,7 @@ let vampire_reconstruct_goal_from_supplied_refutation
                 end
             end
       in
-      try_proposition 6 initial_preferred_prop_terms proof proposition
+      try_proposition supplied_refutation_depth_limit initial_preferred_prop_terms proof proposition
 
 let vampire_instantiate_source_binding binding tm =
   {

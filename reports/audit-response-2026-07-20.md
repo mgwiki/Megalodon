@@ -408,3 +408,24 @@ hammer commands still pass in qualifying mode, and `and3I` still fails closed.
 The failure shape has moved past the earlier proof-of-prop mismatch and is now
 concentrated in guided negated-conjecture replay, with candidate fallback still
 disabled by qualifying mode.
+
+## Qualifying Supplied-Refutation Depth Cap, 2026-07-20
+
+The next audit-aligned cleanup addresses runtime rather than coverage.  The
+guided negated-conjecture wrapper already limited qualifying mode to one
+supplied-refutation attempt, but that single attempt still entered the
+supplied-refutation bridge with the legacy depth-6 quantified-instantiation
+search.  On `and3I` this produced thousands of rejected replay probes before
+the intended fail-closed guard fired.
+
+Qualifying mode now defaults the supplied-refutation bridge itself to depth 1.
+The depth can still be raised for diagnostics with:
+
+```text
+MEGALODON_CERT_SUPPLIED_REFUTATION_DEPTH_LIMIT=<n>
+```
+
+This is deliberately a negative-space change: it does not make any new theorem
+pass and it does not add a fallback.  It makes the qualifying path less like a
+Megalodon-side search engine and closer to the deterministic replay discipline
+requested by the audit.

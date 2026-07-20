@@ -112,6 +112,11 @@ if rg -q 'candidate_refutation_fallback:start' "$WORK_DIR/run.out" "$WORK_DIR/ru
   echo "qualifying prefix4 entered candidate-refutation fallback search" >&2
   exit 1
 fi
+if rg -q 'Vampire native supplied-refutation timing .* depth=([2-9]|[1-9][0-9]+)' \
+    "$WORK_DIR/run.out" "$WORK_DIR/run.err"; then
+  echo "qualifying prefix4 used supplied-refutation search deeper than depth 1" >&2
+  exit 1
+fi
 if ! rg -q 'Vampire native certificate did not reconstruct current proof goal' \
     "$WORK_DIR/run.out" "$WORK_DIR/run.err"; then
   echo "qualifying prefix4 failed for an unexpected reason" >&2
