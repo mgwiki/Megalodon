@@ -1108,3 +1108,33 @@ TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.s
 WORK_DIR=/project/tmp/and_prefix_temp_alias.1784565717 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
 WORK_DIR=/project/tmp/prefix4_temp_alias.1784565717 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
 ```
+
+## Branch-Transport Replacement Priority, 2026-07-20
+
+A focused `and3I` probe showed that branch-choice transports and the older
+registered-witness cleanup can point in opposite directions.  The branch
+contract justifies replacing an introduced Skolem symbol by its scoped epsilon
+definition, while the registered cleanup may replace the exact epsilon witness
+back by the introduced symbol.  Sorting both replacement lists together hides
+that conflict and lets the importer decide priority implicitly.
+
+The replacement-priority policy has now moved into
+`Vampire_kernel_elab.prioritized_skolem_witness_transport_proof_replacements`.
+Explicit branch transports shadow registered reverse replacements for the same
+witness aliases, while unrelated registered witnesses are still kept.  The
+unit harness checks both cases directly.
+
+This is not counted as new proof coverage.  The focused gates still report the
+same honest frontier:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+WORK_DIR=/project/tmp/prefix4_elab_priority.1784566866 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+WORK_DIR=/project/tmp/and_prefix_elab_priority.1784566877 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+```
+
+`FalseE`, `andEL`, and `andER` remain the only qualifying original-source
+passes; `and3I` remains fail-closed at the scoped Skolem/choice proof
+boundary.

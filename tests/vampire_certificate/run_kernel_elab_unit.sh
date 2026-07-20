@@ -226,6 +226,26 @@ let () =
        ~alias_names:aliases
        transports);
   expect_equal
+    "prioritized_skolem_witness_transport_proof_replacements should let branch transports shadow reverse registered witnesses"
+    [TmH "#s1", TmH "def1"; TmH "s1", TmH "def1"; closed_binder_witness, TmH "def1"]
+    (Vampire_kernel_elab.prioritized_skolem_witness_transport_proof_replacements
+       ~normalize:(fun tm -> tm)
+       ~alias_names:aliases
+       ~witness_symbols:choice_symbols
+       ~registered_witnesses:["#s1", closed_binder_witness]
+       ~transports
+       closed_binder_proof);
+  expect_equal
+    "prioritized_skolem_witness_transport_proof_replacements should keep unshadowed registered witnesses"
+    [outer_before_inner, TmH "#s0"]
+    (Vampire_kernel_elab.prioritized_skolem_witness_transport_proof_replacements
+       ~normalize:(fun tm -> tm)
+       ~alias_names:aliases
+       ~witness_symbols:choice_symbols
+       ~registered_witnesses:["#s0", outer_before_inner]
+       ~transports:[]
+       proof);
+  expect_equal
     "substitute_named_term should preserve vLAM binder convention"
     (Ap (TmH "vLAM", Ap (DB 0, TmH "z")))
     (Vampire_kernel_elab.substitute_named_term

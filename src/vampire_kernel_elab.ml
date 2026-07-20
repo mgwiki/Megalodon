@@ -473,6 +473,49 @@ let skolem_witness_transport_proof_replacements_with_aliases
                    (TmH alias, transport.skolem_transport_definition))))
   |> List.sort_uniq compare
 
+let prioritized_skolem_witness_transport_proof_replacements
+    ~normalize
+    ~alias_names
+    ~witness_symbols
+    ~registered_witnesses
+    ~transports
+    proof =
+  let transport_replacements =
+    skolem_witness_transport_proof_replacements_with_aliases
+      ~alias_names
+      transports
+  in
+  let transport_names =
+    transports
+    |> List.concat_map
+         (fun transport -> alias_names transport.skolem_transport_name)
+    |> List.sort_uniq String.compare
+  in
+  let transport_shadows_name name =
+    alias_names name
+    |> List.exists (fun alias -> List.mem alias transport_names)
+  in
+  let unshadowed_registered_witnesses =
+    registered_witnesses
+    |> List.filter
+         (fun (name, _) -> not (transport_shadows_name name))
+  in
+  let registered_replacements =
+    registered_witness_term_replacements
+      ~normalize
+      ~witness_symbols
+      unshadowed_registered_witnesses
+      proof
+  in
+  let rec keep_first seen = function
+    | [] -> []
+    | (needle, replacement) :: rest when List.mem needle seen ->
+        keep_first seen rest
+    | (needle, replacement) :: rest ->
+        (needle, replacement) :: keep_first (needle :: seen) rest
+  in
+  keep_first [] (transport_replacements @ registered_replacements)
+
 let substitute_named_term name tm =
   let rec subst depth = function
     | TmH candidate when candidate = name -> DB depth

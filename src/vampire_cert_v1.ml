@@ -23204,26 +23204,32 @@ let elaborate_preprocess_refutation_native
                !skolem_witness_replacements
                |> List.sort_uniq compare
              in
-	             let registered_choice_replacements =
-	               native_core_registered_choice_witness_term_replacements
-                 candidate_witness_replacements
-	                 candidate
-               @ (branch_choice_candidate_replacements
-                  |> List.map
-                       (fun (replacement_name, actual_choice, definition,
-                             local_template) ->
-                          {
-                            Vampire_kernel_elab.skolem_transport_name =
-                              replacement_name;
-                            skolem_transport_choice_occurrence =
-                              actual_choice;
-                            skolem_transport_definition = definition;
-                            skolem_transport_local_template =
-                              local_template;
-                          })
-                  |> Vampire_kernel_elab.skolem_witness_transport_proof_replacements_with_aliases
-                       ~alias_names:native_core_symbol_name_aliases)
-               |> List.sort_uniq compare
+             let branch_choice_transports =
+               branch_choice_candidate_replacements
+               |> List.map
+                    (fun (replacement_name, actual_choice, definition,
+                          local_template) ->
+                       {
+                         Vampire_kernel_elab.skolem_transport_name =
+                           replacement_name;
+                         skolem_transport_choice_occurrence =
+                           actual_choice;
+                         skolem_transport_definition = definition;
+                         skolem_transport_local_template =
+                           local_template;
+                       })
+             in
+             let registered_choice_replacements =
+               Vampire_kernel_elab.prioritized_skolem_witness_transport_proof_replacements
+                 ~normalize:(fun tm ->
+                   tm
+                   |> native_core_normalize_bool_constants
+                   |> tm_beta_eta_norm)
+                 ~alias_names:native_core_symbol_name_aliases
+                 ~witness_symbols:native_core_choice_witness_symbols
+                 ~registered_witnesses:candidate_witness_replacements
+                 ~transports:branch_choice_transports
+                 candidate
 	             in
              let branch_choice_expanded_candidate =
                let template_attempt_limit =
