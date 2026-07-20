@@ -23257,98 +23257,77 @@ let elaborate_preprocess_refutation_native
            let fail_fast_skolem_cps () =
              Sys.getenv_opt "MEGALODON_CERT_FAIL_FAST_SKOLEM_CPS" = Some "1"
            in
-           if native_core_pf_contains_term_symbol
-                (native_core_choice_witness_symbols @ introduced_witness_symbols)
-                candidate then begin
+	           if native_core_pf_contains_term_symbol
+	                (native_core_choice_witness_symbols @ introduced_witness_symbols)
+	                candidate then begin
 	             let debug = Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" in
 	             let fail_fast = fail_fast_skolem_cps () in
+	             let candidate_witness_replacements =
+	               !skolem_witness_replacements
+	               |> List.sort_uniq compare
+	             in
+	             let raw_branch_choice_transports =
+	               !branch_choice_candidate_replacements
+	               |> List.sort_uniq compare
+	               |> List.map
+	                    (fun (replacement_name, actual_choice, definition,
+	                          local_template) ->
+	                       {
+	                         Vampire_kernel_elab.skolem_transport_name =
+	                           replacement_name;
+	                         skolem_transport_choice_occurrence =
+	                           actual_choice;
+	                         skolem_transport_definition = definition;
+	                         skolem_transport_local_template =
+	                           local_template;
+	                       })
+	             in
+	             let cleanup_plan =
+	               Vampire_kernel_elab.skolem_witness_cleanup_plan
+	                 ~normalize:(fun tm ->
+	                   tm
+	                   |> native_core_normalize_bool_constants
+	                   |> tm_beta_eta_norm)
+	                 ~alias_names:native_core_symbol_name_aliases
+	                 ~witness_symbols:native_core_choice_witness_symbols
+	                 ~introduced_symbols:introduced_witness_symbols
+	                 ~registered_witnesses:candidate_witness_replacements
+	                 ~transports:raw_branch_choice_transports
+	                 candidate
+	             in
+	             if debug
+	                && cleanup_plan
+	                     .Vampire_kernel_elab.skolem_cleanup_ambiguous_choice_occurrences
+	                   <> [] then
+	               prerr_endline
+	                 (id
+	                  ^ ": native preprocess Skolem CPS discarded "
+	                  ^ string_of_int
+	                      (List.length
+	                         cleanup_plan
+	                           .Vampire_kernel_elab.skolem_cleanup_ambiguous_choice_occurrences)
+	                  ^ " ambiguous contract-backed branch-choice occurrences");
+	             let branch_choice_transports =
+	               cleanup_plan
+	                 .Vampire_kernel_elab.skolem_cleanup_transports
+	             in
 	             let branch_choice_candidate_replacements =
-	               let candidates =
-	                 !branch_choice_candidate_replacements
-	                 |> List.sort_uniq compare
-	               in
-	               let ambiguous_choice_occurrences =
-	                 candidates
-	                 |> List.map
-	                      (fun (_replacement_name, actual_choice, definition,
-	                            _local_template) ->
-	                         (actual_choice, definition))
-	                 |> List.fold_left
-	                      (fun grouped (actual_choice, definition) ->
-	                         let definitions =
-	                           match List.assoc_opt actual_choice grouped with
-	                           | Some definitions -> definitions
-	                           | None -> []
-	                         in
-	                         (actual_choice,
-	                          definition :: definitions
-	                          |> List.sort_uniq compare)
-	                         :: List.remove_assoc actual_choice grouped)
-	                      []
-	                 |> List.filter_map
-	                      (fun (actual_choice, definitions) ->
-	                         match definitions with
-	                         | [] | [_] -> None
-	                         | _ -> Some actual_choice)
-	                 |> List.sort_uniq compare
-	               in
-	               if debug && ambiguous_choice_occurrences <> [] then
-	                 prerr_endline
-	                   (id
-	                    ^ ": native preprocess Skolem CPS discarded "
-	                    ^ string_of_int
-	                        (List.length ambiguous_choice_occurrences)
-	                    ^ " ambiguous contract-backed branch-choice occurrences");
-	               candidates
-	               |> List.filter
-	                    (fun (_replacement_name, actual_choice, _definition,
-	                          _local_template) ->
-	                       not
-	                         (List.mem actual_choice ambiguous_choice_occurrences))
+	               branch_choice_transports
+	               |> Vampire_kernel_elab.skolem_witness_transport_symbol_replacements
 	             in
-             let candidate_witness_replacements =
-               !skolem_witness_replacements
-               |> List.sort_uniq compare
-             in
-             let branch_choice_transports =
-               branch_choice_candidate_replacements
-               |> List.map
-                    (fun (replacement_name, actual_choice, definition,
-                          local_template) ->
-                       {
-                         Vampire_kernel_elab.skolem_transport_name =
-                           replacement_name;
-                         skolem_transport_choice_occurrence =
-                           actual_choice;
-                         skolem_transport_definition = definition;
-                         skolem_transport_local_template =
-                           local_template;
-                       })
-             in
-             let registered_choice_replacements =
-               Vampire_kernel_elab.prioritized_skolem_witness_transport_proof_replacements
-                 ~normalize:(fun tm ->
-                   tm
-                   |> native_core_normalize_bool_constants
-                   |> tm_beta_eta_norm)
-                 ~alias_names:native_core_symbol_name_aliases
-                 ~witness_symbols:native_core_choice_witness_symbols
-                 ~registered_witnesses:candidate_witness_replacements
-                 ~transports:branch_choice_transports
-                 candidate
+	             let registered_choice_replacements =
+	               cleanup_plan
+	                 .Vampire_kernel_elab.skolem_cleanup_replacements
 	             in
-             let introduced_witness_alias_symbols =
-               introduced_witness_symbols
-               |> List.concat_map native_core_symbol_name_aliases
-               |> List.sort_uniq String.compare
-             in
-             let introduced_replacement_classification =
-               Vampire_kernel_elab.classify_introduced_symbol_replacements
-                 ~alias_names:native_core_symbol_name_aliases
-                 ~introduced_symbols:introduced_witness_symbols
-                 ~replacements:registered_choice_replacements
-                 candidate
-             in
+	             let introduced_witness_alias_symbols =
+	               introduced_witness_symbols
+	               |> List.concat_map native_core_symbol_name_aliases
+	               |> List.sort_uniq String.compare
+	             in
+	             let introduced_replacement_classification =
+	               cleanup_plan
+	                 .Vampire_kernel_elab.skolem_cleanup_introduced_classification
+	             in
              let branch_choice_expanded_candidate =
                let template_attempt_limit =
                  match Sys.getenv_opt "MEGALODON_CERT_BRANCH_CHOICE_TEMPLATE_LIMIT" with

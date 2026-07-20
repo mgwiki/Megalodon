@@ -270,20 +270,63 @@ let () =
        ~registered_witnesses:["#s1", closed_binder_witness]
        ~transports
        closed_binder_proof);
-  expect_equal
-    "prioritized_skolem_witness_transport_proof_replacements should keep unshadowed registered witnesses"
-    [outer_before_inner, TmH "#s0"]
-    (Vampire_kernel_elab.prioritized_skolem_witness_transport_proof_replacements
-       ~normalize:(fun tm -> tm)
-       ~alias_names:aliases
-       ~witness_symbols:choice_symbols
-       ~registered_witnesses:["#s0", outer_before_inner]
-       ~transports:[]
-       proof);
-  expect_equal
-    "classify_introduced_symbol_replacements should separate direct and indirect cleanup gaps"
-    {
-      Vampire_kernel_elab.introduced_symbols_present = ["#s0"; "s1"];
+	  expect_equal
+	    "prioritized_skolem_witness_transport_proof_replacements should keep unshadowed registered witnesses"
+	    [outer_before_inner, TmH "#s0"]
+	    (Vampire_kernel_elab.prioritized_skolem_witness_transport_proof_replacements
+	       ~normalize:(fun tm -> tm)
+	       ~alias_names:aliases
+	       ~witness_symbols:choice_symbols
+	       ~registered_witnesses:["#s0", outer_before_inner]
+	       ~transports:[]
+	       proof);
+	  let ambiguous_transports =
+	    [
+	      {
+	        Vampire_kernel_elab.skolem_transport_name = "#s1";
+	        skolem_transport_choice_occurrence = closed_binder_witness;
+	        skolem_transport_definition = TmH "def1";
+	        skolem_transport_local_template = closed_binder_witness;
+	      };
+	      {
+	        Vampire_kernel_elab.skolem_transport_name = "#s2";
+	        skolem_transport_choice_occurrence = closed_binder_witness;
+	        skolem_transport_definition = TmH "def2";
+	        skolem_transport_local_template = closed_binder_witness;
+	      };
+	    ]
+	  in
+	  expect_equal
+	    "disambiguate_skolem_witness_transports should drop one choice occurrence with multiple definitions"
+	    ([], [closed_binder_witness])
+	    (Vampire_kernel_elab.disambiguate_skolem_witness_transports
+	       ambiguous_transports);
+	  let cleanup_plan =
+	    Vampire_kernel_elab.skolem_witness_cleanup_plan
+	      ~normalize:(fun tm -> tm)
+	      ~alias_names:aliases
+	      ~witness_symbols:choice_symbols
+	      ~introduced_symbols:["s1"]
+	      ~registered_witnesses:["#s1", closed_binder_witness]
+	      ~transports
+	      closed_binder_proof
+	  in
+	  expect_equal
+	    "skolem_witness_cleanup_plan should expose deterministic transport-backed replacements"
+	    [TmH "#s1", TmH "def1"; TmH "s1", TmH "def1"; closed_binder_witness, TmH "def1"]
+	    cleanup_plan.Vampire_kernel_elab.skolem_cleanup_replacements;
+	  expect_equal
+	    "skolem_witness_cleanup_plan should classify introduced aliases before cleanup"
+	    {
+	      Vampire_kernel_elab.introduced_symbols_present = [];
+	      introduced_symbols_with_direct_replacement = [];
+	      introduced_symbols_without_direct_replacement = [];
+	    }
+	    cleanup_plan.Vampire_kernel_elab.skolem_cleanup_introduced_classification;
+	  expect_equal
+	    "classify_introduced_symbol_replacements should separate direct and indirect cleanup gaps"
+	    {
+	      Vampire_kernel_elab.introduced_symbols_present = ["#s0"; "s1"];
       introduced_symbols_with_direct_replacement = ["s1"];
       introduced_symbols_without_direct_replacement = ["#s0"];
     }

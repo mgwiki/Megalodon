@@ -200,6 +200,28 @@ val classify_introduced_symbol_replacements :
   Syntax.pf ->
   introduced_symbol_replacement_classification
 
+type skolem_witness_cleanup_plan = {
+  skolem_cleanup_transports : skolem_witness_transport list;
+  skolem_cleanup_ambiguous_choice_occurrences : Syntax.tm list;
+  skolem_cleanup_replacements : (Syntax.tm * Syntax.tm) list;
+  skolem_cleanup_introduced_classification :
+    introduced_symbol_replacement_classification;
+}
+
+val disambiguate_skolem_witness_transports :
+  skolem_witness_transport list ->
+  skolem_witness_transport list * Syntax.tm list
+
+val skolem_witness_cleanup_plan :
+  normalize:(Syntax.tm -> Syntax.tm) ->
+  alias_names:(string -> string list) ->
+  witness_symbols:string list ->
+  introduced_symbols:string list ->
+  registered_witnesses:(string * Syntax.tm) list ->
+  transports:skolem_witness_transport list ->
+  Syntax.pf ->
+  skolem_witness_cleanup_plan
+
 val substitute_named_term :
   string ->
   Syntax.tm ->

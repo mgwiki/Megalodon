@@ -1294,3 +1294,39 @@ TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.s
 WORK_DIR=/project/tmp/and_prefix_exists_elim_extract.1784569037 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
 WORK_DIR=/project/tmp/prefix4_exists_elim_extract.1784569038 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
 ```
+
+## Skolem Witness Cleanup Planning Extraction, 2026-07-20
+
+The latest focused `and3I` diagnostic at
+`/project/tmp/and3I_scoped_elab_diag_1784569258` confirmed that the remaining
+failure is still at `u30`: Vampire emits branch-choice contracts, Megalodon can
+consume them, but the final cleanup plan leaves a nested certificate-local
+choice/witness occurrence.  The proof still fails closed; it is not counted as
+new E1 coverage.
+
+The code change in this step moves the deterministic cleanup planning out of
+`vampire_cert_v1.ml` and into `Vampire_kernel_elab`:
+
+- ambiguous branch-choice transport occurrences are identified and removed by
+  `disambiguate_skolem_witness_transports`;
+- transport-backed replacements and registered-witness replacements are
+  combined by `skolem_witness_cleanup_plan`;
+- introduced-witness alias classification is returned by the same plan.
+
+The importer still performs the final live Megalodon proof check, because that
+depends on the current theorem environment, but it no longer owns the
+certificate-local Skolem/choice cleanup decision.  This is intentionally
+behavior-preserving and audit-aligned: no new search path was added, no
+certificate-local global definitions are accepted, and the current qualifying
+frontier remains the first three original-source hammer proofs (`FalseE`,
+`andEL`, `andER`) with `and3I` failing closed.
+
+Focused validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+WORK_DIR=/project/tmp/and_prefix_cleanup_plan_1784569455 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+WORK_DIR=/project/tmp/prefix4_cleanup_plan_1784569455 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+```

@@ -597,6 +597,87 @@ let classify_introduced_symbol_replacements
     introduced_symbols_without_direct_replacement = without_direct;
   }
 
+type skolem_witness_cleanup_plan = {
+  skolem_cleanup_transports : skolem_witness_transport list;
+  skolem_cleanup_ambiguous_choice_occurrences : tm list;
+  skolem_cleanup_replacements : (tm * tm) list;
+  skolem_cleanup_introduced_classification :
+    introduced_symbol_replacement_classification;
+}
+
+let disambiguate_skolem_witness_transports transports =
+  let ambiguous_choice_occurrences =
+    transports
+    |> List.map
+         (fun transport ->
+            (transport.skolem_transport_choice_occurrence,
+             transport.skolem_transport_definition))
+    |> List.fold_left
+         (fun grouped (actual_choice, definition) ->
+            let definitions =
+              match List.assoc_opt actual_choice grouped with
+              | Some definitions -> definitions
+              | None -> []
+            in
+            (actual_choice,
+             definition :: definitions
+             |> List.sort_uniq compare)
+            :: List.remove_assoc actual_choice grouped)
+         []
+    |> List.filter_map
+         (fun (actual_choice, definitions) ->
+            match definitions with
+            | [] | [_] -> None
+            | _ -> Some actual_choice)
+    |> List.sort_uniq compare
+  in
+  let transports =
+    transports
+    |> List.filter
+         (fun transport ->
+            not
+              (List.mem
+                 transport.skolem_transport_choice_occurrence
+                 ambiguous_choice_occurrences))
+  in
+  transports, ambiguous_choice_occurrences
+
+let skolem_witness_cleanup_plan
+    ~normalize
+    ~alias_names
+    ~witness_symbols
+    ~introduced_symbols
+    ~registered_witnesses
+    ~transports
+    proof =
+  let transports, ambiguous_choice_occurrences =
+    disambiguate_skolem_witness_transports transports
+  in
+  let replacements =
+    prioritized_skolem_witness_transport_proof_replacements
+      ~normalize
+      ~alias_names
+      ~witness_symbols
+      ~registered_witnesses
+      ~transports
+      proof
+  in
+  let introduced_classification =
+    classify_introduced_symbol_replacements
+      ~alias_names
+      ~introduced_symbols
+      ~replacements
+      proof
+  in
+  {
+    skolem_cleanup_transports = transports;
+    skolem_cleanup_ambiguous_choice_occurrences =
+      ambiguous_choice_occurrences;
+    skolem_cleanup_replacements = replacements;
+    skolem_cleanup_introduced_classification =
+      introduced_classification;
+  }
+
 let substitute_named_term name tm =
   let rec subst depth = function
     | TmH candidate when candidate = name -> DB depth
