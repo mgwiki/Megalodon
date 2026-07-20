@@ -1190,3 +1190,41 @@ certificate Skolem witness while the choice theorem expects the epsilon
 witness.  The next implementation step must construct a local proof transport
 for that argument or build the branch proof directly at the epsilon
 proposition.
+
+## No Certificate-Local Witnesses In Cleaned Proofs, 2026-07-20
+
+The latest `and3I` diagnostic found a stricter fail-closed issue in the
+Skolem-CPS cleanup acceptance predicate.  The cleaned candidate was rejected by
+the final checker, but the pre-check guard only rejected unbacked introduced
+Skolem symbols.  A backed symbol such as `#sK0` could therefore survive the
+cleanup guard and rely on a temporary certificate definition during the later
+check.  That is exactly the hidden-state shape the audit warned against.
+
+Qualifying cleanup now rejects every introduced witness alias in the cleaned
+proof, not only unbacked aliases.  The debug output also distinguishes two
+cases:
+
+- an introduced symbol remains and a direct symbol replacement exists, which
+  would indicate a traversal/replacement bug;
+- an introduced symbol remains without any direct replacement, which indicates
+  that the current certificate only has the reverse registered-witness cleanup
+  (`Eps_prop(...) -> #sK0`) and still lacks the explicit small-kernel transport
+  proof needed to eliminate the certificate-local Skolem symbol.
+
+A focused probe at
+`/project/tmp/and3I_direct_replacement_debug_1784568167` showed the second
+case for `and3I`: the registered cleanup had no direct replacement for the
+escaping `#sK0`.  The frontier is therefore unchanged, but the failure is now
+more honest and more audit-aligned: the next fix must be a real scoped
+Skolem/choice transport proof in the extracted elaborator, not acceptance of a
+justified local symbol.
+
+Focused validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+WORK_DIR=/project/tmp/and_prefix_no_local_symbols.1784568292 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+WORK_DIR=/project/tmp/prefix4_no_local_symbols.1784568292 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+```

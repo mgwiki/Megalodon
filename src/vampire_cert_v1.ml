@@ -23332,6 +23332,20 @@ let elaborate_preprocess_refutation_native
                  ~transports:branch_choice_transports
                  candidate
 	             in
+             let introduced_witness_alias_symbols =
+               introduced_witness_symbols
+               |> List.concat_map native_core_symbol_name_aliases
+               |> List.sort_uniq String.compare
+             in
+             let registered_choice_symbol_replacements =
+               registered_choice_replacements
+               |> List.filter_map
+                    (function
+                      | TmH name, replacement ->
+                          Some (name, replacement)
+                      | _ -> None)
+               |> List.sort_uniq compare
+             in
              let branch_choice_expanded_candidate =
                let template_attempt_limit =
                  match Sys.getenv_opt "MEGALODON_CERT_BRANCH_CHOICE_TEMPLATE_LIMIT" with
@@ -23412,7 +23426,40 @@ let elaborate_preprocess_refutation_native
                   ^ string_of_int (List.length registered_choice_replacements)
 	                  ^ " branch-choice candidate count="
 	                  ^ string_of_int
-	                      (List.length branch_choice_candidate_replacements));
+	                    (List.length branch_choice_candidate_replacements));
+             if debug then begin
+               let escaping_symbols =
+                 introduced_witness_alias_symbols
+                 |> List.filter
+                      (fun name ->
+                         native_core_pf_contains_term_symbol [name] candidate)
+                 |> List.sort_uniq String.compare
+               in
+               let escaping_direct_symbols =
+                 escaping_symbols
+                 |> List.filter
+                      (fun name ->
+                         List.mem_assoc name registered_choice_symbol_replacements)
+                 |> List.sort_uniq String.compare
+               in
+               if escaping_direct_symbols <> [] then
+                 prerr_endline
+                   (id
+                    ^ ": native preprocess Skolem CPS direct introduced-symbol replacements available for "
+                    ^ String.concat "," escaping_direct_symbols);
+               let escaping_without_direct =
+                 escaping_symbols
+                 |> List.filter
+                      (fun name ->
+                         not
+                           (List.mem name escaping_direct_symbols))
+               in
+               if escaping_without_direct <> [] then
+                 prerr_endline
+                   (id
+                    ^ ": native preprocess Skolem CPS introduced symbols without direct replacement "
+                    ^ String.concat "," escaping_without_direct)
+             end;
              let canonical_witness_name name =
                if String.length name > 0 && name.[0] = '#' then
                  String.sub name 1 (String.length name - 1)
@@ -23575,7 +23622,7 @@ let elaborate_preprocess_refutation_native
                       not (native_core_pf_contains_choice_witness cleaned)
                       && not
                            (native_core_pf_contains_term_symbol
-                              unbacked_introduced_witness_symbols
+                              introduced_witness_alias_symbols
                               cleaned)
                       && final_refutation_proof_checks cleaned
                     in
@@ -23605,6 +23652,11 @@ let elaborate_preprocess_refutation_native
                                    ^ string_of_bool
                                        (native_core_pf_contains_term_symbol
                                           unbacked_introduced_witness_symbols
+                                          expanded)
+                                   ^ " contains_introduced="
+                                   ^ string_of_bool
+                                       (native_core_pf_contains_term_symbol
+                                          introduced_witness_alias_symbols
                                           expanded));
                                 begin match
                                   native_core_pf_choice_witness_detail expanded
@@ -23620,17 +23672,36 @@ let elaborate_preprocess_refutation_native
                             None
                         | None ->
                             if debug then
-                              prerr_endline
-                                (id
-                                 ^ ": native preprocess Skolem CPS cleaned candidate rejected before final check; contains_choice="
-                                 ^ string_of_bool
-                                     (native_core_pf_contains_choice_witness
-                                        cleaned)
-                                 ^ " contains_unbacked_introduced="
-                                 ^ string_of_bool
-                                     (native_core_pf_contains_term_symbol
-                                        unbacked_introduced_witness_symbols
-                                        cleaned));
+                              begin
+                                prerr_endline
+                                  (id
+                                   ^ ": native preprocess Skolem CPS cleaned candidate rejected before final check; contains_choice="
+                                   ^ string_of_bool
+                                       (native_core_pf_contains_choice_witness
+                                          cleaned)
+                                   ^ " contains_unbacked_introduced="
+                                   ^ string_of_bool
+                                       (native_core_pf_contains_term_symbol
+                                          unbacked_introduced_witness_symbols
+                                          cleaned)
+                                   ^ " contains_introduced="
+                                   ^ string_of_bool
+                                       (native_core_pf_contains_term_symbol
+                                          introduced_witness_alias_symbols
+                                          cleaned));
+                                begin match
+                                  native_core_pf_term_symbol_detail
+                                    introduced_witness_alias_symbols
+                                    cleaned
+                                with
+                                | Some detail ->
+                                    prerr_endline
+                                      (id
+                                       ^ ": native preprocess Skolem CPS cleaned candidate first introduced witness: "
+                                       ^ detail)
+                                | None -> ()
+                                end
+                              end;
                             None
                         end
 	                    | None -> None)
