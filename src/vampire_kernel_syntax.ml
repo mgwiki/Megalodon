@@ -6,6 +6,14 @@ type literal =
 
 type clause = literal list
 
+type urr_trace = {
+  urr_unit_parent : string;
+  urr_selected : literal;
+  urr_selected_substituted : literal;
+  urr_unit_substituted : literal;
+  urr_remaining : clause;
+}
+
 type skolem_formula_child = {
   skolem_child_role : string;
   skolem_child_formula : Syntax.tm;

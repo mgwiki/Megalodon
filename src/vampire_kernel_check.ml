@@ -234,6 +234,44 @@ let check_subsumption_resolution
   in
   check_side false side
 
+let check_unit_resulting_resolution
+    ~id
+    ~is_split_literal
+    ~complementary
+    ~clause_contains
+    ~clause_matches
+    ~unit_clause
+    ~main
+    ~traces
+    ~result =
+  if traces = [] then error (id ^ ": unit_resulting_resolution trace is empty");
+  let non_split_length clause =
+    List.length (List.filter (fun lit -> not (is_split_literal lit)) clause)
+  in
+  let rec check_trace current = function
+    | [] -> current
+    | trace :: rest ->
+        let unit_clause = unit_clause trace.urr_unit_parent in
+        if non_split_length unit_clause <> 1 then
+          error (id ^ ": URR unit parent " ^ trace.urr_unit_parent ^ " is not a unit clause");
+        if not (complementary trace.urr_selected_substituted trace.urr_unit_substituted) then
+          error (id ^ ": URR substituted selected and unit literals are not complementary");
+        let current_non_split_length = non_split_length current in
+        let remaining_non_split_length = non_split_length trace.urr_remaining in
+        if remaining_non_split_length >= current_non_split_length then
+          error (id ^ ": URR trace did not remove a literal");
+        let selected_is_linked =
+          clause_contains trace.urr_selected current
+          || clause_contains trace.urr_selected_substituted current
+        in
+        if not selected_is_linked && current_non_split_length = remaining_non_split_length + 1 then
+          error (id ^ ": URR selected literal is not linked to the current clause");
+        check_trace trace.urr_remaining rest
+  in
+  let final_remaining = check_trace main traces in
+  if not (clause_matches final_remaining result) then
+    error (id ^ ": URR result does not match final trace remaining clause")
+
 let check_equality_resolution ~id ~equality_sides ~parent ~literal_index ~result =
   let literal = nth literal_index parent (id ^ " equality-resolution literal") in
   begin

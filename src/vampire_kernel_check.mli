@@ -124,6 +124,21 @@ val check_subsumption_resolution :
   result:Vampire_kernel_syntax.clause ->
   unit
 
+val check_unit_resulting_resolution :
+  id:string ->
+  is_split_literal:(Vampire_kernel_syntax.literal -> bool) ->
+  complementary:
+    (Vampire_kernel_syntax.literal -> Vampire_kernel_syntax.literal -> bool) ->
+  clause_contains:
+    (Vampire_kernel_syntax.literal -> Vampire_kernel_syntax.clause -> bool) ->
+  clause_matches:
+    (Vampire_kernel_syntax.clause -> Vampire_kernel_syntax.clause -> bool) ->
+  unit_clause:(string -> Vampire_kernel_syntax.clause) ->
+  main:Vampire_kernel_syntax.clause ->
+  traces:Vampire_kernel_syntax.urr_trace list ->
+  result:Vampire_kernel_syntax.clause ->
+  unit
+
 val check_equality_resolution :
   id:string ->
   equality_sides:(Syntax.tm -> (Syntax.tm * Syntax.tm) option) ->

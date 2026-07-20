@@ -46,7 +46,7 @@ type definition_rewrite = {
   rewrite_to : tm;
 }
 
-type urr_trace = {
+type urr_trace = Vampire_kernel_syntax.urr_trace = {
   urr_unit_parent : string;
   urr_selected : literal;
   urr_selected_substituted : literal;
@@ -3672,34 +3672,19 @@ let clause_matches_native_trace left right =
   || same_clause_mod_vampire_var_renaming left right
 
 let check_unit_resulting_resolution checked id main_parent_id traces result =
-  if traces = [] then error (id ^ ": unit_resulting_resolution trace is empty");
   let main_clause = lookup_clause checked main_parent_id in
-  let non_split_length clause =
-    List.length (List.filter (fun lit -> not (is_split_literal lit)) clause)
-  in
-  let rec check_trace current = function
-    | [] -> current
-    | trace :: rest ->
-        let unit_clause = lookup_clause checked trace.urr_unit_parent in
-        if non_split_length unit_clause <> 1 then
-          error (id ^ ": URR unit parent " ^ trace.urr_unit_parent ^ " is not a unit clause");
-        if not (complementary_mod_equality trace.urr_selected_substituted trace.urr_unit_substituted) then
-          error (id ^ ": URR substituted selected and unit literals are not complementary");
-        let current_non_split_length = non_split_length current in
-        let remaining_non_split_length = non_split_length trace.urr_remaining in
-        if remaining_non_split_length >= current_non_split_length then
-          error (id ^ ": URR trace did not remove a literal");
-        let selected_is_linked =
-          clause_contains_literal_mod trace.urr_selected current
-          || clause_contains_literal_mod trace.urr_selected_substituted current
-        in
-        if not selected_is_linked && current_non_split_length = remaining_non_split_length + 1 then
-          error (id ^ ": URR selected literal is not linked to the current clause");
-        check_trace trace.urr_remaining rest
-  in
-  let final_remaining = check_trace main_clause traces in
-  if not (clause_matches_native_trace final_remaining result) then
-    error (id ^ ": URR result does not match final trace remaining clause")
+  try
+    Vampire_kernel_check.check_unit_resulting_resolution
+      ~id
+      ~is_split_literal
+      ~complementary:complementary_mod_equality
+      ~clause_contains:clause_contains_literal_mod
+      ~clause_matches:clause_matches_native_trace
+      ~unit_clause:(lookup_clause checked)
+      ~main:main_clause
+      ~traces
+      ~result
+  with Vampire_kernel_check.Error msg -> error msg
 
 let check_equality_resolution_constraints checked id parent_id literal_index selected constraints result =
   let parent_clause = lookup_clause checked parent_id in
