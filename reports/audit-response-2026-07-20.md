@@ -35,7 +35,9 @@ oracle and debugging aid.  It must not be used to claim counted progress.
 The first audit-driven guard is intentionally simple: qualifying mode may not
 register certificate-local definitions globally at all.  Any attempt to call
 the compact Qed-delta registration path raises immediately.  Qed cleanup now
-also checks that no tracked certificate-local Qed state remains.
+also checks that no tracked certificate-local Qed state remains.  Qualifying
+mode also rejects `MEGALODON_CERT_KEEP_QED_DELTA=1`, since retaining temporary
+Qed reconstruction state is incompatible with the isolation invariant.
 
 This is stricter than the previous transactional idea and is the correct
 default for the next milestone.  If a proof needs certificate-local helper

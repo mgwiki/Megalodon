@@ -14224,6 +14224,12 @@ let _ =
           (Failure
              ("-vampireabyqualifying cannot be combined with "
               ^ "MEGALODON_CERT_ALLOW_TRANSITIONAL_PREPROCESS_KNOWN=1"));
+      if !vampireabyqualifying
+         && Sys.getenv_opt "MEGALODON_CERT_KEEP_QED_DELTA" = Some "1" then
+        raise
+          (Failure
+             ("-vampireabyqualifying cannot be combined with "
+              ^ "MEGALODON_CERT_KEEP_QED_DELTA=1"));
       let checkfile () =
         let c = open_in (Sys.argv.(i-1)) in
         current_input_file := Some (Sys.argv.(i-1));

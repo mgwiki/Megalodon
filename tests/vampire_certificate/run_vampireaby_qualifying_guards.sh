@@ -31,6 +31,23 @@ if ! rg -q -- '-vampireabyqualifying cannot be combined with MEGALODON_CERT_ALLO
   exit 1
 fi
 
+if MEGALODON_CERT_KEEP_QED_DELTA=1 \
+    bin/megalodon \
+      -vampireabyqualifying \
+      examples/egal/PfgENov2021Preambles.mg \
+      >"$WORK_DIR/keep_qed_delta_allowed.out" \
+      2>"$WORK_DIR/keep_qed_delta_allowed.err"; then
+  echo "qualifying mode accepted certificate-local Qed delta retention" >&2
+  exit 1
+fi
+
+if ! rg -q -- '-vampireabyqualifying cannot be combined with MEGALODON_CERT_KEEP_QED_DELTA=1' \
+    "$WORK_DIR/keep_qed_delta_allowed.err"; then
+  echo "qualifying mode failed for the wrong reason when Qed delta retention was requested" >&2
+  cat "$WORK_DIR/keep_qed_delta_allowed.err" >&2
+  exit 1
+fi
+
 if bin/megalodon \
     -allowincompleteqed \
     -vampireabyqualifying \
