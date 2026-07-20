@@ -15265,6 +15265,23 @@ let rec native_core_direct_skolem_formula_proof
     native_core_normalize_bool_constants tm
     |> tm_beta_eta_norm
   in
+  let branch_choice_db_summary tm =
+    let max_db = ref (-1) in
+    let tmh_count = ref 0 in
+    let rec scan = function
+      | DB index -> max_db := max !max_db index
+      | TmH _ -> incr tmh_count
+      | TpAp (body, _) -> scan body
+      | Ap (left, right) | Imp (left, right) ->
+          scan left;
+          scan right
+      | Lam (_, body) | All (_, body) -> scan body
+      | Prim _ -> ()
+    in
+    scan tm;
+    "max_db=" ^ string_of_int !max_db
+    ^ " tmh=" ^ string_of_int !tmh_count
+  in
   let emitted_branch_choice_instantiation
       local_depth replacements substitution_name target_witness tp =
     let close_choice_body body =
@@ -15288,11 +15305,35 @@ let rec native_core_direct_skolem_formula_proof
     with
     | None -> None
     | Some instantiation ->
+        if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+          prerr_endline
+            (id
+             ^ ": native core skolem emitted branch choice raw body "
+             ^ branch_choice_db_summary
+                 instantiation.Vampire_kernel_elab.skolem_choice_body
+             ^ " predicate "
+             ^ branch_choice_db_summary
+                 instantiation.Vampire_kernel_elab.skolem_choice_predicate
+             ^ " local_depth="
+             ^ string_of_int local_depth
+             ^ " ambient_shift="
+             ^ string_of_int ambient_shift
+             ^ " closing_variables="
+             ^ string_of_int (List.length closing_variables));
         let instantiation =
           Vampire_kernel_elab.lift_skolem_branch_choice_instantiation
             ~ambient_shift
             instantiation
         in
+        if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+          prerr_endline
+            (id
+             ^ ": native core skolem emitted branch choice lifted body "
+             ^ branch_choice_db_summary
+                 instantiation.Vampire_kernel_elab.skolem_choice_body
+             ^ " predicate "
+             ^ branch_choice_db_summary
+                 instantiation.Vampire_kernel_elab.skolem_choice_predicate);
         let body =
           close_choice_body
             instantiation.Vampire_kernel_elab.skolem_choice_body
@@ -15301,6 +15342,13 @@ let rec native_core_direct_skolem_formula_proof
           close_choice_predicate
             instantiation.Vampire_kernel_elab.skolem_choice_predicate
         in
+        if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+          prerr_endline
+            (id
+             ^ ": native core skolem emitted branch choice closed body "
+             ^ branch_choice_db_summary body
+             ^ " predicate "
+             ^ branch_choice_db_summary predicate);
         let predicate =
           match predicate with
           | Lam (predicate_tp, predicate_body) when predicate_tp = tp ->

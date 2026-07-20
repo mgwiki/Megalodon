@@ -2312,3 +2312,49 @@ Validation:
 TMPDIR=/project/tmp ./makeopt
 WORK_DIR=/project/tmp/prefix9_ctxdiag_1784582926 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire MEGALODON_CERT_DEBUG=1 MEGALODON_CERT_DEBUG_GUIDED=1 MEGALODON_CERT_DEBUG_SUPPLIED=1 MEGALODON_CERT_DEBUG_SOURCE_APPLY=1 MEGALODON_CERT_DEBUG_LIVE_SAFE_DELTA=1 tests/vampire_reconstruction/run_live_hammer_prefix9_failclosed_qualifying.sh
 ```
+
+## Branch-Choice Transport Diagnostic, 2026-07-20 Late
+
+The next diagnostic was added at the deterministic Skolem branch-choice
+boundary.  It reports the maximum de Bruijn index and number of remaining
+named symbols in Vampire's emitted branch-choice body/predicate before lifting,
+after ambient lifting, and after named-variable closure.
+
+For the failing `u33` step in `or3E`, the emitted body starts with only the
+implicit witness DB and named symbols, then closure raises the maximum DB by
+the size of the source/result variable context:
+
+```text
+u33 raw body max_db=0 tmh=27 local_depth=0 ambient_shift=1 closing_variables=4
+u33 lifted body max_db=0 tmh=27
+u33 closed body max_db=4 tmh=13
+u33 raw body max_db=0 tmh=27 local_depth=0 ambient_shift=0 closing_variables=3
+u33 closed body max_db=3 tmh=13
+```
+
+This explains the live failure more concretely: the bad application later sees
+the ambient-shifted closed body under `term_depth=11` as DB 15, while the
+target expects DB 12.  The mismatch is introduced at source-local
+branch-choice transport, before returned-proof expansion.
+
+Two tempting fixes were tried and reverted:
+
+- closing branch-choice bodies only over result variables regressed the
+  qualifying prefix from eight commands to three;
+- closing branch-choice bodies only over section variables regressed the
+  qualifying prefix from eight commands to four.
+
+So the correct fix is not a blanket `closing_variables` change.  The branch
+choice certificate needs to carry, or Megalodon needs to preserve, which named
+occurrences are source-local section variables and which are result-step
+variables, then close/localize those two classes in their respective contexts.
+Until that distinction is represented explicitly, the honest frontier remains
+eight original-source qualifying commands and `or3E` continues to fail closed.
+
+Validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+WORK_DIR=/project/tmp/prefix9_branchdiag_1784583441 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix9_failclosed_qualifying.sh
+MEGALODON_CERT_DEBUG=1 WORK_DIR=/project/tmp/prefix9_branchdiag_debug_1784583481 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix9_failclosed_qualifying.sh
+```
