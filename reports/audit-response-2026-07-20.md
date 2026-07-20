@@ -279,6 +279,30 @@ step should move the relevant Skolem/choice transformation replay out of the
 monolithic importer and into the extracted small-kernel checker/elaborator
 modules before claiming additional counted proofs.
 
+## Qualifying Frontier Diagnostics, 2026-07-20
+
+After another audit pass, I deliberately did not add a new Skolem/choice
+heuristic to make `and3I` pass.  A too-early experiment that rejected every
+non-vacuous epsilon-to-witness body transport obligation also rejected the
+already qualifying `FalseE` case, which showed that the obligation extractor is
+useful evidence but not itself the right acceptance boundary.
+
+The committed change is narrower: qualifying mode now prints certificate replay
+errors at normal qualifying verbosity and, when deterministic replay returns no
+proof, prints an explicit message that candidate source-binding fallback was
+disabled.  The prefix4 guard still expects exactly three reconstructed proofs
+and then a fail-closed `and3I`; it now leaves a human-readable log entry:
+
+```text
+Vampire native deterministic replay did not close current proof goal ...;
+qualifying mode disabled candidate source-binding fallback.
+```
+
+This is intentionally not counted proof progress.  It makes the audit boundary
+visible in ordinary `/project/tmp` artifacts and keeps the next task focused on
+building the explicit checked Skolem/choice transport in the small-kernel path,
+rather than re-enabling the legacy source-binding search.
+
 ## Live Expected-Delta Consistency, 2026-07-20
 
 A subsequent focused `and3I` probe found one small live-checker inconsistency.

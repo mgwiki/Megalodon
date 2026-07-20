@@ -6116,6 +6116,11 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
         if !vampireabyqualifying then
           begin
             timing "candidate_refutation_fallback:disabled_by_qualifying_mode";
+            Printf.printf
+              "Vampire native deterministic replay did not close current proof goal at line %d char %d; qualifying mode disabled candidate source-binding fallback.\n"
+              !lineno
+              !charno;
+            flush stdout;
             None
           end
         else
@@ -6460,7 +6465,7 @@ let check_vampire_aby_native_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) ?(proof_
                     with
                     | Vampire_cert_v1.Error msg ->
                         timing "refutation_replay:error";
-                        if !verbosity > 8 then
+                        if !vampireabyqualifying || !verbosity > 8 then
                           begin
                             Printf.printf
                               "Vampire native certificate did not reconstruct current %s goal at line %d char %d: %s.\n"
@@ -6476,7 +6481,7 @@ let check_vampire_aby_native_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) ?(proof_
                         end
                     | Failure msg ->
                         timing "refutation_replay:failure";
-                        if !verbosity > 8 then
+                        if !vampireabyqualifying || !verbosity > 8 then
                           begin
                             Printf.printf
                               "Vampire native certificate proof candidate did not check for current %s goal at line %d char %d: %s.\n"
@@ -6505,7 +6510,7 @@ let check_vampire_aby_native_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) ?(proof_
             with
             | Vampire_cert_v1.Error msg ->
                 timing "refutation_replay:error";
-                if !verbosity > 8 then
+                if !vampireabyqualifying || !verbosity > 8 then
                   begin
                     Printf.printf
                       "Vampire native certificate did not reconstruct current %s goal at line %d char %d: %s.\n"
@@ -6521,7 +6526,7 @@ let check_vampire_aby_native_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) ?(proof_
                 end
             | Failure msg ->
                 timing "refutation_replay:failure";
-                if !verbosity > 8 then
+                if !vampireabyqualifying || !verbosity > 8 then
                   begin
                     Printf.printf
                       "Vampire native certificate proof candidate did not check for current %s goal at line %d char %d: %s.\n"
