@@ -2682,15 +2682,15 @@ let check_fool_bool checked id parent_id result =
 let check_resolution checked id left_id right_id left_index right_index result =
   let left_clause = lookup_clause checked left_id in
   let right_clause = lookup_clause checked right_id in
-  let left_pivot = nth left_index left_clause (id ^ " left pivot") in
-  let right_pivot = nth right_index right_clause (id ^ " right pivot") in
-  if not (complementary left_pivot right_pivot) then
-    error (id ^ ": resolution pivots are not complementary");
-  let left_rest = remove_at left_index left_clause (id ^ " left pivot") in
-  let right_rest = remove_at right_index right_clause (id ^ " right pivot") in
-  let expected = left_rest @ right_rest in
-  if not (same_clause_multiset expected result) then
-    error (id ^ ": resolution result does not match parent clauses after pivot removal")
+  try
+    Vampire_kernel_check.check_resolution
+      ~id
+      ~left:left_clause
+      ~right:right_clause
+      ~left_index
+      ~right_index
+      ~result
+  with Vampire_kernel_check.Error msg -> error msg
 
 let is_generated_substitute_step id =
   let needle = "_subst" in
@@ -2704,39 +2704,37 @@ let is_generated_substitute_step id =
 
 let check_substitute checked id parent_id subst result =
   let parent_clause = lookup_clause checked parent_id in
-  let expected = subst_clause subst parent_clause in
-  if not (same_clause_multiset expected result)
-     && not (is_generated_substitute_step id) then
-    error (id ^ ": substitution result does not match parent under explicit substitution")
+  try
+    Vampire_kernel_check.check_substitute
+      ~id
+      ~parent:parent_clause
+      ~subst
+      ~result
+  with Vampire_kernel_check.Error msg ->
+    if not (is_generated_substitute_step id) then error msg
 
-let unique_clause clause =
-  let rec add_unique acc = function
-    | [] -> List.rev acc
-    | literal :: rest ->
-        if List.exists ((=) literal) acc then add_unique acc rest
-        else add_unique (literal :: acc) rest
-  in
-  add_unique [] clause
+let unique_clause = Vampire_kernel_check.unique_clause
 
 let check_condensation checked id parent_id subst result =
   let parent_clause = lookup_clause checked parent_id in
-  let expected = unique_clause (subst_clause subst parent_clause) in
-  if List.length expected >= List.length parent_clause then
-    error (id ^ ": condensation did not remove a duplicate literal");
-  if not (same_clause_multiset expected result) then
-    error (id ^ ": condensation result does not match duplicate-collapsed substituted parent")
+  try
+    Vampire_kernel_check.check_condensation
+      ~id
+      ~parent:parent_clause
+      ~subst
+      ~result
+  with Vampire_kernel_check.Error msg -> error msg
 
 let check_factor checked id parent_id left_index right_index result =
-  if left_index = right_index then error (id ^ ": factor literal indices must be distinct");
   let parent_clause = lookup_clause checked parent_id in
-  let left_literal = nth left_index parent_clause (id ^ " first factor literal") in
-  let right_literal = nth right_index parent_clause (id ^ " second factor literal") in
-  if left_literal <> right_literal then
-    error (id ^ ": native certificate v1 currently factors only identical literals");
-  let remove_index = if left_index > right_index then left_index else right_index in
-  let expected = remove_at remove_index parent_clause (id ^ " removed factor literal") in
-  if not (same_clause_multiset expected result) then
-    error (id ^ ": factor result does not match parent clause after duplicate removal")
+  try
+    Vampire_kernel_check.check_factor
+      ~id
+      ~parent:parent_clause
+      ~left_index
+      ~right_index
+      ~result
+  with Vampire_kernel_check.Error msg -> error msg
 
 let swap_literal_equality = function
   | Pos atom ->

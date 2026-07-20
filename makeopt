@@ -98,6 +98,26 @@ if [ $? -gt 0 ]
 then
     exit 1
 fi
+$OCAMLOPT -I bin -o bin/vampire_kernel_check.cmi -c src/vampire_kernel_check.mli
+if [ $? -gt 0 ]
+then
+    exit 1
+fi
+$OCAMLOPT -I bin -o bin/vampire_kernel_check.cmx -c src/vampire_kernel_check.ml
+if [ $? -gt 0 ]
+then
+    exit 1
+fi
+$OCAMLOPT -I bin -o bin/vampire_kernel_elab.cmi -c src/vampire_kernel_elab.mli
+if [ $? -gt 0 ]
+then
+    exit 1
+fi
+$OCAMLOPT -I bin -o bin/vampire_kernel_elab.cmx -c src/vampire_kernel_elab.ml
+if [ $? -gt 0 ]
+then
+    exit 1
+fi
 $OCAMLOPT -I bin -o bin/vampire_cert_v1.cmi -c src/vampire_cert_v1.mli
 if [ $? -gt 0 ]
 then
@@ -158,7 +178,7 @@ if [ $? -gt 0 ]
 then
     exit 1
 fi
-$OCAMLOPT -o bin/megalodon -I +unix unix.cmxa bin/hashbtcstub.o bin/hashbtc.cmx bin/ser.cmx bin/hashaux.cmx bin/hash.cmx bin/hashold.cmx bin/mathdata.cmx bin/mathdatapfg.cmx bin/syntax.cmx bin/vampire_kernel_syntax.cmx bin/vampire_cert_v1.cmx bin/vampire_source_context.cmx bin/parser.cmx bin/lexer.cmx bin/megaauto.cmx bin/interpret.cmx bin/megalodon.cmx
+$OCAMLOPT -o bin/megalodon -I +unix unix.cmxa bin/hashbtcstub.o bin/hashbtc.cmx bin/ser.cmx bin/hashaux.cmx bin/hash.cmx bin/hashold.cmx bin/mathdata.cmx bin/mathdatapfg.cmx bin/syntax.cmx bin/vampire_kernel_syntax.cmx bin/vampire_kernel_check.cmx bin/vampire_kernel_elab.cmx bin/vampire_cert_v1.cmx bin/vampire_source_context.cmx bin/parser.cmx bin/lexer.cmx bin/megaauto.cmx bin/interpret.cmx bin/megalodon.cmx
 if [ $? -gt 0 ]
 then
     exit 1
