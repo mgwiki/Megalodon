@@ -223,6 +223,7 @@ val elaborate_core_resolution_refutation_native :
   ?external_definition_names:string list ->
   certificate ->
   core_native_proof
+val with_forced_final_skolem_cleanup : (unit -> 'a) -> 'a
 val elaborate_preprocess_refutation_native :
   ?qualifying:bool ->
   ?source_map:source_map_entry list ->

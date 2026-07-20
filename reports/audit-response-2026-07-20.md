@@ -2358,3 +2358,32 @@ TMPDIR=/project/tmp ./makeopt
 WORK_DIR=/project/tmp/prefix9_branchdiag_1784583441 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix9_failclosed_qualifying.sh
 MEGALODON_CERT_DEBUG=1 WORK_DIR=/project/tmp/prefix9_branchdiag_debug_1784583481 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix9_failclosed_qualifying.sh
 ```
+
+## Final-Cleanup Retry Experiment, 2026-07-20 Late
+
+I tested the hypothesis that `or3E` only fails because final Skolem
+branch-choice cleanup is not entered on the normal qualifying path.  The code
+now exposes a scoped diagnostic hook,
+`Vampire_cert_v1.with_forced_final_skolem_cleanup`, and the Megalodon
+source-goal bridge can use it only when
+`MEGALODON_CERT_RETRY_FINAL_SKOLEM_CLEANUP=1` is set.
+
+The experiment is deliberately opt-in.  Enabling it automatically is the wrong
+default: on `or3E`, the forced cleanup re-elaborated the certificate for
+49.751 seconds and still failed to close the source goal.  This confirms the
+audit concern that broad cleanup/search around the certificate is too slow and
+not the right architectural path.
+
+The useful result is negative but concrete: final cleanup is not merely
+skipped; even when forced, the existing branch-choice cleanup does not repair
+the DB 12/15 source-local mismatch.  The next fix must be at the small
+branch-choice transport contract itself, preferably with richer Vampire-side
+role data for source locals versus preserved step variables.
+
+Validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+WORK_DIR=/project/tmp/and_prefix_retrygate_1784584587 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+WORK_DIR=/project/tmp/prefix9_retrygate_1784584610 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire WALL_SECONDS=120 tests/vampire_reconstruction/run_live_hammer_prefix9_failclosed_qualifying.sh
+```

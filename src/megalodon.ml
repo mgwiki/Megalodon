@@ -6260,7 +6260,9 @@ let vampire_reconstruct_goal_from_source_audit
     end;
   result
 
-let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map source_audit =
+let rec vampire_certificate_reconstruct_aby_goal
+    ?(skolem_cleanup_retry=false)
+    claimtm cxtm cxpf cert source_map source_audit =
   let debug_timing = Sys.getenv_opt "MEGALODON_CERT_DEBUG_TIMING" = Some "1" in
   let timing_start = Unix.gettimeofday () in
   let timing_last = ref timing_start in
@@ -6477,7 +6479,22 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
               !lineno
               !charno;
             flush stdout;
-            None
+            if skolem_cleanup_retry
+               || Sys.getenv_opt
+                    "MEGALODON_CERT_RETRY_FINAL_SKOLEM_CLEANUP" <> Some "1" then
+              None
+            else begin
+              timing "final_skolem_cleanup_retry:start";
+              let result =
+                Vampire_cert_v1.with_forced_final_skolem_cleanup
+                  (fun () ->
+                     vampire_certificate_reconstruct_aby_goal
+                       ~skolem_cleanup_retry:true
+                       claimtm cxtm cxpf cert source_map source_audit)
+              in
+              timing "final_skolem_cleanup_retry:done";
+              result
+            end
           end
         else
           begin

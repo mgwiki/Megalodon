@@ -20724,6 +20724,15 @@ let elaborate_core_resolution_refutation_native
     core_native_source_assumptions = source_count;
   }
 
+let native_core_force_final_skolem_cleanup = ref false
+
+let with_forced_final_skolem_cleanup f =
+  let previous = !native_core_force_final_skolem_cleanup in
+  native_core_force_final_skolem_cleanup := true;
+  Fun.protect
+    ~finally:(fun () -> native_core_force_final_skolem_cleanup := previous)
+    f
+
 let elaborate_preprocess_refutation_native
     ?(qualifying=false)
     ?(source_map=[])
@@ -23244,7 +23253,8 @@ let elaborate_preprocess_refutation_native
         None
   in
   let try_final_cleanup =
-    Sys.getenv_opt "MEGALODON_CERT_TRY_FINAL_CLEANUP" = Some "1"
+    !native_core_force_final_skolem_cleanup
+    || Sys.getenv_opt "MEGALODON_CERT_TRY_FINAL_CLEANUP" = Some "1"
     || Sys.getenv_opt "MEGALODON_CERT_FAIL_FAST_SKOLEM_CPS" = Some "1"
     || List.exists
          (fun (_entry_id, _replacement_names, _closed_witness,
