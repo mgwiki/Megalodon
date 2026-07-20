@@ -303,6 +303,33 @@ visible in ordinary `/project/tmp` artifacts and keeps the next task focused on
 building the explicit checked Skolem/choice transport in the small-kernel path,
 rather than re-enabling the legacy source-binding search.
 
+## Live-Safe Delta Extraction, 2026-07-20
+
+The next focused `and3I` debug run showed that the live-safe delta filter does
+keep the nested `sK0`/`sK1` witness definitions.  The remaining failure is
+therefore not a missing-definition problem: after live expansion, the proof term
+still contains a binder-depth mismatch between the explicit prop-choice witness
+constructed by the Skolem replay and the proposition expected by an internal
+implication application.
+
+To keep moving in the direction requested by the audit, the live-safe delta
+selection algorithm was extracted from `megalodon.ml` into
+`vampire_kernel_elab.ml`.  The extracted helper computes the same fixpoint over
+certificate-local definitions, including aliases such as `sK0`/`#sK0`, and
+returns both kept entries and explicit skipped-entry diagnostics.  Unit tests
+now cover:
+
+- transitive certificate-local dependencies, where `sK1` may depend on `sK0`;
+- alias dependencies, where a later definition refers to `#sK0`;
+- skipped definitions whose bodies still mention an unkept certificate-local
+  symbol.
+
+This is still not counted proof progress.  The qualifying frontier remains
+three original-source proofs, and the prefix4 guard still fails closed at
+`and3I`.  The value is architectural: another piece of deterministic replay
+logic has moved out of the large main module and is now directly testable in
+the extracted elaborator boundary.
+
 ## Live Expected-Delta Consistency, 2026-07-20
 
 A subsequent focused `and3I` probe found one small live-checker inconsistency.

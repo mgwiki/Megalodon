@@ -217,6 +217,113 @@ let replace_exact_terms_in_proof ~normalize replacements proof =
   in
   replace_pf 0 proof
 
+type live_safe_delta_entry = {
+  live_safe_delta_name : string;
+  live_safe_delta_arity : int;
+  live_safe_delta_body : tm;
+}
+
+type live_safe_delta_skip = {
+  live_safe_delta_skipped_entry : live_safe_delta_entry;
+  live_safe_delta_unsafe_symbol : string option;
+}
+
+type live_safe_delta_result = {
+  live_safe_delta_kept : live_safe_delta_entry list;
+  live_safe_delta_skipped : live_safe_delta_skip list;
+}
+
+let default_live_safe_delta_alias name =
+  if name = "" then None
+  else if name.[0] = '#' then
+    Some (String.sub name 1 (String.length name - 1))
+  else
+    Some ("#" ^ name)
+
+let live_safe_delta_entries
+    ?(alias_name=default_live_safe_delta_alias)
+    ~body_expander
+    ~is_live_symbol
+    ~is_extra_symbol
+    entries =
+  let expanded_bodies = Hashtbl.create (List.length entries) in
+  let expanded_body entry =
+    match Hashtbl.find_opt expanded_bodies entry.live_safe_delta_name with
+    | Some body -> body
+    | None ->
+        let body = body_expander entry.live_safe_delta_body in
+        Hashtbl.replace expanded_bodies entry.live_safe_delta_name body;
+        body
+  in
+  let kept_symbols = Hashtbl.create (List.length entries) in
+  let kept_entries = ref [] in
+  let add_kept_symbol name =
+    Hashtbl.replace kept_symbols name ()
+  in
+  let add_kept_entry entry body =
+    let entry = { entry with live_safe_delta_body = body } in
+    kept_entries := entry :: !kept_entries;
+    add_kept_symbol entry.live_safe_delta_name;
+    begin match alias_name entry.live_safe_delta_name with
+    | Some alias
+        when alias <> entry.live_safe_delta_name
+             && not (is_live_symbol alias) ->
+        add_kept_symbol alias
+    | _ -> ()
+    end
+  in
+  let rec unsafe_symbol_in_tm = function
+    | TmH name
+        when is_extra_symbol name
+             && not (is_live_symbol name)
+             && not (Hashtbl.mem kept_symbols name) ->
+        Some name
+    | TmH _ | DB _ | Prim _ -> None
+    | TpAp (body, _) -> unsafe_symbol_in_tm body
+    | Ap (left, right) | Imp (left, right) ->
+        begin match unsafe_symbol_in_tm left with
+        | Some _ as result -> result
+        | None -> unsafe_symbol_in_tm right
+        end
+    | Lam (_, body) | All (_, body) -> unsafe_symbol_in_tm body
+  in
+  let rec loop () =
+    let changed = ref false in
+    List.iter
+      (fun entry ->
+         if not (Hashtbl.mem kept_symbols entry.live_safe_delta_name) then
+           let body = expanded_body entry in
+           match unsafe_symbol_in_tm body with
+           | Some _ -> ()
+           | None ->
+               add_kept_entry entry body;
+               changed := true)
+      entries;
+    if !changed then loop ()
+  in
+  loop ();
+  let skipped =
+    entries
+    |> List.filter_map
+         (fun entry ->
+            if Hashtbl.mem kept_symbols entry.live_safe_delta_name then None
+            else
+              Some
+                {
+                  live_safe_delta_skipped_entry =
+                    {
+                      entry with
+                      live_safe_delta_body = expanded_body entry;
+                    };
+                  live_safe_delta_unsafe_symbol =
+                    unsafe_symbol_in_tm (expanded_body entry);
+                })
+  in
+  {
+    live_safe_delta_kept = List.rev !kept_entries;
+    live_safe_delta_skipped = skipped;
+  }
+
 let rec term_contains_symbol names = function
   | TmH name -> List.mem name names
   | TpAp (body, _) -> term_contains_symbol names body

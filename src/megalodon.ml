@@ -1058,88 +1058,84 @@ let vampire_certificate_only_symbol_in_tm live_symbols extra_symbols tm =
 
 let vampire_live_safe_extra_delta ?(body_expander=(fun tm -> tm)) live_symbols extra_symbols extra_delta =
   let filtered = Hashtbl.create (Hashtbl.length extra_delta) in
-  let expanded_bodies = Hashtbl.create (Hashtbl.length extra_delta) in
   let debug = Sys.getenv_opt "MEGALODON_CERT_DEBUG_LIVE_SAFE_DELTA" = Some "1" in
-  let expanded_body name body =
-    match Hashtbl.find_opt expanded_bodies name with
-    | Some body -> body
-    | None ->
-        let body = body_expander body in
-        Hashtbl.replace expanded_bodies name body;
-        body
-  in
-  let add_filtered_definition name arity body =
-    let add name =
-      Hashtbl.replace filtered name (arity, body)
-    in
-    add name;
+  let alias_name name =
     let alias =
       if String.length name > 0 && name.[0] = '#' then
         String.sub name 1 (String.length name - 1)
       else
         "#" ^ name
     in
-    if alias <> name
-       && not (Hashtbl.mem live_symbols alias) then
-      add alias
+    Some alias
   in
-  let rec unsafe_symbol_in_tm = function
-    | TmH name
-        when Hashtbl.mem extra_symbols name
-             && not (Hashtbl.mem live_symbols name)
-             && not (Hashtbl.mem filtered name) ->
-        Some name
-    | TmH _ | DB _ | Prim _ -> None
-    | TpAp (body, _) -> unsafe_symbol_in_tm body
-    | Ap (left, right) ->
-        begin match unsafe_symbol_in_tm left with
-        | Some _ as result -> result
-        | None -> unsafe_symbol_in_tm right
-        end
-    | Lam (_, body) | All (_, body) -> unsafe_symbol_in_tm body
-    | Imp (left, right) ->
-        begin match unsafe_symbol_in_tm left with
-        | Some _ as result -> result
-        | None -> unsafe_symbol_in_tm right
-        end
-  in
-  let changed = ref true in
-  while !changed do
-    changed := false;
-    Hashtbl.iter
-      (fun name (arity, body) ->
-         if not (Hashtbl.mem filtered name) then
-           let body = expanded_body name body in
-           match unsafe_symbol_in_tm body with
-           | Some _ -> ()
-           | None ->
-               if debug then
-                 begin
-                   Printf.printf
-                     "Vampire native live-safe delta kept %s: %s\n"
-                     name
-                     (tm_to_str body);
-                   flush stdout
-                 end;
-               add_filtered_definition name arity body;
-               changed := true)
+  let entries =
+    Hashtbl.fold
+      (fun name (arity, body) entries ->
+         {
+           Vampire_kernel_elab.live_safe_delta_name = name;
+           live_safe_delta_arity = arity;
+           live_safe_delta_body = body;
+         }
+         :: entries)
       extra_delta
-  done;
+      []
+    |> List.sort
+         (fun left right ->
+            String.compare
+              left.Vampire_kernel_elab.live_safe_delta_name
+              right.Vampire_kernel_elab.live_safe_delta_name)
+  in
+  let result =
+    Vampire_kernel_elab.live_safe_delta_entries
+      ~alias_name
+      ~body_expander
+      ~is_live_symbol:(Hashtbl.mem live_symbols)
+      ~is_extra_symbol:(Hashtbl.mem extra_symbols)
+      entries
+  in
+  List.iter
+    (fun entry ->
+       let name = entry.Vampire_kernel_elab.live_safe_delta_name in
+       let arity = entry.Vampire_kernel_elab.live_safe_delta_arity in
+       let body = entry.Vampire_kernel_elab.live_safe_delta_body in
+       Hashtbl.replace filtered name (arity, body);
+       begin match alias_name name with
+       | Some alias
+           when alias <> name
+                && not (Hashtbl.mem live_symbols alias) ->
+           Hashtbl.replace filtered alias (arity, body)
+       | _ -> ()
+       end;
+       if debug then
+         begin
+           Printf.printf
+             "Vampire native live-safe delta kept %s: %s\n"
+             name
+             (tm_to_str body);
+           flush stdout
+         end)
+    result.Vampire_kernel_elab.live_safe_delta_kept;
   if debug then
     begin
-      Hashtbl.iter
-        (fun name (_, body) ->
-           if not (Hashtbl.mem filtered name) then
-             let body = expanded_body name body in
-             match unsafe_symbol_in_tm body with
-             | Some symbol ->
+      List.iter
+        (fun skipped ->
+           let entry =
+             skipped
+               .Vampire_kernel_elab.live_safe_delta_skipped_entry
+           in
+           match
+             skipped
+               .Vampire_kernel_elab.live_safe_delta_unsafe_symbol
+           with
+           | Some symbol ->
                  Printf.printf
                    "Vampire native live-safe delta skipped %s because body contains certificate-only symbol %s: %s\n"
-                   name
+                   entry.Vampire_kernel_elab.live_safe_delta_name
                    symbol
-                   (tm_to_str body)
-             | None -> ())
-        extra_delta;
+                   (tm_to_str
+                      entry.Vampire_kernel_elab.live_safe_delta_body)
+           | None -> ())
+        result.Vampire_kernel_elab.live_safe_delta_skipped;
       flush stdout
     end;
   filtered

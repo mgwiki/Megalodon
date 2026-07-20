@@ -135,6 +135,72 @@ let () =
     "nested replacement should also rewrite proof propositions"
     (PLam (TmH "s1", Hyp 0))
     lambda_rewritten;
+  let live_safe_entries =
+    [
+      {
+        Vampire_kernel_elab.live_safe_delta_name = "s1";
+        live_safe_delta_arity = 0;
+        live_safe_delta_body = TmH "s0";
+      };
+      {
+        Vampire_kernel_elab.live_safe_delta_name = "s0";
+        live_safe_delta_arity = 0;
+        live_safe_delta_body = TmH "live";
+      };
+      {
+        Vampire_kernel_elab.live_safe_delta_name = "unsafe";
+        live_safe_delta_arity = 0;
+        live_safe_delta_body = TmH "missing";
+      };
+    ]
+  in
+  let live_safe =
+    Vampire_kernel_elab.live_safe_delta_entries
+      ~body_expander:(fun tm -> tm)
+      ~is_live_symbol:(fun name -> name = "live")
+      ~is_extra_symbol:(fun name ->
+        List.mem name ["s0"; "#s0"; "s1"; "#s1"; "unsafe"; "missing"])
+      live_safe_entries
+  in
+  expect_equal
+    "live_safe_delta_entries should keep transitive certificate definitions"
+    ["s0"; "s1"]
+    (List.map
+       (fun entry -> entry.Vampire_kernel_elab.live_safe_delta_name)
+       live_safe.Vampire_kernel_elab.live_safe_delta_kept);
+  expect_equal
+    "live_safe_delta_entries should report the first unsafe certificate symbol"
+    [Some "missing"]
+    (List.map
+       (fun skipped ->
+          skipped.Vampire_kernel_elab.live_safe_delta_unsafe_symbol)
+       live_safe.Vampire_kernel_elab.live_safe_delta_skipped);
+  let live_safe_alias_dependency =
+    Vampire_kernel_elab.live_safe_delta_entries
+      ~body_expander:(fun tm -> tm)
+      ~is_live_symbol:(fun name -> name = "live")
+      ~is_extra_symbol:(fun name ->
+        List.mem name ["s0"; "#s0"; "s1"; "#s1"])
+      [
+        {
+          Vampire_kernel_elab.live_safe_delta_name = "s0";
+          live_safe_delta_arity = 0;
+          live_safe_delta_body = TmH "live";
+        };
+        {
+          Vampire_kernel_elab.live_safe_delta_name = "s1";
+          live_safe_delta_arity = 0;
+          live_safe_delta_body = TmH "#s0";
+        };
+      ]
+  in
+  expect_equal
+    "live_safe_delta_entries should let aliases satisfy later dependencies"
+    ["s0"; "s1"]
+    (List.map
+       (fun entry -> entry.Vampire_kernel_elab.live_safe_delta_name)
+       live_safe_alias_dependency
+         .Vampire_kernel_elab.live_safe_delta_kept);
   let choice_symbols = ["eps"] in
   expect_bool
     "proof_contains_term_symbol should find witness symbols"

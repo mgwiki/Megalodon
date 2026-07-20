@@ -103,6 +103,30 @@ val replace_exact_terms_in_proof :
   Syntax.pf ->
   Syntax.pf
 
+type live_safe_delta_entry = {
+  live_safe_delta_name : string;
+  live_safe_delta_arity : int;
+  live_safe_delta_body : Syntax.tm;
+}
+
+type live_safe_delta_skip = {
+  live_safe_delta_skipped_entry : live_safe_delta_entry;
+  live_safe_delta_unsafe_symbol : string option;
+}
+
+type live_safe_delta_result = {
+  live_safe_delta_kept : live_safe_delta_entry list;
+  live_safe_delta_skipped : live_safe_delta_skip list;
+}
+
+val live_safe_delta_entries :
+  ?alias_name:(string -> string option) ->
+  body_expander:(Syntax.tm -> Syntax.tm) ->
+  is_live_symbol:(string -> bool) ->
+  is_extra_symbol:(string -> bool) ->
+  live_safe_delta_entry list ->
+  live_safe_delta_result
+
 val proof_contains_term_symbol :
   string list ->
   Syntax.pf ->
