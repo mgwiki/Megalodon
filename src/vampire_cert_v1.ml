@@ -15775,14 +15775,7 @@ let native_core_skolem_formula_proof
   let target = native_core_close_tm (variables @ result_step_variables) target in
   let result_variable_count = List.length result_step_variables in
   let db_for_result_variable name tp =
-    let rec find index = function
-      | [] -> None
-      | (candidate_name, candidate_tp) :: rest ->
-          if candidate_name = name && candidate_tp = tp then
-            Some (DB (result_variable_count - index - 1))
-          else find (index + 1) rest
-    in
-    find 0 result_step_variables
+    Vampire_kernel_elab.db_for_result_variable ~result_step_variables name tp
   in
   let substitution_for_parent_variable name _tp =
     substitution
@@ -15803,13 +15796,7 @@ let native_core_skolem_formula_proof
               instantiation.Vampire_kernel_syntax.skolem_parent_inst_term)
   in
   let fallback_result_variable tp =
-    let rec find index = function
-      | [] -> None
-      | (_, candidate_tp) :: rest ->
-          if candidate_tp = tp then Some (DB (result_variable_count - index - 1))
-          else find (index + 1) rest
-    in
-    find 0 result_step_variables
+    Vampire_kernel_elab.first_result_variable_of_type ~result_step_variables tp
   in
   let fallback_declared_variable tp =
     variables
