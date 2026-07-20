@@ -863,3 +863,28 @@ problem: a proof over Megalodon's epsilon witness is still being applied where
 the expected proposition contains the certificate-local Skolem witness.  The
 next accepted step should therefore be an explicit small-kernel transport for
 that transformation, not another fallback or search layer.
+
+## Extracted Transport Alias Replacement, 2026-07-20
+
+The branch-choice transport cleanup now exposes alias-expanded proof
+replacement construction from `vampire_kernel_elab.ml`.  The importer no
+longer constructs only the exact introduced symbol replacement when cleaning a
+contract-backed branch-choice transport; it asks the extracted elaborator for
+replacement pairs covering the local choice occurrence and every alias of the
+introduced Skolem name.  The unit harness now checks this behavior directly.
+
+Focused validation passed:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+WORK_DIR=/project/tmp/and_prefix_transport_aliases.1784560771 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+WORK_DIR=/project/tmp/prefix4_transport_aliases.1784560771 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+```
+
+This still does not close `and3I`.  The value of the change is that one more
+piece of deterministic Skolem/choice proof cleanup has moved into the
+extracted elaboration boundary with unit coverage.  The next proof-counting
+milestone is unchanged: build the scoped Skolem/choice transport proof object
+needed by `and3I`, rather than adding another monolithic fallback.

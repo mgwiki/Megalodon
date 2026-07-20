@@ -173,6 +173,19 @@ let () =
     [TmH "#s1", TmH "def1"; closed_binder_witness, TmH "def1"]
     (Vampire_kernel_elab.skolem_witness_transport_proof_replacements
        transports);
+  let aliases = function
+    | "#s0" -> ["#s0"; "s0"]
+    | "s0" -> ["#s0"; "s0"]
+    | "#s1" -> ["#s1"; "s1"]
+    | "s1" -> ["#s1"; "s1"]
+    | name -> [name]
+  in
+  expect_equal
+    "skolem_witness_transport_proof_replacements_with_aliases should rewrite all introduced-symbol aliases"
+    [TmH "#s1", TmH "def1"; TmH "s1", TmH "def1"; closed_binder_witness, TmH "def1"]
+    (Vampire_kernel_elab.skolem_witness_transport_proof_replacements_with_aliases
+       ~alias_names:aliases
+       transports);
   expect_equal
     "substitute_named_term should preserve vLAM binder convention"
     (Ap (TmH "vLAM", Ap (DB 0, TmH "z")))
@@ -184,11 +197,6 @@ let () =
     (TmH "sK")
     (Vampire_kernel_elab.term_head
        (Ap (TpAp (TmH "sK", Prop), TmH "arg")));
-  let aliases = function
-    | "#s0" -> ["#s0"; "s0"]
-    | "s0" -> ["#s0"; "s0"]
-    | name -> [name]
-  in
   let alias_rewritten =
     Vampire_kernel_elab.rewrite_head_symbols_by_alias
       ~alias_names:aliases

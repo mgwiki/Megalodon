@@ -607,3 +607,10 @@ representation asymmetry between names such as `sK1` and `#sK1`, but it is not
 a Skolem proof rule.  The qualifying frontier remains unchanged:
 `FalseE`, `andEL`, and `andER` pass, and `and3I` still fails closed at the
 scoped Skolem/choice transport boundary.
+
+The extracted elaborator now also provides
+`skolem_witness_transport_proof_replacements_with_aliases`.  This is the
+canonical way to turn a checked branch-choice transport into proof-term
+replacement pairs covering the local choice occurrence and all introduced-name
+aliases.  Importer call sites should use this helper rather than rebuilding
+alias expansion locally.

@@ -151,6 +151,11 @@ val skolem_witness_transport_proof_replacements :
   skolem_witness_transport list ->
   (Syntax.tm * Syntax.tm) list
 
+val skolem_witness_transport_proof_replacements_with_aliases :
+  alias_names:(string -> string list) ->
+  skolem_witness_transport list ->
+  (Syntax.tm * Syntax.tm) list
+
 val substitute_named_term :
   string ->
   Syntax.tm ->

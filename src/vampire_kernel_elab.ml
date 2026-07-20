@@ -436,6 +436,22 @@ let skolem_witness_transport_proof_replacements transports =
           ])
   |> List.sort_uniq compare
 
+let skolem_witness_transport_proof_replacements_with_aliases
+    ~alias_names
+    transports =
+  transports
+  |> List.concat_map
+       (fun transport ->
+          (transport.skolem_transport_choice_occurrence,
+           transport.skolem_transport_definition)
+          ::
+          (transport.skolem_transport_name
+           |> alias_names
+           |> List.map
+                (fun alias ->
+                   (TmH alias, transport.skolem_transport_definition))))
+  |> List.sort_uniq compare
+
 let substitute_named_term name tm =
   let rec subst depth = function
     | TmH candidate when candidate = name -> DB depth

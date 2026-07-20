@@ -23150,7 +23150,8 @@ let elaborate_preprocess_refutation_native
                             skolem_transport_local_template =
                               local_template;
                           })
-                  |> Vampire_kernel_elab.skolem_witness_transport_proof_replacements)
+                  |> Vampire_kernel_elab.skolem_witness_transport_proof_replacements_with_aliases
+                       ~alias_names:native_core_symbol_name_aliases)
                |> List.sort_uniq compare
 	             in
              let branch_choice_expanded_candidate =
