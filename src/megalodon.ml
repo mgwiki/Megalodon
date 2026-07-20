@@ -1882,10 +1882,23 @@ let vampire_live_not_elim target not_proof target_proof =
       PPfAp
         (PPfAp (PTmAp (Known not_elim_hash, target), not_proof),
          target_proof)
-  | None -> PPfAp (not_proof, target_proof)
+  | None ->
+      let implication_not_elim =
+        TLam
+          (Prop,
+           PLam
+             (Imp (DB 0, TmH (!fal)),
+              PLam (DB 0, PPfAp (Hyp 1, Hyp 0))))
+      in
+      PPfAp
+        (PPfAp (PTmAp (implication_not_elim, target), not_proof),
+         target_proof)
+
+let vampire_live_imp_not_tm target =
+  Imp (target, TmH (!fal))
 
 let vampire_live_prop_choice_witness predicate =
-  vampire_live_case_not_tm (Ap (predicate, TmH (!fal)))
+  vampire_live_imp_not_tm (Ap (predicate, TmH (!fal)))
 
 let vampire_native_exists_intro tp predicate witness witness_proof =
   TLam
@@ -2295,6 +2308,32 @@ let vampire_live_basis_expander proof =
         | Hyp _ as proof -> proof
       in
       expand 0 proof
+
+let vampire_live_safe_extra_delta_for_returned
+    ?extra_delta
+    ?extra_symbols
+    cxtm
+    source_map =
+  match extra_delta, extra_symbols with
+  | Some extra_delta, Some extra_symbols ->
+      let live_symbol_table =
+        match source_map with
+        | None -> Hashtbl.copy sigtmof
+        | Some source_map ->
+            vampire_source_context_symbol_table_with_source_map source_map
+      in
+      let returned_body_expander tm =
+        vampire_live_basis_tm_expander
+          (vampire_expand_returned_tm cxtm source_map tm)
+      in
+      Some
+        (vampire_live_safe_extra_delta
+           ~body_expander:returned_body_expander
+           live_symbol_table
+           extra_symbols
+           extra_delta)
+  | Some extra_delta, None -> Some extra_delta
+  | None, _ -> None
 
 let vampire_prop_ext_variants ?delta proof =
   let directional = vampire_directional_prop_ext_expander proof in
@@ -4629,6 +4668,42 @@ let vampire_reconstruct_goal_from_supplied_refutation
         match preferred_prop_terms with
         | Some terms -> terms
         | None -> []
+      in
+      let proof, proposition =
+        if !vampireabyqualifying then
+          let live_extra_delta =
+            vampire_live_safe_extra_delta_for_returned
+              ?extra_delta
+              ?extra_symbols
+              cxtm
+              source_map
+          in
+          let expanded_proof =
+            vampire_expand_returned_proof
+              ?extra_delta:live_extra_delta
+              cxtm
+              source_map
+              proof
+            |> vampire_live_basis_expander
+          in
+          let expanded_proposition =
+            vampire_expand_returned_tm
+              ?extra_delta:live_extra_delta
+              cxtm
+              source_map
+              proposition
+            |> vampire_live_basis_tm_expander
+          in
+          if Sys.getenv_opt "MEGALODON_CERT_DEBUG_SUPPLIED" = Some "1" then
+            begin
+              Printf.printf
+                "Vampire native supplied-refutation qualifying pre-expanded proposition: %s\n"
+                (tm_to_str expanded_proposition);
+              flush stdout
+            end;
+          (expanded_proof, expanded_proposition)
+        else
+          (proof, proposition)
       in
       let supplied_refutation_depth_limit =
         match Sys.getenv_opt "MEGALODON_CERT_SUPPLIED_REFUTATION_DEPTH_LIMIT" with

@@ -1589,3 +1589,38 @@ TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.s
 WORK_DIR=/project/tmp/and_prefix_transport_obligation_1784571458 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
 WORK_DIR=/project/tmp/prefix4_transport_obligation_1784571458 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
 ```
+
+## Supplied-Refutation Live Pre-Expansion, 2026-07-20
+
+The guided negated-conjecture route now pre-expands the supplied refutation
+proof and proposition in qualifying mode using the same live-safe certificate
+delta that `vampire_check_proof_of_prop` later requires.  This keeps the native
+refutation/CPS/double-negation proof constructors from building applications
+around a certificate-local proposition and only afterward asking the live checker
+to repair the result.
+
+This is not a new fallback and it does not install certificate definitions into
+the global signature.  It also does not increase the qualifying frontier:
+`FalseE`, `andEL`, and `andER` still pass, while `and3I` still fails closed.
+The useful diagnostic change is that the old `#sK1` versus expanded
+`Eps_prop` mismatch is gone from the live failure.  The next blocker is now a
+deeper hand-built live `not_forall_exists`/choice proof that still applies a
+library `not ...` assumption as though it were syntactically an implication.
+
+The generic live `not` elimination helper was tightened at the same boundary:
+when a source theorem `notE` is not available yet, it now inserts an explicit
+proof of `(P -> False) -> P -> False` and lets conversion bridge a definitional
+`not P` assumption to that implication-shaped premise.  The attempted extension
+of this idea inside `vampire_live_not_forall_exists_proof` regressed `FalseE`
+and was reverted; that proof needs a more careful rewrite rather than a local
+index-preserving patch.
+
+Focused validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+WORK_DIR=/project/tmp/and_prefix_validated_livepre_1784574259 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+WORK_DIR=/project/tmp/prefix4_validated_livepre_1784574270 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+```
