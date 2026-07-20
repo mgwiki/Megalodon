@@ -351,3 +351,104 @@ let registered_witness_term_replacements
           else
             None)
   |> List.sort_uniq compare
+
+let substitute_named_term name tm =
+  let rec subst depth = function
+    | TmH candidate when candidate = name -> DB depth
+    | TpAp (body, tp) -> TpAp (subst depth body, tp)
+    | Ap (TmH "vLAM", body) -> Ap (TmH "vLAM", subst depth body)
+    | Ap (left, right) -> Ap (subst depth left, subst depth right)
+    | Lam (tp, body) -> Lam (tp, subst (depth + 1) body)
+    | Imp (left, right) -> Imp (subst depth left, subst depth right)
+    | All (tp, body) -> All (tp, subst (depth + 1) body)
+    | DB _ | TmH _ | Prim _ as tm -> tm
+  in
+  subst 0 tm
+
+let rec term_head = function
+  | Ap (head, _) | TpAp (head, _) -> term_head head
+  | head -> head
+
+let rewrite_head_symbols_by_alias ~alias_names replacements tm =
+  let replacement_for_name name =
+    let names = alias_names name in
+    replacements
+    |> List.find_map
+         (fun (target_witness, replacement) ->
+            match term_head target_witness with
+            | TmH target_name ->
+                let target_names = alias_names target_name in
+                if List.exists (fun name -> List.mem name target_names) names then
+                  Some replacement
+                else
+                  None
+            | _ -> None)
+  in
+  let rec rewrite depth = function
+    | TmH name as tm ->
+        begin match replacement_for_name name with
+        | Some replacement -> tmshift 0 depth replacement
+        | None -> tm
+        end
+    | TpAp (body, tp) -> TpAp (rewrite depth body, tp)
+    | Ap (left, right) ->
+        Ap (rewrite depth left, rewrite depth right)
+    | Lam (tp, body) ->
+        Lam (tp, rewrite (depth + 1) body)
+    | Imp (left, right) ->
+        Imp (rewrite depth left, rewrite depth right)
+    | All (tp, body) ->
+        All (tp, rewrite (depth + 1) body)
+    | DB _ | Prim _ as tm -> tm
+  in
+  rewrite 0 tm
+
+let skolem_branch_choice_matches_witness
+    ~normalize
+    ~alias_names
+    target_witness
+    choice =
+  let term_matches =
+    match choice.skolem_branch_choice_witness_term with
+    | Some witness_term -> normalize witness_term = normalize target_witness
+    | None -> false
+  in
+  term_matches
+  ||
+  match term_head target_witness with
+  | TmH target_head ->
+      let target_names = alias_names target_head in
+      let choice_names = alias_names choice.skolem_branch_choice_symbol in
+      List.exists (fun name -> List.mem name choice_names) target_names
+  | _ -> false
+
+let skolem_branch_choice_body
+    ~normalize
+    ~alias_names
+    ~replacements
+    ~substitution_name
+    ~target_witness
+    ~witness_type
+    choices =
+  choices
+  |> List.find_map
+       (fun choice ->
+          let variable = choice.skolem_branch_choice_replaced_variable in
+          let variable_matches =
+            match substitution_name with
+            | Some name -> name = variable
+            | None -> true
+          in
+          if variable_matches
+             && choice.skolem_branch_choice_type = witness_type
+             && skolem_branch_choice_matches_witness
+                  ~normalize
+                  ~alias_names
+                  target_witness
+                  choice then
+            Some
+              (choice.skolem_branch_choice_body
+               |> rewrite_head_symbols_by_alias ~alias_names replacements
+               |> substitute_named_term variable)
+          else
+            None)

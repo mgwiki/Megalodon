@@ -108,7 +108,70 @@ let () =
        ~normalize:(fun tm -> tm)
        ~witness_symbols:choice_symbols
        ["#s1", Ap (TmH "eps", TmH "other")]
-       proof)
+       proof);
+  expect_equal
+    "substitute_named_term should preserve vLAM binder convention"
+    (Ap (TmH "vLAM", Ap (DB 0, TmH "z")))
+    (Vampire_kernel_elab.substitute_named_term
+       "X"
+       (Ap (TmH "vLAM", Ap (TmH "X", TmH "z"))));
+  expect_equal
+    "term_head should peel type and term applications"
+    (TmH "sK")
+    (Vampire_kernel_elab.term_head
+       (Ap (TpAp (TmH "sK", Prop), TmH "arg")));
+  let aliases = function
+    | "#s0" -> ["#s0"; "s0"]
+    | "s0" -> ["#s0"; "s0"]
+    | name -> [name]
+  in
+  let alias_rewritten =
+    Vampire_kernel_elab.rewrite_head_symbols_by_alias
+      ~alias_names:aliases
+      [TmH "#s0", TmH "eps0"]
+      (Lam (Prop, Ap (TmH "s0", DB 0)))
+  in
+  expect_equal
+    "rewrite_head_symbols_by_alias should shift replacements under binders"
+    (Lam (Prop, Ap (TmH "eps0", DB 0)))
+    alias_rewritten;
+  let branch_choice =
+    {
+      Vampire_kernel_syntax.skolem_branch_choice_index = 0;
+      skolem_branch_choice_symbol = "s0";
+      skolem_branch_choice_replaced_variable = "X";
+      skolem_branch_choice_type = Prop;
+      skolem_branch_choice_predicate = TmH "pred";
+      skolem_branch_choice_body = Ap (TmH "X", TmH "a");
+      skolem_branch_choice_witness_term = Some (TmH "#s0");
+    }
+  in
+  expect_bool
+    "skolem_branch_choice_matches_witness should use exact witness terms"
+    (Vampire_kernel_elab.skolem_branch_choice_matches_witness
+       ~normalize:(fun tm -> tm)
+       ~alias_names:aliases
+       (TmH "#s0")
+       branch_choice);
+  expect_bool
+    "skolem_branch_choice_matches_witness should use symbol aliases"
+    (Vampire_kernel_elab.skolem_branch_choice_matches_witness
+       ~normalize:(fun tm -> tm)
+       ~alias_names:aliases
+       (Ap (TmH "#s0", TmH "arg"))
+       { branch_choice with
+         Vampire_kernel_syntax.skolem_branch_choice_witness_term = None });
+  expect_equal
+    "skolem_branch_choice_body should select, rewrite aliases, and bind the replaced variable"
+    (Some (Ap (DB 0, TmH "a")))
+    (Vampire_kernel_elab.skolem_branch_choice_body
+       ~normalize:(fun tm -> tm)
+       ~alias_names:aliases
+       ~replacements:[]
+       ~substitution_name:(Some "X")
+       ~target_witness:(TmH "#s0")
+       ~witness_type:Prop
+       [branch_choice])
 EOF_OCAML
 
 ocamlopt \

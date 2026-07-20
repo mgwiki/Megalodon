@@ -115,3 +115,35 @@ val registered_witness_term_replacements :
   (string * Syntax.tm) list ->
   Syntax.pf ->
   (Syntax.tm * Syntax.tm) list
+
+val substitute_named_term :
+  string ->
+  Syntax.tm ->
+  Syntax.tm
+
+val term_head :
+  Syntax.tm ->
+  Syntax.tm
+
+val rewrite_head_symbols_by_alias :
+  alias_names:(string -> string list) ->
+  (Syntax.tm * Syntax.tm) list ->
+  Syntax.tm ->
+  Syntax.tm
+
+val skolem_branch_choice_matches_witness :
+  normalize:(Syntax.tm -> Syntax.tm) ->
+  alias_names:(string -> string list) ->
+  Syntax.tm ->
+  Vampire_kernel_syntax.skolem_branch_choice ->
+  bool
+
+val skolem_branch_choice_body :
+  normalize:(Syntax.tm -> Syntax.tm) ->
+  alias_names:(string -> string list) ->
+  replacements:(Syntax.tm * Syntax.tm) list ->
+  substitution_name:string option ->
+  target_witness:Syntax.tm ->
+  witness_type:Syntax.tp ->
+  Vampire_kernel_syntax.skolem_branch_choice list ->
+  Syntax.tm option

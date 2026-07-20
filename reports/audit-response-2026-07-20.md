@@ -315,3 +315,35 @@ commands (`FalseE`, `andEL`, `andER`) pass in qualifying mode, and `and3I`
 still fails closed.  That is intentional reporting discipline.  The next
 architectural step is to extract the actual Skolem/choice transformation
 checking/elaboration, not merely the witness-term traversals.
+
+## Branch-Choice Contract Selection Extraction, 2026-07-20
+
+A second Skolem/choice piece has now been moved across the same boundary.  The
+logic that selects an emitted Skolem branch-choice contract for a target
+witness, checks it by exact witness term or symbol alias, rewrites earlier
+witness heads by alias, and substitutes the replaced source variable is now in
+`vampire_kernel_elab.ml`.
+
+`vampire_cert_v1.ml` still builds the Megalodon-specific choice proof and
+closes the returned body in the native-core context, but it no longer owns the
+deterministic branch-choice matching/rewriting operation.  This is a small
+step, not a proof-coverage claim, but it moves another part of the
+Skolemization replay contract out of the importer and into the extracted
+elaboration module.
+
+The focused validation remains:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_certified_vampire_no_incomplete.sh
+```
+
+The frontier is still three original-source qualifying proofs plus a
+fail-closed `and3I`.  The next extraction target should be the transformation
+driver that consumes these branch-choice bodies and produces the proof-term
+orientation, so the eventual `and3I` fix is explained by the small-kernel
+Skolem path rather than by local importer search.

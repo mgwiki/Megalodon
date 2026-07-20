@@ -15366,109 +15366,38 @@ let rec native_core_direct_skolem_formula_proof
     native_core_normalize_bool_constants tm
     |> tm_beta_eta_norm
   in
-  let rec witness_head = function
-    | Ap (head, _) | TpAp (head, _) -> witness_head head
-    | head -> head
-  in
-  let witness_matches_branch_choice target_witness choice =
-    let term_matches =
-      match
-        choice.Vampire_kernel_syntax.skolem_branch_choice_witness_term
-      with
-      | Some witness_term ->
-          tm_beta_eta_norm witness_term = tm_beta_eta_norm target_witness
-      | None -> false
-    in
-    term_matches
-    ||
-    match witness_head target_witness with
-    | TmH target_head ->
-        let target_names = native_core_symbol_name_aliases target_head in
-        let choice_names =
-          native_core_symbol_name_aliases
-            choice.Vampire_kernel_syntax.skolem_branch_choice_symbol
-        in
-        List.exists (fun name -> List.mem name choice_names) target_names
-    | _ -> false
-  in
-  let rec rewrite_witness_symbols_by_alias replacements depth tm =
-    let replacement_for_name name =
-      let names = native_core_symbol_name_aliases name in
-      replacements
-      |> List.find_map
-           (fun (target_witness, epsilon_witness) ->
-              match witness_head target_witness with
-              | TmH target_name ->
-                  let target_names =
-                    native_core_symbol_name_aliases target_name
-                  in
-                  if List.exists (fun name -> List.mem name target_names) names then
-                    Some epsilon_witness
-                  else
-                    None
-              | _ -> None)
-    in
-    match tm with
-    | TmH name ->
-        begin match replacement_for_name name with
-        | Some replacement -> tmshift 0 depth replacement
-        | None -> tm
-        end
-    | TpAp (m, a) -> TpAp (rewrite_witness_symbols_by_alias replacements depth m, a)
-    | Ap (m, n) ->
-        Ap
-          (rewrite_witness_symbols_by_alias replacements depth m,
-           rewrite_witness_symbols_by_alias replacements depth n)
-    | Lam (a, body) ->
-        Lam (a, rewrite_witness_symbols_by_alias replacements (depth + 1) body)
-    | Imp (left, right) ->
-        Imp
-          (rewrite_witness_symbols_by_alias replacements depth left,
-           rewrite_witness_symbols_by_alias replacements depth right)
-    | All (a, body) ->
-        All (a, rewrite_witness_symbols_by_alias replacements (depth + 1) body)
-    | DB _ | Prim _ -> tm
-  in
   let emitted_branch_choice_body
       local_depth replacements substitution_name target_witness tp =
     let close_choice_body body =
       if closing_variables = [] then body
       else native_core_close_tm ~depth:(local_depth + 1) closing_variables body
     in
-    skolem_branch_choices
-    |> List.find_map
-         (fun choice ->
-            let variable =
-              choice.Vampire_kernel_syntax.skolem_branch_choice_replaced_variable
-            in
-            let variable_matches =
-              match substitution_name with
-              | Some name -> name = variable
-              | None -> true
-            in
-            if variable_matches
-               && choice.Vampire_kernel_syntax.skolem_branch_choice_type = tp
-               && witness_matches_branch_choice target_witness choice then
-              let body =
-                choice.Vampire_kernel_syntax.skolem_branch_choice_body
-                |> rewrite_witness_symbols_by_alias replacements 0
-                |> subst_named_tm variable
-                |> close_choice_body
-              in
-              let epsilon_witness =
-                Ap
-                  (TmH (native_core_eps_symbol tp),
-                   Lam (tp, checked_formula_prop (local_depth + 1) body))
-              in
-              register_witness_replacement target_witness epsilon_witness;
-              if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
-                prerr_endline
-                  (id
-                   ^ ": native core skolem used emitted branch choice for "
-                   ^ tm_to_str target_witness);
-              Some (body, (target_witness, epsilon_witness) :: replacements)
-            else
-              None)
+    let normalize tm = tm_beta_eta_norm tm in
+    match
+      Vampire_kernel_elab.skolem_branch_choice_body
+        ~normalize
+        ~alias_names:native_core_symbol_name_aliases
+        ~replacements
+        ~substitution_name
+        ~target_witness
+        ~witness_type:tp
+        skolem_branch_choices
+    with
+    | None -> None
+    | Some body ->
+        let body = close_choice_body body in
+        let epsilon_witness =
+          Ap
+            (TmH (native_core_eps_symbol tp),
+             Lam (tp, checked_formula_prop (local_depth + 1) body))
+        in
+        register_witness_replacement target_witness epsilon_witness;
+        if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+          prerr_endline
+            (id
+             ^ ": native core skolem used emitted branch choice for "
+             ^ tm_to_str target_witness);
+        Some (body, (target_witness, epsilon_witness) :: replacements)
   in
   let rec formula_contains_exists = function
     | Ap (TmH "vampire_exists_prop", Lam _) -> true
