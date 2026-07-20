@@ -2376,8 +2376,12 @@ let check_cnf_literal checked id parent_id result =
 
 let check_formula_term_copy checked id parent_id result =
   let parent_formula = lookup_formula checked parent_id in
-  if parent_formula <> result then
-    error (id ^ ": formula_term_copy result does not match parent")
+  try
+    Vampire_kernel_check.check_formula_term_copy
+      ~id
+      ~parent:parent_formula
+      ~result
+  with Vampire_kernel_check.Error msg -> error msg
 
 let validate_rectify_renaming id index renaming =
   let substituted = subst_tm renaming.rectify_subst renaming.rectify_source in

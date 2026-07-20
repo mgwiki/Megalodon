@@ -276,6 +276,10 @@ let check_cnf_literal ~id ~parent_clause ~result =
   if not (same_clause_multiset parent_clause result) then
     error (id ^ ": cnf_literal result does not match source literal")
 
+let check_formula_term_copy ~id ~parent ~result =
+  if parent <> result then
+    error (id ^ ": formula_term_copy result does not match parent")
+
 let check_formula_copy ~id ~literal_of_formula ~parent ~result =
   match parent with
   | `Clause parent_clause ->

@@ -145,6 +145,12 @@ val check_cnf_literal :
   result:Vampire_kernel_syntax.clause ->
   unit
 
+val check_formula_term_copy :
+  id:string ->
+  parent:Syntax.tm ->
+  result:Syntax.tm ->
+  unit
+
 val check_formula_copy :
   id:string ->
   literal_of_formula:(Syntax.tm -> Vampire_kernel_syntax.literal) ->
