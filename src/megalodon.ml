@@ -29,6 +29,7 @@ let vampireabyschedule : string ref = ref "casc";;
 let vampireabyproof : string ref = ref "tptp";;
 let vampireabynative : bool ref = ref false;;
 let vampireabynativestrict : bool ref = ref false;;
+let vampireabyqualifying : bool ref = ref false;;
 let vampireabytarget : (int * int) option ref = ref None;;
 let vampireabytargetstop : bool ref = ref false;;
 let vampirecertv1 : string option ref = ref None;;
@@ -1144,6 +1145,10 @@ let vampire_qed_registered_delta : string list ref = ref []
 let vampire_qed_registered_symbols : string list ref = ref []
 
 let vampire_register_reconstruction_delta_for_qed extra_symbols extra_delta =
+  if !vampireabyqualifying then
+    raise
+      (Failure
+         "Qualifying Vampire reconstruction may not install certificate-local definitions globally");
   Hashtbl.iter
     (fun name (arity, body) ->
        if not (Hashtbl.mem sigdelta name) then
@@ -1162,13 +1167,23 @@ let vampire_register_reconstruction_delta_for_qed extra_symbols extra_delta =
     extra_symbols
 
 let vampire_clear_reconstruction_delta_for_qed () =
-  if Sys.getenv_opt "MEGALODON_CERT_KEEP_QED_DELTA" <> Some "1" && not !pfgout then
+  if !vampireabyqualifying
+     || (Sys.getenv_opt "MEGALODON_CERT_KEEP_QED_DELTA" <> Some "1" && not !pfgout) then
     begin
       List.iter (Hashtbl.remove sigdelta) !vampire_qed_registered_delta;
       List.iter (Hashtbl.remove sigtmof) !vampire_qed_registered_symbols;
       vampire_qed_registered_delta := [];
       vampire_qed_registered_symbols := []
     end
+
+let vampire_assert_no_qed_reconstruction_state where =
+  if !vampireabyqualifying
+     && (!vampire_qed_registered_delta <> [] || !vampire_qed_registered_symbols <> []) then
+    raise
+      (Failure
+         (Printf.sprintf
+            "Qualifying Vampire reconstruction leaked certificate-local Qed state after %s"
+            where))
 
 let vampire_certificate_only_symbol_in_proof live_symbols extra_delta extra_symbols proof =
   let tm_symbol = vampire_certificate_only_symbol_in_tm live_symbols extra_symbols in
@@ -4354,13 +4369,15 @@ let vampire_reconstruct_current_goal_from_refutation ?source_map ?extra_delta ?e
   match try_proof 8 proof proposition with
   | Some _ as result -> result
   | None ->
-      vampire_constructive_goal_search
-        ?source_map
-        ?extra_delta
-        ?extra_symbols
-        claimtm
-        cxtm
-        cxpf
+      if !vampireabyqualifying then None
+      else
+        vampire_constructive_goal_search
+          ?source_map
+          ?extra_delta
+          ?extra_symbols
+          claimtm
+          cxtm
+          cxpf
 
 let vampire_reconstruct_goal_from_supplied_refutation
     ?source_map
@@ -4425,7 +4442,12 @@ let vampire_reconstruct_goal_from_supplied_refutation
           end
       in
       let unchecked_finish target_proof target =
-        if not unchecked_final then None
+        if !vampireabyqualifying then
+          begin
+            unchecked_timing "disabled_by_qualifying_mode";
+            None
+          end
+        else if not unchecked_final then None
         else
           let _ = unchecked_timing "conv:start" in
           match conv target claimtm proof_delta [] with
@@ -4456,6 +4478,7 @@ let vampire_reconstruct_goal_from_supplied_refutation
               unchecked_timing "expand_returned:start";
               let compact_delta =
                 Sys.getenv_opt "MEGALODON_CERT_COMPACT_QED_DELTA" <> Some "0"
+                && not !vampireabyqualifying
               in
               let expanded =
                 if compact_delta then
@@ -5607,14 +5630,16 @@ let vampire_reconstruct_goal_from_source_audit
     match result with
     | Some _ as result -> result
     | None ->
-        vampire_constructive_goal_search
-          ~source_map
-          ?extra_delta
-          ?extra_symbols
-          ~external_proofs:source_proofs
-          claimtm
-          cxtm
-          cxpf
+        if !vampireabyqualifying then None
+        else
+          vampire_constructive_goal_search
+            ~source_map
+            ?extra_delta
+            ?extra_symbols
+            ~external_proofs:source_proofs
+            claimtm
+            cxtm
+            cxpf
   in
   if result = None && Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
     begin
@@ -5731,6 +5756,7 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
   let pure_prop_schema_goal = vampire_pure_prop_schema_context cxtm cxpf in
   let reconstruct_pure_prop_schema () =
     if pure_prop_schema_goal
+       && not !vampireabyqualifying
        && Sys.getenv_opt "MEGALODON_CERT_DISABLE_PURE_PROP_SHORTCUT" <> Some "1" then
       begin
         timing "pure_prop_constructive:start";
@@ -5980,7 +6006,10 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
     timing "candidate_refutation_fallback:done";
     result
   in
-  match reconstruct_pure_prop_schema () with
+  match
+    if !vampireabyqualifying then None
+    else reconstruct_pure_prop_schema ()
+  with
   | Some _ as result ->
       timing "pure_prop_constructive:success";
       result
@@ -5991,30 +6020,38 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
           timing "reconstruct_from_refutation_call:success";
           result
       | None ->
-          timing "constructive_fallback:start";
-          begin match
-            vampire_constructive_goal_search
-              ~source_map
-              ~extra_delta:reconstruction_delta
-              ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
-              claimtm
-              cxtm
-              cxpf
-          with
-          | Some _ as result ->
-              timing "constructive_fallback:success";
-              result
-          | None ->
-              timing "source_audit_fallback:start";
-              vampire_reconstruct_goal_from_source_audit
-                ~extra_delta:reconstruction_delta
-                ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
-                claimtm
-                cxtm
-                cxpf
-                source_map
-                source_audit
-          end
+          if !vampireabyqualifying then
+            begin
+              timing "fallbacks_disabled_by_qualifying_mode";
+              None
+            end
+          else
+            begin
+              timing "constructive_fallback:start";
+              begin match
+                vampire_constructive_goal_search
+                  ~source_map
+                  ~extra_delta:reconstruction_delta
+                  ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
+                  claimtm
+                  cxtm
+                  cxpf
+              with
+              | Some _ as result ->
+                  timing "constructive_fallback:success";
+                  result
+              | None ->
+                  timing "source_audit_fallback:start";
+                  vampire_reconstruct_goal_from_source_audit
+                    ~extra_delta:reconstruction_delta
+                    ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
+                    claimtm
+                    cxtm
+                    cxpf
+                    source_map
+                    source_audit
+              end
+            end
       end
 
 let check_vampire_aby_native_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) ?(proof_command_label="aby") content output proof_file =
@@ -6064,16 +6101,24 @@ let check_vampire_aby_native_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) ?(proof_
           in
           timing "validate_certificate_sources:done";
           let constructive_fallback claimtm =
-            timing "constructive_source_goal:start";
-            let result =
-              vampire_constructive_goal_search
-                ~source_map
-                claimtm
-                cxtm
-                cxpf
-            in
-            timing "constructive_source_goal:done";
-            result
+            if !vampireabyqualifying then
+              begin
+                timing "constructive_source_goal:disabled_by_qualifying_mode";
+                None
+              end
+            else
+              begin
+                timing "constructive_source_goal:start";
+                let result =
+                  vampire_constructive_goal_search
+                    ~source_map
+                    claimtm
+                    cxtm
+                    cxpf
+                in
+                timing "constructive_source_goal:done";
+                result
+              end
           in
           let build_source_audit () =
             timing "source_bindings:start";
@@ -6105,9 +6150,31 @@ let check_vampire_aby_native_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) ?(proof_
             timing "source_context_resolve:done";
             audit
           in
+          let source_audit_fallback claimtm audit =
+            if !vampireabyqualifying then
+              begin
+                timing "source_audit_fallback:disabled_by_qualifying_mode";
+                None
+              end
+            else
+              begin
+                timing "source_audit_fallback:start";
+                let result =
+                  vampire_reconstruct_goal_from_source_audit
+                    claimtm
+                    cxtm
+                    cxpf
+                    source_map
+                    audit
+                in
+                timing "source_audit_fallback:done";
+                result
+              end
+          in
           let source_audit = ref None in
           let replay_from_certificate claimtm =
             if vampire_pure_prop_schema_context cxtm cxpf
+               && not !vampireabyqualifying
                && Sys.getenv_opt "MEGALODON_CERT_DISABLE_PURE_PROP_SHORTCUT" <> Some "1" then
               begin
                 timing "pure_prop_certificate_shortcut:start";
@@ -6141,18 +6208,7 @@ let check_vampire_aby_native_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) ?(proof_
                           end;
                         begin match constructive_fallback claimtm with
                         | Some _ as result -> result
-                        | None ->
-                            timing "source_audit_fallback:start";
-                            let result =
-                              vampire_reconstruct_goal_from_source_audit
-                                claimtm
-                                cxtm
-                                cxpf
-                                source_map
-                                audit
-                            in
-                            timing "source_audit_fallback:done";
-                            result
+                        | None -> source_audit_fallback claimtm audit
                         end
                     | Failure msg ->
                         timing "refutation_replay:failure";
@@ -6168,18 +6224,7 @@ let check_vampire_aby_native_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) ?(proof_
                           end;
                         begin match constructive_fallback claimtm with
                         | Some _ as result -> result
-                        | None ->
-                            timing "source_audit_fallback:start";
-                            let result =
-                              vampire_reconstruct_goal_from_source_audit
-                                claimtm
-                                cxtm
-                                cxpf
-                                source_map
-                                audit
-                            in
-                            timing "source_audit_fallback:done";
-                            result
+                        | None -> source_audit_fallback claimtm audit
                         end
               end
             else
@@ -6208,18 +6253,7 @@ let check_vampire_aby_native_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) ?(proof_
                   end;
                 begin match constructive_fallback claimtm with
                 | Some _ as result -> result
-                | None ->
-                    timing "source_audit_fallback:start";
-                    let result =
-                      vampire_reconstruct_goal_from_source_audit
-                        claimtm
-                        cxtm
-                        cxpf
-                        source_map
-                        audit
-                    in
-                    timing "source_audit_fallback:done";
-                    result
+                | None -> source_audit_fallback claimtm audit
                 end
             | Failure msg ->
                 timing "refutation_replay:failure";
@@ -6235,18 +6269,7 @@ let check_vampire_aby_native_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) ?(proof_
                   end;
                 begin match constructive_fallback claimtm with
                 | Some _ as result -> result
-                | None ->
-                    timing "source_audit_fallback:start";
-                    let result =
-                      vampire_reconstruct_goal_from_source_audit
-                        claimtm
-                        cxtm
-                        cxpf
-                        source_map
-                        audit
-                    in
-                    timing "source_audit_fallback:done";
-                    result
+                | None -> source_audit_fallback claimtm audit
                 end
           in
           let reconstructed =
@@ -6317,6 +6340,13 @@ let run_vampire_aby_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) ?(proof_command_l
   match !vampireaby with
   | None -> None
   | Some(vampire) ->
+     if !vampireabyqualifying then
+       begin
+         if !vampireabyproof <> "megalodon" then
+           raise (Failure("Qualifying Vampire reconstruction requires -vampireabyproof megalodon"));
+         if !vampireabytimeout > 10 then
+           raise (Failure("Qualifying Vampire reconstruction requires -vampireabytimeout <= 10"))
+       end;
      ensure_directory !vampireabyoutdir;
      let digest = Hash.hashval_hexstring (Hash.sha256 content) in
      let short_digest = String.sub digest 0 16 in
@@ -6346,6 +6376,7 @@ let run_vampire_aby_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) ?(proof_command_l
          let reconstructed =
            check_vampire_aby_native_certificate ?claimtm ~cxtm ~cxpf ~proof_command_label content out proof_file
          in
+         vampire_assert_no_qed_reconstruction_state "Vampire certificate reconstruction";
          if !verbosity > 2 then
            Printf.printf "Vampire produced %s proof payload at line %d char %d (%s)\n" proof_command_label !lineno !charno digest;
          flush stdout;
@@ -8367,6 +8398,8 @@ let native_aby_named_knowns xl =
   native_aby_named_knowns_rec xl []
 
 let native_aby_reconstruct claimtm cxtm cxpf xl =
+  if !vampireabyqualifying then None
+  else
   let cx = List.map (fun (_, (a, _)) -> a) cxtm in
   let hyps = List.map (fun (_, p) -> p) cxpf in
   native_aby_knowns := native_aby_named_knowns xl;
@@ -11341,6 +11374,7 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
 		  end;
                   qed_timing "vampire_qed_cleanup:start";
                   vampire_clear_reconstruction_delta_for_qed ();
+                  vampire_assert_no_qed_reconstruction_state "Qed cleanup";
                   qed_timing "vampire_qed_cleanup:done";
 	          megawiki_target := Some(!qed_is_complete);
 	    with AdmittedPf ->
@@ -13734,6 +13768,14 @@ let _ =
           begin
             vampireabynative := true;
             vampireabynativestrict := true
+          end
+        else if Sys.argv.(!j) = "-vampireabyqualifying" then
+          begin
+            vampireabynative := true;
+            vampireabynativestrict := true;
+            vampireabyqualifying := true;
+            vampireabyproof := "megalodon";
+            if !vampireabytimeout > 10 then vampireabytimeout := 10
           end
         else if Sys.argv.(!j) = "-vampireabytarget" then
           begin
