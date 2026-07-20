@@ -1144,6 +1144,82 @@ let vampire_live_safe_extra_delta ?(body_expander=(fun tm -> tm)) live_symbols e
 let vampire_qed_registered_delta : string list ref = ref []
 let vampire_qed_registered_symbols : string list ref = ref []
 
+type vampire_signature_snapshot = {
+  vampire_snapshot_delta : (string * string) list;
+  vampire_snapshot_symbols : (string * string) list;
+}
+
+let vampire_sorted_table_snapshot render table =
+  Hashtbl.fold
+    (fun key value acc -> (key, render value) :: acc)
+    table
+    []
+  |> List.sort compare
+
+let vampire_signature_snapshot () =
+  {
+    vampire_snapshot_delta =
+      vampire_sorted_table_snapshot
+        (fun (arity, body) -> string_of_int arity ^ ":" ^ tm_to_str body)
+        sigdelta;
+    vampire_snapshot_symbols =
+      vampire_sorted_table_snapshot
+        (fun (arity, tp) -> string_of_int arity ^ ":" ^ tp_to_str tp)
+        sigtmof;
+  }
+
+let vampire_signature_diff before after =
+  let removed =
+    List.filter (fun item -> not (List.mem item after)) before
+  in
+  let added =
+    List.filter (fun item -> not (List.mem item before)) after
+  in
+  (removed, added)
+
+let vampire_format_signature_diff_item (name, rendered) =
+  name ^ ":" ^ rendered
+
+let vampire_format_signature_diff removed added =
+  let take n xs =
+    let rec aux i acc = function
+      | [] -> List.rev acc
+      | _ when i <= 0 -> List.rev ("..." :: acc)
+      | x :: rest -> aux (i - 1) (vampire_format_signature_diff_item x :: acc) rest
+    in
+    aux n [] xs
+  in
+  "removed=["
+  ^ String.concat "; " (take 3 removed)
+  ^ "] added=["
+  ^ String.concat "; " (take 3 added)
+  ^ "]"
+
+let vampire_assert_signature_unchanged where before =
+  if !vampireabyqualifying then
+    let after = vampire_signature_snapshot () in
+    let removed_delta, added_delta =
+      vampire_signature_diff
+        before.vampire_snapshot_delta
+        after.vampire_snapshot_delta
+    in
+    let removed_symbols, added_symbols =
+      vampire_signature_diff
+        before.vampire_snapshot_symbols
+        after.vampire_snapshot_symbols
+    in
+    if removed_delta <> []
+       || added_delta <> []
+       || removed_symbols <> []
+       || added_symbols <> [] then
+      raise
+        (Failure
+           (Printf.sprintf
+              "Qualifying Vampire reconstruction changed global signature after %s: sigdelta %s; sigtmof %s"
+              where
+              (vampire_format_signature_diff removed_delta added_delta)
+              (vampire_format_signature_diff removed_symbols added_symbols)))
+
 let vampire_register_reconstruction_delta_for_qed extra_symbols extra_delta =
   if !vampireabyqualifying then
     raise
@@ -6356,6 +6432,15 @@ let run_vampire_aby_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) ?(proof_command_l
          if !vampireabytimeout > 10 then
            raise (Failure("Qualifying Vampire reconstruction requires -vampireabytimeout <= 10"))
        end;
+     let signature_before =
+       if !vampireabyqualifying then Some (vampire_signature_snapshot ())
+       else None
+     in
+     let assert_signature_unchanged where =
+       match signature_before with
+       | None -> ()
+       | Some before -> vampire_assert_signature_unchanged where before
+     in
      ensure_directory !vampireabyoutdir;
      let digest = Hash.hashval_hexstring (Hash.sha256 content) in
      let short_digest = String.sub digest 0 16 in
@@ -6382,14 +6467,19 @@ let run_vampire_aby_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) ?(proof_command_l
          || (!vampireabyproof = "megalodon" && vampire_output_has_native_certificate out))
         && vampire_output_has_proof_payload out then
        begin
-         let reconstructed =
-           check_vampire_aby_native_certificate ?claimtm ~cxtm ~cxpf ~proof_command_label content out proof_file
-         in
-         vampire_assert_no_qed_reconstruction_state "Vampire certificate reconstruction";
-         if !verbosity > 2 then
-           Printf.printf "Vampire produced %s proof payload at line %d char %d (%s)\n" proof_command_label !lineno !charno digest;
-         flush stdout;
-         reconstructed
+         try
+           let reconstructed =
+             check_vampire_aby_native_certificate ?claimtm ~cxtm ~cxpf ~proof_command_label content out proof_file
+           in
+           vampire_assert_no_qed_reconstruction_state "Vampire certificate reconstruction";
+           assert_signature_unchanged "Vampire certificate reconstruction";
+           if !verbosity > 2 then
+             Printf.printf "Vampire produced %s proof payload at line %d char %d (%s)\n" proof_command_label !lineno !charno digest;
+           flush stdout;
+           reconstructed
+         with exn ->
+           assert_signature_unchanged "failed Vampire certificate reconstruction";
+           raise exn
        end
      else
        raise

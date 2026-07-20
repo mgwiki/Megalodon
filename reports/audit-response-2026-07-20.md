@@ -179,3 +179,23 @@ The next implementation target is therefore not `UnionI`, broader AVATAR
 coverage, or another Skolem heuristic.  It is the first five small
 original-source qualifying proofs, starting with `andEL`, through the extracted
 small-kernel/source-context path.
+
+## State-Isolation Hardening, 2026-07-20
+
+The branch now adds a stronger invariant around every qualifying live Vampire
+proof command.  Before the command runs, Megalodon snapshots the full
+`sigdelta` and `sigtmof` tables.  After native certificate reconstruction,
+including failure paths, qualifying mode compares the current tables with the
+snapshot and fails if any entry was added, removed, or changed.  This is stricter
+than the earlier tracked-list cleanup: it catches untracked certificate-local
+global state, not just entries recorded through
+`vampire_register_reconstruction_delta_for_qed`.
+
+The focused guard suite passes with this check enabled.  The current committed
+frontier is also updated from the earlier note: with the current
+`/project/tmp/vampire-cmake-megalodon6` Vampire build, the original-source
+qualifying prefix now reconstructs and Qed-checks the first three hammer
+commands (`FalseE`, `andEL`, and `andER`) under `-vampireabyqualifying`.
+This is useful progress toward the five-proof milestone, but it still should be
+reported as a small focused E1 candidate set, not as a revived 28-command or
+100-theorem result.
