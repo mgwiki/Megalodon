@@ -363,6 +363,130 @@ let check_paramodulate
     | None -> error (id ^ ": paramodulation result does not match explicit rewrite")
     end
 
+let rec rewrite_tm_all_once from_tm to_tm tm =
+  if tm = from_tm then to_tm
+  else
+    match tm with
+    | TpAp (body, tp) -> TpAp (rewrite_tm_all_once from_tm to_tm body, tp)
+    | Ap (left, right) ->
+        Ap (rewrite_tm_all_once from_tm to_tm left, rewrite_tm_all_once from_tm to_tm right)
+    | Lam (tp, body) -> Lam (tp, rewrite_tm_all_once from_tm to_tm body)
+    | Imp (left, right) ->
+        Imp (rewrite_tm_all_once from_tm to_tm left, rewrite_tm_all_once from_tm to_tm right)
+    | All (tp, body) -> All (tp, rewrite_tm_all_once from_tm to_tm body)
+    | DB _ | TmH _ | Prim _ -> tm
+
+let rewrite_literal_all_once from_tm to_tm literal =
+  replace_literal_atom literal (rewrite_tm_all_once from_tm to_tm (literal_atom literal))
+
+let check_superposition
+    ~id
+    ~equality_sides
+    ~swap_equality_literal
+    ~side_matches
+    ~clause_matches
+    ~raw_variable_name
+    ~target_clause
+    ~raw_equality_clause
+    ~equality_clause
+    ~target_index
+    ~equality_index
+    ~position_candidates
+    ~from_tm
+    ~to_tm
+    ~result =
+  let raw_equality_literal =
+    nth equality_index raw_equality_clause (id ^ " raw equality literal")
+  in
+  let equality_literal = nth equality_index equality_clause (id ^ " equality literal") in
+  let target_literal = nth target_index target_clause (id ^ " target literal") in
+  begin
+    match equality_literal with
+    | Pos atom ->
+        begin
+          match equality_sides atom with
+          | Some (left, right) when side_matches left from_tm && side_matches right to_tm -> ()
+          | Some (left, right) when side_matches right from_tm && side_matches left to_tm -> ()
+          | Some _ -> error (id ^ ": superposition from/to terms do not match equality literal")
+          | None -> error (id ^ ": superposition equality literal is not an equality atom")
+        end
+    | Neg _ -> error (id ^ ": superposition equality literal must be positive")
+  end;
+  let target_atom = literal_atom target_literal in
+  let position =
+    let rec select = function
+      | [] -> error (id ^ ": superposition position does not contain from term")
+      | candidate :: rest ->
+          begin
+            match try_tm_at_position target_atom candidate with
+            | Some found when found = from_tm -> candidate
+            | _ -> select rest
+          end
+    in
+    select position_candidates
+  in
+  let rewritten_atom = replace_tm_at_position target_atom position to_tm (id ^ " target") in
+  let rewritten_literal = replace_literal_atom target_literal rewritten_atom in
+  let simultaneous_rewritten_literal =
+    rewrite_literal_all_once from_tm to_tm target_literal
+  in
+  let equality_rest = remove_at equality_index equality_clause (id ^ " equality literal") in
+  let target_rest = remove_at target_index target_clause (id ^ " target literal") in
+  let target_rest_variants =
+    let clause_wide_target_rest = List.map (rewrite_literal_all_once from_tm to_tm) target_rest in
+    if clause_wide_target_rest = target_rest then [target_rest]
+    else [target_rest; clause_wide_target_rest]
+  in
+  let result_matches_with_equality_rest equality_rest rewritten_literal =
+    List.exists
+      (fun target_rest ->
+        let expected = equality_rest @ target_rest @ [rewritten_literal] in
+        clause_matches expected result)
+      target_rest_variants
+  in
+  let result_matches equality_rest =
+    let rewritten_literals =
+      if simultaneous_rewritten_literal = rewritten_literal then [rewritten_literal]
+      else [rewritten_literal; simultaneous_rewritten_literal]
+    in
+    List.exists
+      (fun rewritten_literal ->
+        result_matches_with_equality_rest equality_rest rewritten_literal
+        ||
+        match swap_equality_literal rewritten_literal with
+        | Some swapped_literal -> result_matches_with_equality_rest equality_rest swapped_literal
+        | None -> false)
+      rewritten_literals
+  in
+  let result_matches_raw_variable_orientation () =
+    match raw_equality_literal with
+    | Pos raw_atom ->
+        begin match equality_sides raw_atom with
+        | Some (raw_left, raw_right) ->
+            let variants =
+              match raw_variable_name raw_left, raw_variable_name raw_right with
+              | Some left_name, Some right_name ->
+                  [[left_name, from_tm; right_name, to_tm];
+                   [right_name, from_tm; left_name, to_tm]]
+              | Some left_name, None -> [[left_name, from_tm]]
+              | None, Some right_name -> [[right_name, from_tm]]
+              | None, None -> []
+            in
+            List.exists
+              (fun subst ->
+                let raw_rest =
+                  remove_at equality_index raw_equality_clause (id ^ " raw equality literal")
+                in
+                let equality_rest = subst_clause subst raw_rest in
+                result_matches equality_rest)
+              variants
+        | None -> false
+        end
+    | Neg _ -> false
+  in
+  if not (result_matches equality_rest || result_matches_raw_variable_orientation ()) then
+    error (id ^ ": superposition result does not match explicit rewrite")
+
 let rec term_disagreement_constraints ~diseq_literal left right =
   if left = right then []
   else

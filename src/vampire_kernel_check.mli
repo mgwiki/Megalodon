@@ -176,6 +176,26 @@ val check_paramodulate :
   result:Vampire_kernel_syntax.clause ->
   unit
 
+val check_superposition :
+  id:string ->
+  equality_sides:(Syntax.tm -> (Syntax.tm * Syntax.tm) option) ->
+  swap_equality_literal:
+    (Vampire_kernel_syntax.literal -> Vampire_kernel_syntax.literal option) ->
+  side_matches:(Syntax.tm -> Syntax.tm -> bool) ->
+  clause_matches:
+    (Vampire_kernel_syntax.clause -> Vampire_kernel_syntax.clause -> bool) ->
+  raw_variable_name:(Syntax.tm -> string option) ->
+  target_clause:Vampire_kernel_syntax.clause ->
+  raw_equality_clause:Vampire_kernel_syntax.clause ->
+  equality_clause:Vampire_kernel_syntax.clause ->
+  target_index:int ->
+  equality_index:int ->
+  position_candidates:int list list ->
+  from_tm:Syntax.tm ->
+  to_tm:Syntax.tm ->
+  result:Vampire_kernel_syntax.clause ->
+  unit
+
 val check_equality_factoring :
   id:string ->
   equality_sides:(Syntax.tm -> (Syntax.tm * Syntax.tm) option) ->
