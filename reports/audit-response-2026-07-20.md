@@ -774,3 +774,34 @@ while the available branch-choice proof is the checked Megalodon epsilon-choice
 proof over `Eps_prop (...)`.  The next change should therefore be an explicit
 small-kernel proof transport for that scoped proposition, not another cleanup
 or fallback.
+
+## Proof-Side Witness Cleanup, 2026-07-20
+
+The branch-choice transport cleanup now rewrites both the emitted local choice
+occurrence and the introduced Skolem symbol to the same contract-backed
+epsilon witness.  The reusable operation is
+`skolem_witness_transport_proof_replacements` in `vampire_kernel_elab.ml`,
+with a unit test covering the introduced-symbol rewrite.  The CPS registration
+path also no longer rebuilds an epsilon witness from the raw contract source
+formula when the branch-choice elaborator has already produced the proof-side
+epsilon term; this avoids introducing a second, independently shifted witness
+term.
+
+Focused validation passed:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+WORK_DIR=/project/tmp/prefix4_elab_witness.1784558414 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+WORK_DIR=/project/tmp/and_prefix_elab_witness.1784558414 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+```
+
+This still does not close `and3I`.  The debug artifact
+`/project/tmp/prefix4_elab_witness_debug.1784558425` shows the raw
+Skolem-symbol cleanup succeeds in some local refutation paths, but the
+returned proof still contains a scoped proposition mismatch after live
+expansion: both sides use library `not`/`Eps_prop`, but their de Bruijn depths
+inside the nested predicate differ.  The next accepted change must therefore
+address the branch-choice predicate lifting/closing discipline at the proof
+application where the mismatch is created.

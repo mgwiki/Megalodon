@@ -22555,25 +22555,10 @@ let elaborate_preprocess_refutation_native
   let register_cps_branch_witness_replacement
       id parent_step_variables result_step_variables branch target_witness
       epsilon_witness =
-    let contract_epsilon_witness =
-      match branch.Vampire_kernel_syntax.skolem_branch_source_formula with
-      | Some (Ap (TmH "vampire_exists_prop", Lam (tp, body))) ->
-          Some
-            (Ap
-               (TmH (native_core_eps_symbol tp),
-                Lam
-                  (tp,
-                   native_core_formula_prop body
-                   |> native_core_normalize_bool_constants
-                   |> tm_beta_eta_norm))
-             |> native_core_normalize_bool_constants
-             |> tm_beta_eta_norm)
-      | _ -> None
-    in
     let epsilon_witness =
-      match contract_epsilon_witness with
-      | Some witness -> witness
-      | None -> epsilon_witness
+      epsilon_witness
+      |> native_core_normalize_bool_constants
+      |> tm_beta_eta_norm
     in
     let introduced_names =
       branch.Vampire_kernel_syntax.skolem_branch_introduced_witnesses
@@ -23105,7 +23090,7 @@ let elaborate_preprocess_refutation_native
                             skolem_transport_local_template =
                               local_template;
                           })
-                  |> Vampire_kernel_elab.skolem_witness_transport_term_replacements)
+                  |> Vampire_kernel_elab.skolem_witness_transport_proof_replacements)
                |> List.sort_uniq compare
 	             in
              let branch_choice_expanded_candidate =
