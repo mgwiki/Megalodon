@@ -145,6 +145,20 @@ val check_equality_symmetry :
   result:Vampire_kernel_syntax.clause ->
   unit
 
+val check_bool_simplify :
+  id:string ->
+  swap_equality_literal:
+    (Vampire_kernel_syntax.literal -> Vampire_kernel_syntax.literal option) ->
+  clause_matches:
+    (Vampire_kernel_syntax.clause -> Vampire_kernel_syntax.clause -> bool) ->
+  parent:Vampire_kernel_syntax.clause ->
+  literal_index:int ->
+  position_candidates:int list list ->
+  from_tm:Syntax.tm ->
+  to_tm:Syntax.tm ->
+  result:Vampire_kernel_syntax.clause ->
+  unit
+
 val check_paramodulate :
   id:string ->
   equality_sides:(Syntax.tm -> (Syntax.tm * Syntax.tm) option) ->

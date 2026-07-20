@@ -267,6 +267,48 @@ let check_equality_symmetry ~id ~swap_equality_literal ~parent ~literal_index ~r
   if not (same_clause_multiset expected result) then
     error (id ^ ": equality-symmetry result does not match parent clause")
 
+let check_bool_simplify
+    ~id
+    ~swap_equality_literal
+    ~clause_matches
+    ~parent
+    ~literal_index
+    ~position_candidates
+    ~from_tm
+    ~to_tm
+    ~result =
+  let target_literal = nth literal_index parent (id ^ " Boolean simplification literal") in
+  let target_atom = literal_atom target_literal in
+  let position =
+    let rec select = function
+      | [] -> error (id ^ ": Boolean simplification position does not contain from term")
+      | candidate :: rest ->
+          begin
+            match try_tm_at_position target_atom candidate with
+            | Some found when found = from_tm -> candidate
+            | _ -> select rest
+          end
+    in
+    select position_candidates
+  in
+  let rewritten_atom =
+    replace_tm_at_position target_atom position to_tm (id ^ " Boolean simplification target")
+  in
+  let rewritten_literal = replace_literal_atom target_literal rewritten_atom in
+  let parent_rest = remove_at literal_index parent (id ^ " Boolean simplification literal") in
+  let result_matches rewritten_literal =
+    let expected = parent_rest @ [rewritten_literal] in
+    clause_matches expected result
+  in
+  if not (
+      result_matches rewritten_literal
+      ||
+      match swap_equality_literal rewritten_literal with
+      | Some swapped_literal -> result_matches swapped_literal
+      | None -> false)
+  then
+    error (id ^ ": Boolean simplification result does not match explicit rewrite")
+
 let check_paramodulate
     ~id
     ~equality_sides

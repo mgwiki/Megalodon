@@ -3844,36 +3844,24 @@ let check_bool_simplify checked id parent_id literal_index position from_tm to_t
   let parent_clause = lookup_clause checked parent_id in
   let target_literal = nth literal_index parent_clause (id ^ " Boolean simplification literal") in
   let target_atom = literal_atom target_literal in
-  let position =
-    let rec select = function
-      | [] -> error (id ^ ": Boolean simplification position does not contain from term")
-      | candidate :: rest ->
-          begin
-            match try_tm_at_position target_atom candidate with
-            | Some found when found = from_tm -> candidate
-            | _ -> select rest
-          end
-    in
-    select (paramodulation_position_candidates target_atom position)
+  let clause_matches expected actual =
+    same_clause_multiset expected actual
+    || same_clause_set_mod_equality expected actual
+    || same_clause_mod_vampire_var_renaming expected actual
+    || same_clause_mod_vampire_var_renaming_and_equality expected actual
   in
-  let rewritten_atom = replace_tm_at_position target_atom position to_tm (id ^ " Boolean simplification target") in
-  let rewritten_literal = replace_literal_atom target_literal rewritten_atom in
-  let parent_rest = remove_at literal_index parent_clause (id ^ " Boolean simplification literal") in
-  let result_matches rewritten_literal =
-    let expected = parent_rest @ [rewritten_literal] in
-    same_clause_multiset expected result
-    || same_clause_set_mod_equality expected result
-    || same_clause_mod_vampire_var_renaming expected result
-    || same_clause_mod_vampire_var_renaming_and_equality expected result
-  in
-  if not (
-    result_matches rewritten_literal
-    ||
-    match swap_literal_equality rewritten_literal with
-    | Some swapped_literal -> result_matches swapped_literal
-    | None -> false)
-  then
-    error (id ^ ": Boolean simplification result does not match explicit rewrite")
+  try
+    Vampire_kernel_check.check_bool_simplify
+      ~id
+      ~swap_equality_literal:swap_literal_equality
+      ~clause_matches
+      ~parent:parent_clause
+      ~literal_index
+      ~position_candidates:(paramodulation_position_candidates target_atom position)
+      ~from_tm
+      ~to_tm
+      ~result
+  with Vampire_kernel_check.Error msg -> error msg
 
 let check_superposition checked id target_parent_id equality_parent_id target_index equality_index target_subst equality_subst position from_tm to_tm result =
   let target_clause = subst_clause target_subst (lookup_clause checked target_parent_id) in
