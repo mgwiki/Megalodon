@@ -4,7 +4,7 @@ Status: prototype/legacy.
 
 This suite is retained for corpus generation, source-linking diagnostics, and
 analysis of the old rich-export experiment. It must not be used as the primary
-success gate for the `vampire/megalodon1` effort. In particular, checks that
+success gate for the `vampire/megalodon6` effort. In particular, checks that
 require `-allowincompleteqed` or contain `admit` validate plumbing only; they
 are not proof-reconstruction successes.
 
@@ -12,19 +12,37 @@ The replacement path is the small certificate calculus described in
 `reports/vampire-megalodon-certificate-spec.md`, with initial smoke tests in
 `tests/vampire_certificate/`.
 
-The only current original-hammer qualifying seed in this directory is:
+The current original-hammer qualifying prefix in this directory is:
+
+```sh
+VAMPIRE=/path/to/vampire \
+tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+```
+
+It rewrites the first eight hammer `aby` sites through `or3I3` to `vampire`
+commands and runs Megalodon with `-vampireabyqualifying`, a 10-second Vampire
+limit, signature-invariant checks after each command, and guards against
+certificate-delta-only proof checking. This is the current counted E1 frontier
+after the July 20 audit.
+
+The one-command `FalseE` seed is still available as a smoke test:
 
 ```sh
 VAMPIRE=/path/to/vampire \
 tests/vampire_reconstruction/run_live_hammer_falsee_qualifying.sh
 ```
 
-It rewrites the first hammer `aby` site, `FalseE`, to a `vampire` command and
-runs Megalodon with `-vampireabyqualifying`. This is the current counted E1
-seed after the July 20 audit. A focused qualifying prefix probe through
-`andER` currently closes `FalseE` and then fails at `andEL`; that failure is
-intentional evidence that the old fallback/stateful path is no longer being
-counted.
+The next focused qualifying guard is deliberately fail-closed:
+
+```sh
+VAMPIRE=/path/to/vampire \
+tests/vampire_reconstruction/run_live_hammer_prefix9_failclosed_qualifying.sh
+```
+
+It runs the same eight-command prefix and then attempts `or3E` at line 203.
+That ninth command currently fails at deterministic live source-goal transport
+with a `DB index 12 <> 15` mismatch. The failure is expected and is evidence
+that qualifying mode is no longer counting the old fallback/stateful path.
 
 The strongest non-qualifying live check in this directory is currently:
 

@@ -2212,3 +2212,44 @@ TMPDIR=/project/tmp ./makeopt
 TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
 WORK_DIR=/project/tmp/prefix9_dneg_target_diag2_1784581087 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire MEGALODON_CERT_DEBUG=1 MEGALODON_CERT_DEBUG_GUIDED=1 MEGALODON_CERT_DEBUG_SUPPLIED=1 MEGALODON_CERT_DEBUG_SOURCE_APPLY=1 MEGALODON_CERT_DEBUG_LIVE_SAFE_DELTA=1 tests/vampire_reconstruction/run_live_hammer_prefix9_failclosed_qualifying.sh
 ```
+
+## Rejected Live-Retarget Experiment, 2026-07-20
+
+After the double-negation diagnostic I tried one narrowly scoped Megalodon-side
+retargeting experiment: preserve `local_type` source-map entries during
+returned-body expansion and, for already-live double-negation proofs, try a
+second proof variant with one duplicated live proof-variable segment removed
+from de Bruijn indices.  This was intentionally checked after the original
+candidate and still passed through the ordinary proof checker; it was not an
+unchecked fallback.
+
+The experiment did **not** solve the frontier.  The focused guard still failed
+closed at `or3E`, and both variants reported the same mismatch:
+
+```text
+firstdiff=... DB index 12 <> 15
+Vampire native proof-of-prop live-expanded variant 1 rejected
+Vampire native deterministic replay did not close current proof goal at line 203 char 8; qualifying mode disabled candidate source-binding fallback.
+```
+
+I reverted the source changes rather than committing a no-progress heuristic.
+The current branch therefore keeps the audit-aligned invariant: qualifying mode
+does not add source-binding search, does not rely on certificate-local global
+state, and does not count `or3E` until the live theorem-context transport is
+deterministically reconstructed from certificate data.
+
+The suite documentation was updated to remove stale wording that still called
+the one-command `FalseE` fixture the only qualifying seed.  The current counted
+frontier is eight original-source commands through `or3I3`; the prefix9 guard
+is an expected fail-closed test of the next unsupported transport case.
+
+Validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+WORK_DIR=/project/tmp/prefix9_drop_dup_live_context_1784581746 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire MEGALODON_CERT_DEBUG=1 MEGALODON_CERT_DEBUG_GUIDED=1 MEGALODON_CERT_DEBUG_SUPPLIED=1 MEGALODON_CERT_DEBUG_SOURCE_APPLY=1 MEGALODON_CERT_DEBUG_LIVE_SAFE_DELTA=1 tests/vampire_reconstruction/run_live_hammer_prefix9_failclosed_qualifying.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+WORK_DIR=/project/tmp/and_prefix_doc_update_1784581922 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+WORK_DIR=/project/tmp/prefix9_doc_update_1784581922 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix9_failclosed_qualifying.sh
+```
