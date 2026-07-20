@@ -885,11 +885,41 @@ let vampire_local_definition_expander cxtm =
 
 let vampire_source_map_expander cxtm source_map =
   let aliases = Hashtbl.create 101 in
+  let rec local_terms proof_index = function
+    | [] -> []
+    | (_, (_, Some _)) :: rest -> local_terms proof_index rest
+    | (name, (tp, None)) :: rest ->
+        (name, proof_index, tp) :: local_terms (proof_index + 1) rest
+  in
+  let local_terms = local_terms 0 cxtm in
+  let local_definition_names =
+    List.filter_map
+      (fun (name, (_, definition)) ->
+         match definition with
+         | Some _ -> Some name
+         | None -> None)
+      cxtm
+  in
+  let local_term_index source_name =
+    match
+      List.find_opt
+        (fun (local_name, _, _) -> local_name = source_name)
+        local_terms
+    with
+    | Some (_, index, _) -> Some index
+    | None -> None
+  in
   let add_alias alias source_name =
     if alias <> "" && source_name <> "" then
       match Hashtbl.find_opt sigtmh source_name with
-      | Some hash -> Hashtbl.replace aliases alias hash
-      | None -> ()
+      | Some hash -> Hashtbl.replace aliases alias (`Global hash)
+      | None ->
+          begin match local_term_index source_name with
+          | Some index -> Hashtbl.replace aliases alias (`Local index)
+          | None ->
+              if List.mem source_name local_definition_names then
+                Hashtbl.replace aliases alias (`LocalDefinition source_name)
+          end
   in
   List.iter
     (fun entry ->
@@ -902,7 +932,9 @@ let vampire_source_map_expander cxtm source_map =
     | TmH ("vampire_false" | "f__false") -> TmH (!fal)
     | TmH name ->
         begin match Hashtbl.find_opt aliases name with
-        | Some hash -> TmH hash
+        | Some (`Global hash) -> TmH hash
+        | Some (`Local index) -> DB (index + depth)
+        | Some (`LocalDefinition source_name) -> TmH source_name
         | None -> TmH name
         end
     | TpAp (body, tp) -> TpAp (expand_tm depth body, tp)
