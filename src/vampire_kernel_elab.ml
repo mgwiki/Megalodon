@@ -546,6 +546,54 @@ let prioritized_skolem_witness_transport_proof_replacements
   in
   keep_first [] (transport_replacements @ registered_replacements)
 
+type introduced_symbol_replacement_classification = {
+  introduced_symbols_present : string list;
+  introduced_symbols_with_direct_replacement : string list;
+  introduced_symbols_without_direct_replacement : string list;
+}
+
+let classify_introduced_symbol_replacements
+    ~alias_names
+    ~introduced_symbols
+    ~replacements
+    proof =
+  let introduced_aliases =
+    introduced_symbols
+    |> List.concat_map alias_names
+    |> List.sort_uniq String.compare
+  in
+  let direct_replacement_names =
+    replacements
+    |> List.filter_map
+         (function
+           | TmH name, _ -> Some name
+           | _ -> None)
+    |> List.sort_uniq String.compare
+  in
+  let present =
+    introduced_aliases
+    |> List.filter
+         (fun name -> proof_contains_term_symbol [name] proof)
+    |> List.sort_uniq String.compare
+  in
+  let with_direct =
+    present
+    |> List.filter
+         (fun name -> List.mem name direct_replacement_names)
+    |> List.sort_uniq String.compare
+  in
+  let without_direct =
+    present
+    |> List.filter
+         (fun name -> not (List.mem name with_direct))
+    |> List.sort_uniq String.compare
+  in
+  {
+    introduced_symbols_present = present;
+    introduced_symbols_with_direct_replacement = with_direct;
+    introduced_symbols_without_direct_replacement = without_direct;
+  }
+
 let substitute_named_term name tm =
   let rec subst depth = function
     | TmH candidate when candidate = name -> DB depth

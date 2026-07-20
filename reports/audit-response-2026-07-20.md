@@ -1228,3 +1228,39 @@ TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.s
 WORK_DIR=/project/tmp/and_prefix_no_local_symbols.1784568292 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
 WORK_DIR=/project/tmp/prefix4_no_local_symbols.1784568292 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
 ```
+
+## Introduced-Witness Classification Extraction, 2026-07-20
+
+The next focused `and3I` probe at
+`/project/tmp/and3I_transport_classify_1784568409` confirmed the cleanup
+orientation problem more precisely.  The surviving `#sK0` is not an original
+unreplaced symbol in the candidate; it is introduced by the reverse
+registered-witness cleanup that rewrites an exact epsilon witness back to a
+certificate-local Skolem symbol.
+
+I also tested a temporary direct-epsilon expansion experiment at
+`/project/tmp/and3I_direct_eps_experiment_1784568578`.  That experiment removed
+the introduced symbol but failed at a deeper scoped boundary: a proof branch
+expected a locally bound witness variable while the globally expanded proof
+contained `Eps_prop(...)`.  The experiment was reverted.  The result is useful
+because it rules out global `#sK -> Eps` substitution as the next qualifying
+fix; the proof has to be rebuilt or transported at the scoped branch
+continuation.
+
+The durable code change is an extraction:
+`Vampire_kernel_elab.classify_introduced_symbol_replacements` now owns the
+deterministic classification of introduced witness aliases that are present in
+a proof, those with direct symbol replacements, and those without direct
+replacements.  `vampire_cert_v1.ml` uses this helper only for diagnostics and
+fail-closed classification; it does not add a new search path or relax the
+qualifying guard.
+
+Focused validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+WORK_DIR=/project/tmp/and_prefix_classify_extract.1784568842 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+WORK_DIR=/project/tmp/prefix4_classify_extract.1784568842 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+```

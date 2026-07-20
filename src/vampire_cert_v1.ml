@@ -23337,14 +23337,12 @@ let elaborate_preprocess_refutation_native
                |> List.concat_map native_core_symbol_name_aliases
                |> List.sort_uniq String.compare
              in
-             let registered_choice_symbol_replacements =
-               registered_choice_replacements
-               |> List.filter_map
-                    (function
-                      | TmH name, replacement ->
-                          Some (name, replacement)
-                      | _ -> None)
-               |> List.sort_uniq compare
+             let introduced_replacement_classification =
+               Vampire_kernel_elab.classify_introduced_symbol_replacements
+                 ~alias_names:native_core_symbol_name_aliases
+                 ~introduced_symbols:introduced_witness_symbols
+                 ~replacements:registered_choice_replacements
+                 candidate
              in
              let branch_choice_expanded_candidate =
                let template_attempt_limit =
@@ -23428,19 +23426,9 @@ let elaborate_preprocess_refutation_native
 	                  ^ string_of_int
 	                    (List.length branch_choice_candidate_replacements));
              if debug then begin
-               let escaping_symbols =
-                 introduced_witness_alias_symbols
-                 |> List.filter
-                      (fun name ->
-                         native_core_pf_contains_term_symbol [name] candidate)
-                 |> List.sort_uniq String.compare
-               in
                let escaping_direct_symbols =
-                 escaping_symbols
-                 |> List.filter
-                      (fun name ->
-                         List.mem_assoc name registered_choice_symbol_replacements)
-                 |> List.sort_uniq String.compare
+                 introduced_replacement_classification
+                   .Vampire_kernel_elab.introduced_symbols_with_direct_replacement
                in
                if escaping_direct_symbols <> [] then
                  prerr_endline
@@ -23448,11 +23436,8 @@ let elaborate_preprocess_refutation_native
                     ^ ": native preprocess Skolem CPS direct introduced-symbol replacements available for "
                     ^ String.concat "," escaping_direct_symbols);
                let escaping_without_direct =
-                 escaping_symbols
-                 |> List.filter
-                      (fun name ->
-                         not
-                           (List.mem name escaping_direct_symbols))
+                 introduced_replacement_classification
+                   .Vampire_kernel_elab.introduced_symbols_without_direct_replacement
                in
                if escaping_without_direct <> [] then
                  prerr_endline

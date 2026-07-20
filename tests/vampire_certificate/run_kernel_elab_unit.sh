@@ -274,6 +274,20 @@ let () =
        ~transports:[]
        proof);
   expect_equal
+    "classify_introduced_symbol_replacements should separate direct and indirect cleanup gaps"
+    {
+      Vampire_kernel_elab.introduced_symbols_present = ["#s0"; "s1"];
+      introduced_symbols_with_direct_replacement = ["s1"];
+      introduced_symbols_without_direct_replacement = ["#s0"];
+    }
+    (Vampire_kernel_elab.classify_introduced_symbol_replacements
+       ~alias_names:aliases
+       ~introduced_symbols:["s0"; "s1"]
+       ~replacements:[TmH "#s1", TmH "def1"; TmH "s1", TmH "def1"]
+       (PPfAp
+          (PTmAp (Known "k", Ap (TmH "#s0", TmH "a")),
+           PTmAp (Known "k", Ap (TmH "s1", TmH "b")))));
+  expect_equal
     "substitute_named_term should preserve vLAM binder convention"
     (Ap (TmH "vLAM", Ap (DB 0, TmH "z")))
     (Vampire_kernel_elab.substitute_named_term

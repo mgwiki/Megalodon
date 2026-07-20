@@ -181,6 +181,19 @@ val prioritized_skolem_witness_transport_proof_replacements :
   Syntax.pf ->
   (Syntax.tm * Syntax.tm) list
 
+type introduced_symbol_replacement_classification = {
+  introduced_symbols_present : string list;
+  introduced_symbols_with_direct_replacement : string list;
+  introduced_symbols_without_direct_replacement : string list;
+}
+
+val classify_introduced_symbol_replacements :
+  alias_names:(string -> string list) ->
+  introduced_symbols:string list ->
+  replacements:(Syntax.tm * Syntax.tm) list ->
+  Syntax.pf ->
+  introduced_symbol_replacement_classification
+
 val substitute_named_term :
   string ->
   Syntax.tm ->
