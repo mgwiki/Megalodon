@@ -14744,9 +14744,9 @@ let native_core_formula_orientation_proof
 
 let native_core_predicate_definition_fold_step_proof
     id variables parent_step_variables result_step_variables definition source target proof =
-  let _, definiendum, body = predicate_definition_parts id definition in
+  let _, definition_atom, body = predicate_definition_parts id definition in
+  let definiendum = predicate_definition_definiendum_term definition_atom in
   let base_depth = universal_binder_count definition in
-  let patterns = predicate_definition_fold_patterns base_depth body definiendum in
   let db_for_result_variable name tp =
     Vampire_kernel_elab.db_for_result_variable ~result_step_variables name tp
   in
@@ -14782,10 +14782,46 @@ let native_core_predicate_definition_fold_step_proof
   let close_tm tm = native_core_close_tm (variables @ result_step_variables) tm in
   let source = close_tm source in
   let target = close_tm target in
-  let patterns = List.map (fun (needle, replacement) -> (close_tm needle, close_tm replacement)) patterns in
+  let definiendum = close_tm definiendum in
+  let definition_atom = close_tm definition_atom in
+  let body = close_tm body in
+  let patterns = predicate_definition_fold_patterns base_depth body definition_atom in
+  let target_definiendum_term target =
+    match native_core_equality_sides target with
+    | Some (Prop, left, right)
+        when left = native_core_true || left = native_core_false ->
+        Some right
+    | Some (Prop, left, right)
+        when right = native_core_true || right = native_core_false ->
+        Some left
+    | Some _ -> None
+    | None -> Some target
+  in
+  let root_definition_instance source target =
+    match target_definiendum_term target with
+    | None -> false
+    | Some target_definiendum ->
+        begin match tm_match_definition_params base_depth definiendum target_definiendum with
+        | None -> false
+        | Some subst ->
+            let instantiated_body =
+              tm_instantiate_definition_params base_depth subst body
+            in
+            let context_shifted_body =
+              tmshift base_depth base_depth instantiated_body
+            in
+            source = instantiated_body
+            || left_assoc_vampire_or_formula source
+               = left_assoc_vampire_or_formula instantiated_body
+            || source = context_shifted_body
+            || left_assoc_vampire_or_formula source
+               = left_assoc_vampire_or_formula context_shifted_body
+        end
+  in
   let root_replacement depth source target =
     let shift = max 0 (depth - base_depth) in
-    List.exists
+    root_definition_instance source target
+    || List.exists
       (fun (needle, replacement) ->
          let shifted_needle = tmshift 0 shift needle in
          let shifted_replacement = tmshift 0 shift replacement in
@@ -18986,7 +19022,7 @@ let native_core_equality_factoring_in_result_context
   native_core_bind_result_step_variables variables result_step_variables body_proof
 
 let native_core_equality_factoring_constraints_in_result_context
-    cert id variables parent_id parent_clause parent_proof selected_index other_index subst constraints result =
+    cert id variables parent_id parent_clause parent_proof selected_index other_index explicit_sides subst constraints result =
   let result_step_variables = native_core_step_variables cert id in
   let close_tm tm = native_core_close_tm (variables @ result_step_variables) tm in
   let close_literal = function
@@ -18998,11 +19034,26 @@ let native_core_equality_factoring_constraints_in_result_context
     |> List.map close_literal
   in
   let constraints = List.map close_literal constraints in
+  let explicit_sides =
+    Option.map
+      (fun (selected_lhs, other_rhs) ->
+         close_tm (subst_tm subst selected_lhs),
+         close_tm (subst_tm subst other_rhs))
+      explicit_sides
+  in
   let result = List.map close_literal result in
   let parent_proof =
     native_core_open_step_theorem_body_in_result_context
       cert id variables parent_id subst parent_proof
   in
+  match explicit_sides with
+  | Some _ ->
+      let body_proof =
+        native_core_equality_factoring
+          id parent_clause parent_proof selected_index other_index explicit_sides result
+      in
+      native_core_bind_result_step_variables variables result_step_variables body_proof
+  | None ->
   let selected = nth selected_index parent_clause (id ^ " native equality-factoring selected literal") in
   let other = nth other_index parent_clause (id ^ " native equality-factoring other literal") in
   let selected_atom =
@@ -19066,8 +19117,8 @@ let native_core_equality_factoring_constraints_in_result_context
           in
           PPfAp (PPfAp (PTmAp (proof, target_prop), head_branch), tail_branch)
     in
-    consume (Some selected_index) parent_clause parent_proof
-    |> native_core_bind_result_step_variables variables result_step_variables
+      consume (Some selected_index) parent_clause parent_proof
+      |> native_core_bind_result_step_variables variables result_step_variables
 
 let native_core_literal_index id rule selected clause =
   let rec find index = function
@@ -20540,12 +20591,12 @@ let elaborate_core_resolution_refutation_native
               selected_index other_index explicit_sides subst result
           in
           store id result proof
-      | EqualityFactoringConstraints (id, parent_id, selected_index, other_index, _, subst, constraints, result) ->
+      | EqualityFactoringConstraints (id, parent_id, selected_index, other_index, explicit_sides, subst, constraints, result) ->
           let parent_clause, parent_proof = lookup parent_id in
           let proof =
             native_core_equality_factoring_constraints_in_result_context
               cert id variables parent_id parent_clause parent_proof
-              selected_index other_index subst constraints result
+              selected_index other_index explicit_sides subst constraints result
           in
           store id result proof
 	      | TruthConflict (id, parent_id, literal_index, result) ->
@@ -22391,7 +22442,7 @@ let elaborate_preprocess_refutation_native
               (native_core_equality_factoring_in_result_context
                  cert id variables parent_id parent_clause parent_proof
                  selected_index other_index explicit_sides subst result)
-      | EqualityFactoringConstraints (id, parent_id, selected_index, other_index, _, subst, constraints, result) ->
+      | EqualityFactoringConstraints (id, parent_id, selected_index, other_index, explicit_sides, subst, constraints, result) ->
           let parent_clause, parent_proof = lookup_clause parent_id in
           if Hashtbl.mem transitional_primitive_clause_steps parent_id then
             error
@@ -22400,7 +22451,7 @@ let elaborate_preprocess_refutation_native
             store_clause id result
               (native_core_equality_factoring_constraints_in_result_context
                  cert id variables parent_id parent_clause parent_proof
-                 selected_index other_index subst constraints result)
+                 selected_index other_index explicit_sides subst constraints result)
 	      | TruthConflict (id, parent_id, literal_index, result) ->
 	          let parent_clause, parent_proof = lookup_clause parent_id in
 	          store_clause id result

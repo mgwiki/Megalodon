@@ -2020,3 +2020,71 @@ TMPDIR=/project/tmp MEGALODON_CERT_DEBUG=1 ./bin/megalodon -vampirecertv1corepfc
 WORK_DIR=/project/tmp/passprefix8_after_eqfact_1784578793 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
 WORK_DIR=/project/tmp/prefix9_frontier_1784578793 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix9_failclosed_qualifying.sh
 ```
+
+## Predicate Fold and Equality-Factoring Constraints Replay, 2026-07-20
+
+The next `or3E` pass removed two deterministic proof-term blockers without
+adding a source-search fallback.
+
+First, predicate-definition fold replay now distinguishes the predicate
+definition atom from the actual definiendum.  The failing `or3E` step folded a
+definition under surrounding quantifier/disjunction context into an
+equality-to-truth proposition.  The old proof-term path tried to match the
+whole definition equality as the target predicate; the strict checker already
+knew the fold was valid, but native proof construction rejected it.  The replay
+now extracts the real defined predicate term, recognizes equality-to-true/false
+targets, and compares the instantiated body in the shifted result context.
+
+Second, `equality_factoring_constraints` now consumes Vampire's emitted
+`selected_lhs`/`other_rhs` side contract in the same deterministic way as
+ordinary equality factoring.  This covers the common constraints form where
+Vampire keeps the other equality literal and emits the disequality constraint
+as a separate clause fragment.  A focused fixture,
+`native_cert_v1_equality_factoring_constraints_explicit_cross_core_pf_valid`,
+checks this in preprocess proof-term mode.
+
+This moved the saved `or3E` certificate from the `u29 predicate_fold` and
+`u172 equality_factoring_constraints` blockers to a complete standalone
+preprocess proof-term check:
+
+```text
+Vampire certificate v1 closed checked 99 steps.
+Vampire certificate v1 native preprocess proof term checked 99 steps.
+Vampire certificate v1 native preprocess final conjecture proof term checked.
+Everything looks good.
+```
+
+The live qualifying `or3E` command is still not counted as E1 progress.  The
+fresh live Vampire proof now passes certificate proof-term replay, but the
+source-goal bridge rejects the resulting theorem proof in the live Megalodon
+context:
+
+```text
+Vampire native proof-of-prop candidate checked only with certificate delta at line 203 char 8; rejecting live proof.
+firstdiff=... DB index 12 <> 15
+Vampire native deterministic replay did not close current proof goal at line 203 char 8; qualifying mode disabled candidate source-binding fallback.
+```
+
+So the current honest frontier remains eight qualifying original-source
+commands through `or3I3`, with `or3E` failing closed in the Skolem/choice
+source-goal transport layer.  This is the audit-aligned next target: replay the
+emitted Skolem/choice transport at the live theorem context, not re-enable the
+legacy source-binding search.
+
+Validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+TMPDIR=/project/tmp ./bin/megalodon -vampirecertv1preprocesspfcheck -vampirecertv1 tests/vampire_certificate/native_cert_v1_equality_factoring_constraints_explicit_cross_core_pf_valid.sexp -vampirecertv1source tests/vampire_certificate/native_cert_v1_equality_factoring_constraints_explicit_cross_core_pf_valid.th0.p /project/tmp/eqfact_constraints_dummy_checked_1784579827.mg
+TMPDIR=/project/tmp MEGALODON_CERT_DEBUG=1 ./bin/megalodon -vampirecertv1preprocesspfcheck -vampirecertv1 /project/tmp/or3e_live_current.sexp -vampirecertv1source /project/tmp/prefix9_live_after_eqfact_constraints_1784579561/out/vampire.203.8.ff4aac68e461ae69.thf.p /project/tmp/or3e_live_dummy_1784579606.mg
+WORK_DIR=/project/tmp/prefix9_live_after_eqfact_constraints_1784579561 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix9_failclosed_qualifying.sh
+```
+
+The full native certificate smoke script was also attempted, but it still
+fails later on the pre-existing direct Skolem fixture:
+
+```text
+u1: native preprocess proof-term formula orientation supports only equality symmetry, true equality introduction, and matching logical structure
+```
