@@ -1759,8 +1759,17 @@ let vampire_live_case_not_tm target =
   | Some _ -> vampire_live_not_tm target
   | None -> Imp (target, TmH (!fal))
 
+let vampire_currently_proving name =
+  match !proving with
+  | Some (current_name, _, _, _, _) -> current_name = name
+  | None -> false
+
+let vampire_available_known name =
+  if vampire_currently_proving name then None
+  else Hashtbl.find_opt sigknh name
+
 let vampire_live_false_elim proof target =
-  match Hashtbl.find_opt sigknh "FalseE" with
+  match vampire_available_known "FalseE" with
   | Some false_elim_hash -> PTmAp (PPfAp (Known false_elim_hash, proof), target)
   | None -> PTmAp (proof, target)
 
@@ -2967,7 +2976,7 @@ let vampire_xm_double_negation_elim_to ?source_map ?extra_delta ?extra_symbols t
     vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxpf target candidate
   in
   let false_elim proof target =
-    match Hashtbl.find_opt sigknh "FalseE" with
+    match vampire_available_known "FalseE" with
     | Some false_elim_hash -> PTmAp (PPfAp (Known false_elim_hash, proof), target)
     | None -> PTmAp (proof, target)
   in
@@ -3187,7 +3196,7 @@ let vampire_xm_native_refutation_elim_to
     vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxpf target candidate
   in
   let false_elim proof target =
-    match Hashtbl.find_opt sigknh "FalseE" with
+    match vampire_available_known "FalseE" with
     | Some false_elim_hash -> PTmAp (PPfAp (Known false_elim_hash, proof), target)
     | None -> PTmAp (proof, target)
   in
@@ -4264,7 +4273,7 @@ let vampire_constructive_goal_search
 let vampire_reconstruct_current_goal_from_refutation ?source_map ?extra_delta ?extra_symbols claimtm cxtm cxpf proof proposition =
   let native_false_goal =
     if vampire_false_like proposition then
-      match Hashtbl.find_opt sigknh "FalseE" with
+      match vampire_available_known "FalseE" with
       | Some false_elim_hash ->
           vampire_check_current_goal_proof
             ?source_map ?extra_delta ?extra_symbols

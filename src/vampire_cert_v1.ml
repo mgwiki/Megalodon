@@ -11267,7 +11267,8 @@ let native_core_skolem_context_for_source cert id source =
     | All (tp, body) ->
         let name = variable_name all_index tp in
         find (all_index + 1) ((name, tp) :: context) body
-    | Ap (Ap (TmH "vampire_or", left), right) ->
+    | Ap (Ap (TmH "vampire_or", left), right)
+    | Ap (Ap (TmH "vampire_and", left), right) ->
         begin match find all_index context left with
         | Some _ as found -> found
         | None -> find all_index context right
@@ -11765,7 +11766,9 @@ let native_core_certificate_sgdelta cert symbol_table =
                 native_core_metadata_step_extra_field
                   cert id "kernel_v1" "introduced_0_dependency_count"
               with
-              | Some _ -> add_skolem_definition id symbol source
+              | Some _ ->
+                  if not (Hashtbl.mem definitions symbol) then
+                    add_skolem_definition id symbol source
               | _ -> ()
               end
           | _ -> ()
