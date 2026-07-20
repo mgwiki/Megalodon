@@ -1098,7 +1098,7 @@ let vampire_live_safe_extra_delta ?(body_expander=(fun tm -> tm)) live_symbols e
     (fun entry ->
        let name = entry.Vampire_kernel_elab.live_safe_delta_name in
        let arity = entry.Vampire_kernel_elab.live_safe_delta_arity in
-       let body = body_expander entry.Vampire_kernel_elab.live_safe_delta_body in
+       let body = entry.Vampire_kernel_elab.live_safe_delta_body in
        Hashtbl.replace filtered name (arity, body);
        begin match alias_name name with
        | Some alias

@@ -2134,3 +2134,34 @@ WORK_DIR=/project/tmp/prefix9_already_live_1784580153 TMPDIR=/project/tmp VAMPIR
 WORK_DIR=/project/tmp/prefix9_livesafe_delta_1784580264 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire MEGALODON_CERT_DEBUG=1 MEGALODON_CERT_DEBUG_GUIDED=1 MEGALODON_CERT_DEBUG_SUPPLIED=1 MEGALODON_CERT_DEBUG_SOURCE_APPLY=1 MEGALODON_CERT_DEBUG_LIVE_SAFE_DELTA=1 tests/vampire_reconstruction/run_live_hammer_prefix9_failclosed_qualifying.sh
 WORK_DIR=/project/tmp/prefix9_already_live_verify_1784580439 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix9_failclosed_qualifying.sh
 ```
+
+## Single Live-Safe Delta Expansion, 2026-07-20
+
+One follow-up cleanup removed a second, redundant live-basis expansion from
+`vampire_live_safe_extra_delta`.  The kernel elaborator already applies the
+caller-provided `body_expander` while constructing `live_safe_delta_entries`;
+the Megalodon installation side now installs those returned bodies directly
+instead of expanding them again.
+
+This is a deterministic boundary fix, not a new reconstruction strategy and
+not E1 progress.  It leaves the live `or3E` frontier unchanged: eight original
+source commands still reconstruct in qualifying mode, and `or3E` still fails
+closed at line 203 char 8 with the same live theorem-context mismatch:
+
+```text
+firstdiff=... DB index 12 <> 15
+```
+
+So the conclusion is unchanged but sharper: the remaining failure is in the
+explicit Skolem/choice source-goal transport for the live theorem context, not
+in repeated live-safe delta expansion.  The right next step is still to emit
+and replay a small deterministic transport object for the `sP0`/`sF3`/`#sK1`
+frontier, rather than adding Megalodon-side guessing or broad proof search.
+
+Validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+WORK_DIR=/project/tmp/prefix9_single_expand_delta_1784580615 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire MEGALODON_CERT_DEBUG=1 MEGALODON_CERT_DEBUG_GUIDED=1 MEGALODON_CERT_DEBUG_SUPPLIED=1 MEGALODON_CERT_DEBUG_SOURCE_APPLY=1 MEGALODON_CERT_DEBUG_LIVE_SAFE_DELTA=1 tests/vampire_reconstruction/run_live_hammer_prefix9_failclosed_qualifying.sh
+```
