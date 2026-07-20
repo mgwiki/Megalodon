@@ -169,6 +169,28 @@ val check_fool_bool :
   result:Vampire_kernel_syntax.literal ->
   unit
 
+val true_false_equality_var :
+  equality_sides:(Syntax.tm -> (Syntax.tm * Syntax.tm) option) ->
+  Vampire_kernel_syntax.literal ->
+  (string * Syntax.tm) option
+
+val simple_fool_exhaustiveness_clause :
+  equality_sides:(Syntax.tm -> (Syntax.tm * Syntax.tm) option) ->
+  Vampire_kernel_syntax.clause ->
+  bool
+
+val check_fool_exhaustiveness :
+  id:string ->
+  equality_sides:(Syntax.tm -> (Syntax.tm * Syntax.tm) option) ->
+  clause:Vampire_kernel_syntax.clause ->
+  unit
+
+val check_fool_distinctness :
+  id:string ->
+  equality_sides:(Syntax.tm -> (Syntax.tm * Syntax.tm) option) ->
+  clause:Vampire_kernel_syntax.clause ->
+  unit
+
 val check_equality_resolution :
   id:string ->
   equality_sides:(Syntax.tm -> (Syntax.tm * Syntax.tm) option) ->

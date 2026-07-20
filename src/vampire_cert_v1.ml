@@ -3480,36 +3480,16 @@ let predicate_definition_fold_chain_path checked id source_id definition_ids res
 let check_predicate_definition_fold_chain checked id source_id definition_ids result =
   ignore (predicate_definition_fold_chain_path checked id source_id definition_ids result)
 
-let true_false_equality_var = function
-  | Pos atom ->
-      begin match equality_sides atom with
-      | Some (TmH h, other) when h = "f__true" || h = "f__false" -> Some (h, other)
-      | Some (other, TmH h) when h = "f__true" || h = "f__false" -> Some (h, other)
-      | _ -> None
-      end
-  | Neg _ -> None
+let true_false_equality_var literal =
+  Vampire_kernel_check.true_false_equality_var ~equality_sides literal
 
 let check_fool_exhaustiveness id clause =
-  match clause with
-  | [left; right] ->
-      begin match true_false_equality_var left, true_false_equality_var right with
-      | Some ("f__true", x), Some ("f__false", y)
-      | Some ("f__false", x), Some ("f__true", y) when x = y -> ()
-      | _ -> error (id ^ ": fool_exhaustiveness is not true/false exhaustiveness for one Boolean term")
-      end
-  | _ -> error (id ^ ": fool_exhaustiveness must have exactly two literals")
+  try Vampire_kernel_check.check_fool_exhaustiveness ~id ~equality_sides ~clause
+  with Vampire_kernel_check.Error msg -> error msg
 
 let check_fool_distinctness id clause =
-  match clause with
-  | [Neg atom] ->
-      begin match equality_sides atom with
-      | Some (TmH "f__true", TmH "f__false")
-      | Some (TmH "f__false", TmH "f__true") -> ()
-      | Some _ -> error (id ^ ": fool_distinctness is not true != false")
-      | None -> error (id ^ ": fool_distinctness literal is not an equality")
-      end
-  | [_] -> error (id ^ ": fool_distinctness literal must be negative")
-  | _ -> error (id ^ ": fool_distinctness must be a singleton clause")
+  try Vampire_kernel_check.check_fool_distinctness ~id ~equality_sides ~clause
+  with Vampire_kernel_check.Error msg -> error msg
 
 let bool_constant_name value = if value then "f__true" else "f__false"
 

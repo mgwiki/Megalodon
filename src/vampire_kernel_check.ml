@@ -305,6 +305,47 @@ let check_fool_bool
   if not (List.exists (fun candidate -> same_clause_multiset [candidate] [result]) expected) then
     error (id ^ ": fool_bool result is not the Boolean-term equality to true")
 
+let true_false_equality_var ~equality_sides = function
+  | Pos atom ->
+      begin match equality_sides atom with
+      | Some (TmH h, other) when h = "f__true" || h = "f__false" -> Some (h, other)
+      | Some (other, TmH h) when h = "f__true" || h = "f__false" -> Some (h, other)
+      | _ -> None
+      end
+  | Neg _ -> None
+
+let simple_fool_exhaustiveness_clause ~equality_sides = function
+  | [left; right] ->
+      begin
+        match
+          true_false_equality_var ~equality_sides left,
+          true_false_equality_var ~equality_sides right
+        with
+        | Some ("f__true", x), Some ("f__false", y)
+        | Some ("f__false", x), Some ("f__true", y) -> x = y
+        | _ -> false
+      end
+  | _ -> false
+
+let check_fool_exhaustiveness ~id ~equality_sides ~clause =
+  if not (simple_fool_exhaustiveness_clause ~equality_sides clause) then
+    match clause with
+    | [_; _] ->
+        error (id ^ ": fool_exhaustiveness is not true/false exhaustiveness for one Boolean term")
+    | _ -> error (id ^ ": fool_exhaustiveness must have exactly two literals")
+
+let check_fool_distinctness ~id ~equality_sides ~clause =
+  match clause with
+  | [Neg atom] ->
+      begin match equality_sides atom with
+      | Some (TmH "f__true", TmH "f__false")
+      | Some (TmH "f__false", TmH "f__true") -> ()
+      | Some _ -> error (id ^ ": fool_distinctness is not true != false")
+      | None -> error (id ^ ": fool_distinctness literal is not an equality")
+      end
+  | [_] -> error (id ^ ": fool_distinctness literal must be negative")
+  | _ -> error (id ^ ": fool_distinctness must be a singleton clause")
+
 let check_equality_resolution ~id ~equality_sides ~parent ~literal_index ~result =
   let literal = nth literal_index parent (id ^ " equality-resolution literal") in
   begin
