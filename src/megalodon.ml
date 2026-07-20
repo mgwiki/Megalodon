@@ -5930,6 +5930,7 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
   timing "elaborate_preprocess_refutation_native:start";
   let native_core =
     Vampire_cert_v1.elaborate_preprocess_refutation_native
+      ~qualifying:!vampireabyqualifying
       ~source_map
       ~source_proofs:source_proofs_for_core
       ~external_hypotheses:

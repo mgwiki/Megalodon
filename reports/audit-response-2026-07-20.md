@@ -1416,3 +1416,30 @@ TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.s
 WORK_DIR=/project/tmp/and_prefix_branch_selector_final_1784570773 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
 WORK_DIR=/project/tmp/prefix4_branch_selector_final_1784570773 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
 ```
+
+## Qualifying Branch-Choice Delta Hardening, 2026-07-20
+
+The candidate cleanup path still used a temporary certificate-local
+branch-choice delta while checking whether a cleaned proof candidate was valid.
+That delta was local to the certificate importer rather than leaked into the
+global Megalodon signature, but it was still a hidden conversion aid in the
+middle of a path that can run under `-vampireabyqualifying`.
+
+The live reconstruction driver now passes an explicit `qualifying` flag into
+`Vampire_cert_v1.elaborate_preprocess_refutation_native`.  In qualifying mode,
+the temporary branch-choice delta wrapper is disabled: cleaned Skolem/choice
+candidates must pass `final_refutation_proof_checks` without installing those
+temporary witness definitions.  Non-qualifying diagnostics keep the old behavior
+so they can still serve as regression probes.
+
+This is an isolation hardening and does not increase the counted frontier.  It
+also confirms that the current three-proof frontier is not relying on this
+particular hidden conversion route:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+WORK_DIR=/project/tmp/and_prefix_no_temp_delta_commit_1784571173 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+WORK_DIR=/project/tmp/prefix4_no_temp_delta_commit_1784571173 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+```

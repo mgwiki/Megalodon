@@ -20496,6 +20496,7 @@ let elaborate_core_resolution_refutation_native
   }
 
 let elaborate_preprocess_refutation_native
+    ?(qualifying=false)
     ?(source_map=[])
     ?(source_proofs=[])
     ?(external_hypotheses=[])
@@ -21866,9 +21867,6 @@ let elaborate_preprocess_refutation_native
           let base_result_assumption_step_variables =
             native_core_skolem_result_formula_step_variables
               cert id result_step_variables
-          in
-          let result_formula_has_free_variable_metadata =
-            native_core_kernel_v1_field cert id "result_formula_free_variable_count" <> None
           in
           let result_formula_quantified_variables =
             native_core_kernel_v1_quantifier_fields cert id "result_formula"
@@ -23419,54 +23417,58 @@ let elaborate_preprocess_refutation_native
 	                        ^ String.concat "," names);
 	                   None
 	             in
-	             let with_temporary_branch_choice_delta replacements f =
-               let names =
-                 replacements
-                 |> List.concat_map
-                      (fun (name, _, _, _) ->
-                         native_core_symbol_name_aliases name)
-                 |> List.sort_uniq String.compare
-               in
-               let saved =
-                 names
-                 |> List.map
-                      (fun name ->
-                         (name,
-                          Hashtbl.find_opt proof_delta name,
-                          Hashtbl.find_opt definition_delta name))
-               in
-               List.iter
-                 (fun (name, _actual_choice, definition, _local_template) ->
-                    if native_core_tm_scoped_under
-                         (List.length variables)
-                         definition then begin
-                      native_core_symbol_name_aliases name
-                      |> List.iter
-                           (fun alias ->
-                              if not (Hashtbl.mem proof_delta alias) then
-                                Hashtbl.replace proof_delta alias (0, definition);
-                              if not (Hashtbl.mem definition_delta alias) then
-                                Hashtbl.replace definition_delta alias (0, definition))
-                    end)
-                 replacements;
-               let result = f () in
-               begin match result with
-               | Some _ -> ()
-               | None ->
-                   List.iter
-                     (fun (name, proof_saved, definition_saved) ->
-                        begin match proof_saved with
-                        | Some value -> Hashtbl.replace proof_delta name value
-                        | None -> Hashtbl.remove proof_delta name
-                        end;
-                        begin match definition_saved with
-                        | Some value ->
-                            Hashtbl.replace definition_delta name value
-                        | None -> Hashtbl.remove definition_delta name
-                        end)
-                     saved
-               end;
-               result
+             let with_temporary_branch_choice_delta replacements f =
+               if qualifying then
+                 f ()
+               else begin
+                 let names =
+                   replacements
+                   |> List.concat_map
+                        (fun (name, _, _, _) ->
+                           native_core_symbol_name_aliases name)
+                   |> List.sort_uniq String.compare
+                 in
+                 let saved =
+                   names
+                   |> List.map
+                        (fun name ->
+                           (name,
+                            Hashtbl.find_opt proof_delta name,
+                            Hashtbl.find_opt definition_delta name))
+                 in
+                 List.iter
+                   (fun (name, _actual_choice, definition, _local_template) ->
+                      if native_core_tm_scoped_under
+                           (List.length variables)
+                           definition then begin
+                        native_core_symbol_name_aliases name
+                        |> List.iter
+                             (fun alias ->
+                                if not (Hashtbl.mem proof_delta alias) then
+                                  Hashtbl.replace proof_delta alias (0, definition);
+                                if not (Hashtbl.mem definition_delta alias) then
+                                  Hashtbl.replace definition_delta alias (0, definition))
+                      end)
+                   replacements;
+                 let result = f () in
+                 begin match result with
+                 | Some _ -> ()
+                 | None ->
+                     List.iter
+                       (fun (name, proof_saved, definition_saved) ->
+                          begin match proof_saved with
+                          | Some value -> Hashtbl.replace proof_delta name value
+                          | None -> Hashtbl.remove proof_delta name
+                          end;
+                          begin match definition_saved with
+                          | Some value ->
+                              Hashtbl.replace definition_delta name value
+                          | None -> Hashtbl.remove definition_delta name
+                          end)
+                       saved
+                 end;
+                 result
+               end
              in
              let contract_backed_branch_replacement_names =
                branch_choice_candidate_replacements
