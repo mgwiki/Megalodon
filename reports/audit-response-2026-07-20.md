@@ -1330,3 +1330,32 @@ TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.s
 WORK_DIR=/project/tmp/and_prefix_cleanup_plan_1784569455 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
 WORK_DIR=/project/tmp/prefix4_cleanup_plan_1784569455 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
 ```
+
+## Unique Registered Choice Expansion Extraction, 2026-07-20
+
+The importer still contained one more pure Skolem/choice cleanup search:
+detecting whether a cleaned proof had exactly one unresolved registered
+choice witness, collecting the local choice terms under binder depth, and
+building the replacement list.  That operation is now extracted to
+`Vampire_kernel_elab.unique_registered_choice_expansion_plan`.
+
+The extracted helper reports three deterministic cases: no expansion,
+ambiguous unresolved names, or a unique expansion with the canonical witness
+name, local choice terms, and replacement list.  `vampire_cert_v1.ml` only
+applies the returned replacements and performs the live final proof check.
+
+This remains behavior-preserving.  The first three original-source hammer
+proofs still qualify, and `and3I` still fails closed.  The value of this step
+is architectural: another piece of Skolem/choice witness reasoning has moved
+from the importer into the extracted elaborator where it can be reviewed and
+tested independently.
+
+Focused validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+WORK_DIR=/project/tmp/and_prefix_unique_choice_extract_final_1784569856 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+WORK_DIR=/project/tmp/prefix4_unique_choice_extract_final_1784569838 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+```

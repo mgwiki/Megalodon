@@ -324,6 +324,45 @@ let () =
 	    }
 	    cleanup_plan.Vampire_kernel_elab.skolem_cleanup_introduced_classification;
 	  expect_equal
+	    "canonical_witness_name should erase certificate-local hash prefixes"
+	    "s1"
+	    (Vampire_kernel_elab.canonical_witness_name "#s1");
+	  begin match
+	    Vampire_kernel_elab.unique_registered_choice_expansion_plan
+	      ~normalize:(fun tm -> tm)
+	      ~witness_symbols:choice_symbols
+	      ~registered_witnesses:["#s1", Ap (TmH "eps", TmH "other")]
+	      closed_binder_proof
+	  with
+	  | Vampire_kernel_elab.Unique_registered_choice_expansion expansion ->
+	      expect_equal
+	        "unique_registered_choice_expansion_plan should expose the unresolved canonical name"
+	        "s1"
+	        expansion.Vampire_kernel_elab.registered_choice_expansion_name;
+	      expect_equal
+	        "unique_registered_choice_expansion_plan should collect local choice terms"
+	        [closed_binder_witness]
+	        expansion.Vampire_kernel_elab.registered_choice_expansion_terms;
+	      expect_equal
+	        "unique_registered_choice_expansion_plan should build choice-to-symbol replacements"
+	        [closed_binder_witness, TmH "s1"]
+	        expansion.Vampire_kernel_elab.registered_choice_expansion_replacements
+	  | _ ->
+	      prerr_endline
+	        "kernel_elab unit failure: unique_registered_choice_expansion_plan should find a unique unresolved witness";
+	      exit 1
+	  end;
+	  expect_equal
+	    "unique_registered_choice_expansion_plan should report ambiguous unresolved names"
+	    (Vampire_kernel_elab.Ambiguous_registered_choice_expansion ["s1"; "s2"])
+	    (Vampire_kernel_elab.unique_registered_choice_expansion_plan
+	       ~normalize:(fun tm -> tm)
+	       ~witness_symbols:choice_symbols
+	       ~registered_witnesses:
+	         ["#s1", Ap (TmH "eps", TmH "other1");
+	          "#s2", Ap (TmH "eps", TmH "other2")]
+	       closed_binder_proof);
+	  expect_equal
 	    "classify_introduced_symbol_replacements should separate direct and indirect cleanup gaps"
 	    {
 	      Vampire_kernel_elab.introduced_symbols_present = ["#s0"; "s1"];

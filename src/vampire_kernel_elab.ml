@@ -217,20 +217,22 @@ let replace_exact_terms_in_proof ~normalize replacements proof =
   in
   replace_pf 0 proof
 
+let rec term_contains_symbol names = function
+  | TmH name -> List.mem name names
+  | TpAp (body, _) -> term_contains_symbol names body
+  | Ap (left, right) | Imp (left, right) ->
+      term_contains_symbol names left || term_contains_symbol names right
+  | Lam (_, body) | All (_, body) -> term_contains_symbol names body
+  | DB _ | Prim _ -> false
+
 let proof_contains_term_symbol names proof =
-  let rec tm_contains = function
-    | TmH name -> List.mem name names
-    | TpAp (body, _) -> tm_contains body
-    | Ap (left, right) | Imp (left, right) ->
-        tm_contains left || tm_contains right
-    | Lam (_, body) | All (_, body) -> tm_contains body
-    | DB _ | Prim _ -> false
-  in
   let rec pf_contains = function
     | PTpAp (body, _) -> pf_contains body
-    | PTmAp (body, tm) -> pf_contains body || tm_contains tm
+    | PTmAp (body, tm) ->
+        pf_contains body || term_contains_symbol names tm
     | PPfAp (left, right) -> pf_contains left || pf_contains right
-    | PLam (prop, body) -> tm_contains prop || pf_contains body
+    | PLam (prop, body) ->
+        term_contains_symbol names prop || pf_contains body
     | TLam (_, body) -> pf_contains body
     | Hyp _ | Known _ -> false
   in
@@ -677,6 +679,75 @@ let skolem_witness_cleanup_plan
     skolem_cleanup_introduced_classification =
       introduced_classification;
   }
+
+let canonical_witness_name name =
+  if String.length name > 0 && name.[0] = '#' then
+    String.sub name 1 (String.length name - 1)
+  else
+    name
+
+type registered_choice_expansion = {
+  registered_choice_expansion_name : string;
+  registered_choice_expansion_terms : tm list;
+  registered_choice_expansion_replacements : (tm * tm) list;
+}
+
+type registered_choice_expansion_plan =
+  | No_registered_choice_expansion
+  | Ambiguous_registered_choice_expansion of string list
+  | Unique_registered_choice_expansion of registered_choice_expansion
+
+let unique_registered_choice_expansion_plan
+    ~normalize
+    ~witness_symbols
+    ~registered_witnesses
+    proof =
+  let unresolved_names =
+    registered_witnesses
+    |> List.filter_map
+         (fun (name, witness) ->
+            let witness = normalize witness in
+            let witness_choice_symbols =
+              witness_symbols
+              |> List.filter
+                   (fun symbol -> term_contains_symbol [symbol] witness)
+            in
+            if not (proof_contains_exact_term ~normalize witness proof)
+               && witness_choice_symbols <> []
+               && proof_contains_term_symbol witness_choice_symbols proof then
+              Some (canonical_witness_name name)
+            else
+              None)
+    |> List.filter (fun name -> name <> "")
+    |> List.sort_uniq String.compare
+  in
+  match unresolved_names with
+  | [name] ->
+      let actual_choices =
+        enclosing_terms_with_symbol_depth
+          ~normalize
+          witness_symbols
+          proof
+        |> List.filter_map
+             (fun (depth, actual_choice) ->
+                try
+                  Some (tmshift 0 (-depth) actual_choice |> normalize)
+                with _ -> None)
+        |> List.sort_uniq compare
+      in
+      if actual_choices = [] then
+        No_registered_choice_expansion
+      else
+        Unique_registered_choice_expansion
+          {
+            registered_choice_expansion_name = name;
+            registered_choice_expansion_terms = actual_choices;
+            registered_choice_expansion_replacements =
+              actual_choices
+              |> List.map (fun actual_choice -> actual_choice, TmH name);
+          }
+  | [] -> No_registered_choice_expansion
+  | names -> Ambiguous_registered_choice_expansion names
 
 let substitute_named_term name tm =
   let rec subst depth = function

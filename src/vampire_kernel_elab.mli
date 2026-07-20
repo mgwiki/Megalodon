@@ -108,6 +108,11 @@ val proof_contains_term_symbol :
   Syntax.pf ->
   bool
 
+val term_contains_symbol :
+  string list ->
+  Syntax.tm ->
+  bool
+
 val proof_contains_exact_term :
   normalize:(Syntax.tm -> Syntax.tm) ->
   Syntax.tm ->
@@ -221,6 +226,28 @@ val skolem_witness_cleanup_plan :
   transports:skolem_witness_transport list ->
   Syntax.pf ->
   skolem_witness_cleanup_plan
+
+val canonical_witness_name :
+  string ->
+  string
+
+type registered_choice_expansion = {
+  registered_choice_expansion_name : string;
+  registered_choice_expansion_terms : Syntax.tm list;
+  registered_choice_expansion_replacements : (Syntax.tm * Syntax.tm) list;
+}
+
+type registered_choice_expansion_plan =
+  | No_registered_choice_expansion
+  | Ambiguous_registered_choice_expansion of string list
+  | Unique_registered_choice_expansion of registered_choice_expansion
+
+val unique_registered_choice_expansion_plan :
+  normalize:(Syntax.tm -> Syntax.tm) ->
+  witness_symbols:string list ->
+  registered_witnesses:(string * Syntax.tm) list ->
+  Syntax.pf ->
+  registered_choice_expansion_plan
 
 val substitute_named_term :
   string ->
