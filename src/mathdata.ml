@@ -1251,6 +1251,7 @@ let rec extr_propofpf (thy:theory) sg v cxtm cxpf d =
   | _ -> raise (Failure("Ill-formed Proof Term"))
 and check_propofpf (thy:theory) sg v cxtm cxpf d p = (** assume p is beta eta delta normal ***)
   let q = extr_propofpf thy sg v cxtm cxpf d in
+  let p = tm_beta_eta_delta_norm p sg in
   if not (q = p) then
     raise CheckingFailure
 
