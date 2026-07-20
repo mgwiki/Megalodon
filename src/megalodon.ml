@@ -4395,12 +4395,55 @@ let vampire_reconstruct_goal_from_supplied_refutation
               in
               unchecked_timing "live_basis:done";
               unchecked_timing "prop_ext:start";
-              Some
-                (vampire_loaded_prop_ext_expander
-                   (vampire_directional_prop_ext_expander expanded))
-              |> fun result ->
-                   unchecked_timing "prop_ext:done";
-                   result
+              let candidate =
+                vampire_loaded_prop_ext_expander
+                  (vampire_directional_prop_ext_expander expanded)
+              in
+              unchecked_timing "prop_ext:done";
+              unchecked_timing "local_check:start";
+              let local_cx =
+                List.map (fun (_, (tp, _)) -> tp) cxtm
+              in
+              let local_hyps = List.map snd cxpf in
+              begin
+                try
+                  match
+                    check_propofpf
+                      sigdelta
+                      sigtmof
+                      local_cx
+                      local_hyps
+                      candidate
+                      claimtm
+                      []
+                  with
+                  | Some _ ->
+                      unchecked_timing "local_check:done";
+                      Some candidate
+                  | None ->
+                      unchecked_timing "local_check:none";
+                      if Sys.getenv_opt "MEGALODON_CERT_DEBUG_SOURCE_APPLY" = Some "1" then
+                        begin
+                          Printf.printf
+                            "Vampire native supplied-refutation unchecked finish candidate did not check locally at line %d char %d.\n"
+                            !lineno
+                            !charno;
+                          flush stdout
+                        end;
+                      None
+                with exn ->
+                  unchecked_timing "local_check:failure";
+                  if Sys.getenv_opt "MEGALODON_CERT_DEBUG_SOURCE_APPLY" = Some "1" then
+                    begin
+                      Printf.printf
+                        "Vampire native supplied-refutation unchecked finish candidate failed local checking at line %d char %d: %s.\n"
+                        !lineno
+                        !charno
+                        (Printexc.to_string exn);
+                      flush stdout
+                    end;
+                  None
+              end
           | None ->
               unchecked_timing "conv:none";
               None
@@ -5893,16 +5936,15 @@ let check_vampire_aby_native_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) ?(proof_
                       msg;
                     flush stdout
                   end;
-                begin match
-                  vampire_reconstruct_goal_from_source_audit
-                    claimtm
-                    cxtm
-                    cxpf
-                    source_map
-                    audit
-                with
+                begin match constructive_fallback claimtm with
                 | Some _ as result -> result
-                | None -> constructive_fallback claimtm
+                | None ->
+                    vampire_reconstruct_goal_from_source_audit
+                      claimtm
+                      cxtm
+                      cxpf
+                      source_map
+                      audit
                 end
             | Failure msg ->
                 timing "refutation_replay:failure";
@@ -5916,16 +5958,15 @@ let check_vampire_aby_native_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) ?(proof_
                       msg;
                     flush stdout
                   end;
-                begin match
-                  vampire_reconstruct_goal_from_source_audit
-                    claimtm
-                    cxtm
-                    cxpf
-                    source_map
-                    audit
-                with
+                begin match constructive_fallback claimtm with
                 | Some _ as result -> result
-                | None -> constructive_fallback claimtm
+                | None ->
+                    vampire_reconstruct_goal_from_source_audit
+                      claimtm
+                      cxtm
+                      cxpf
+                      source_map
+                      audit
                 end
           in
           let reconstructed =
