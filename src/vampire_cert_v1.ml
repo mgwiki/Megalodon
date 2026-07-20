@@ -13426,23 +13426,10 @@ let native_core_fool_formula_proof
   let target = native_core_close_tm (variables @ result_step_variables) target in
   let result_variable_count = List.length result_step_variables in
   let db_for_result_variable name tp =
-    let rec find index = function
-      | [] -> None
-      | (candidate_name, candidate_tp) :: rest ->
-          if candidate_name = name && candidate_tp = tp then
-            Some (DB (result_variable_count - index - 1))
-          else find (index + 1) rest
-    in
-    find 0 result_step_variables
+    Vampire_kernel_elab.db_for_result_variable ~result_step_variables name tp
   in
   let fallback_result_variable tp =
-    let rec find index = function
-      | [] -> None
-      | (_, candidate_tp) :: rest ->
-          if candidate_tp = tp then Some (DB (result_variable_count - index - 1))
-          else find (index + 1) rest
-    in
-    find 0 result_step_variables
+    Vampire_kernel_elab.first_result_variable_of_type ~result_step_variables tp
   in
   let fallback_declared_variable tp =
     variables
@@ -13837,25 +13824,10 @@ let native_core_cnf_formula_clause_proof
   let result_prop = native_core_clause_prop id result in
   let result_variable_count = List.length result_step_variables in
   let db_for_result_variable name tp =
-    let rec find index = function
-      | [] -> None
-      | (candidate_name, candidate_tp) :: rest ->
-          if candidate_name = name && candidate_tp = tp then
-            Some (DB (result_variable_count - index - 1))
-          else find (index + 1) rest
-    in
-    find 0 result_step_variables
+    Vampire_kernel_elab.db_for_result_variable ~result_step_variables name tp
   in
   let fallback_result_variables tp =
-    let rec collect index = function
-      | [] -> []
-      | (_, candidate_tp) :: rest ->
-          let tail = collect (index + 1) rest in
-          if candidate_tp = tp then
-            DB (result_variable_count - index - 1) :: tail
-          else tail
-    in
-    collect 0 result_step_variables
+    Vampire_kernel_elab.result_variables_of_type ~result_step_variables tp
   in
   let fallback_declared_variable tp =
     variables
@@ -14374,23 +14346,10 @@ let native_core_formula_orientation_proof
   in
   let result_variable_count = List.length result_step_variables in
   let db_for_result_variable name tp =
-    let rec find index = function
-      | [] -> None
-      | (candidate_name, candidate_tp) :: rest ->
-          if candidate_name = name && candidate_tp = tp then
-            Some (DB (result_variable_count - index - 1))
-          else find (index + 1) rest
-    in
-    find 0 result_step_variables
+    Vampire_kernel_elab.db_for_result_variable ~result_step_variables name tp
   in
   let fallback_result_variable tp =
-    let rec find index = function
-      | [] -> None
-      | (_, candidate_tp) :: rest ->
-          if candidate_tp = tp then Some (DB (result_variable_count - index - 1))
-          else find (index + 1) rest
-    in
-    find 0 result_step_variables
+    Vampire_kernel_elab.first_result_variable_of_type ~result_step_variables tp
   in
   let fallback_declared_variable tp =
     variables
@@ -14848,23 +14807,10 @@ let native_core_predicate_definition_fold_step_proof
   let patterns = predicate_definition_fold_patterns base_depth body definiendum in
   let result_variable_count = List.length result_step_variables in
   let db_for_result_variable name tp =
-    let rec find index = function
-      | [] -> None
-      | (candidate_name, candidate_tp) :: rest ->
-          if candidate_name = name && candidate_tp = tp then
-            Some (DB (result_variable_count - index - 1))
-          else find (index + 1) rest
-    in
-    find 0 result_step_variables
+    Vampire_kernel_elab.db_for_result_variable ~result_step_variables name tp
   in
   let fallback_result_variable tp =
-    let rec find index = function
-      | [] -> None
-      | (_, candidate_tp) :: rest ->
-          if candidate_tp = tp then Some (DB (result_variable_count - index - 1))
-          else find (index + 1) rest
-    in
-    find 0 result_step_variables
+    Vampire_kernel_elab.first_result_variable_of_type ~result_step_variables tp
   in
   let fallback_declared_variable tp =
     variables

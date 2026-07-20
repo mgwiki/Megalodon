@@ -39,6 +39,38 @@ let input_step basis ~id ~clause proof =
     step_proof = proof;
   }
 
+let db_for_result_variable ~result_step_variables name tp =
+  let result_variable_count = List.length result_step_variables in
+  let rec find index = function
+    | [] -> None
+    | (candidate_name, candidate_tp) :: rest ->
+        if candidate_name = name && candidate_tp = tp then
+          Some (DB (result_variable_count - index - 1))
+        else find (index + 1) rest
+  in
+  find 0 result_step_variables
+
+let first_result_variable_of_type ~result_step_variables tp =
+  let result_variable_count = List.length result_step_variables in
+  let rec find index = function
+    | [] -> None
+    | (_, candidate_tp) :: rest ->
+        if candidate_tp = tp then Some (DB (result_variable_count - index - 1))
+        else find (index + 1) rest
+  in
+  find 0 result_step_variables
+
+let result_variables_of_type ~result_step_variables tp =
+  let result_variable_count = List.length result_step_variables in
+  let rec collect index = function
+    | [] -> []
+    | (_, candidate_tp) :: rest ->
+        let tail = collect (index + 1) rest in
+        if candidate_tp = tp then DB (result_variable_count - index - 1) :: tail
+        else tail
+  in
+  collect 0 result_step_variables
+
 let bind_result_step_variables ~result_step_variables ~close_body body_proof =
   let body_proof = close_body body_proof in
   List.fold_right
@@ -55,23 +87,13 @@ let open_step_theorem_body_in_result_context
     ~close_witness
     proof =
   let result_variable_count = List.length result_step_variables in
-  let db_for_result_variable name tp =
-    let rec find index = function
-      | [] -> None
-      | (candidate_name, candidate_tp) :: rest ->
-          if candidate_name = name && candidate_tp = tp then
-            Some (DB (result_variable_count - index - 1))
-          else find (index + 1) rest
-    in
-    find 0 result_step_variables
-  in
   List.fold_left
     (fun proof (name, tp) ->
        let witness =
          match List.assoc_opt name subst with
          | Some tm -> close_witness tm
          | None ->
-             begin match db_for_result_variable name tp with
+             begin match db_for_result_variable ~result_step_variables name tp with
              | Some tm -> tm
              | None ->
                  error

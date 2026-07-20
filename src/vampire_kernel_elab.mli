@@ -34,6 +34,22 @@ val input_step :
   Syntax.pf ->
   proof_step
 
+val db_for_result_variable :
+  result_step_variables:(string * Syntax.tp) list ->
+  string ->
+  Syntax.tp ->
+  Syntax.tm option
+
+val first_result_variable_of_type :
+  result_step_variables:(string * Syntax.tp) list ->
+  Syntax.tp ->
+  Syntax.tm option
+
+val result_variables_of_type :
+  result_step_variables:(string * Syntax.tp) list ->
+  Syntax.tp ->
+  Syntax.tm list
+
 val bind_result_step_variables :
   result_step_variables:(string * Syntax.tp) list ->
   close_body:(Syntax.pf -> Syntax.pf) ->
