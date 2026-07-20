@@ -4270,11 +4270,24 @@ let vampire_reconstruct_goal_from_supplied_refutation
           target_proof
           target
       in
+      let unchecked_timing stage =
+        if Sys.getenv_opt "MEGALODON_CERT_DEBUG_TIMING" = Some "1" then
+          begin
+            Printf.printf
+              "Vampire native supplied-refutation unchecked finish timing %s at line %d char %d.\n"
+              stage
+              !lineno
+              !charno;
+            flush stdout
+          end
+      in
       let unchecked_finish target_proof target =
         if not unchecked_final then None
         else
+          let _ = unchecked_timing "conv:start" in
           match conv target claimtm proof_delta [] with
           | Some _ ->
+              unchecked_timing "conv:done";
               let live_symbol_table =
                 match source_map with
                 | None -> Hashtbl.copy sigtmof
@@ -4297,6 +4310,7 @@ let vampire_reconstruct_goal_from_supplied_refutation
                 | Some extra_delta, None -> Some extra_delta
                 | None, _ -> None
               in
+              unchecked_timing "expand_returned:start";
               let expanded =
                 vampire_expand_returned_proof
                   ?extra_delta:live_extra_delta
@@ -4304,13 +4318,22 @@ let vampire_reconstruct_goal_from_supplied_refutation
                   source_map
                   target_proof
               in
+              unchecked_timing "expand_returned:done";
+              unchecked_timing "live_basis:start";
               let expanded =
                 vampire_live_basis_expander expanded
               in
+              unchecked_timing "live_basis:done";
+              unchecked_timing "prop_ext:start";
               Some
                 (vampire_loaded_prop_ext_expander
                    (vampire_directional_prop_ext_expander expanded))
-          | None -> None
+              |> fun result ->
+                   unchecked_timing "prop_ext:done";
+                   result
+          | None ->
+              unchecked_timing "conv:none";
+              None
       in
       let unchecked_double_negation_candidate target dnotnot =
         Some

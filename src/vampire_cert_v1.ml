@@ -8931,6 +8931,70 @@ let native_core_localize_source_local_aliases_pf aliases proof =
     in
     localize_pf 0 proof
 
+let native_core_source_named_aliases source_map =
+  let add_alias alias source_name aliases =
+    if alias = "" || source_name = "" || alias = source_name
+       || List.mem_assoc alias aliases then
+      aliases
+    else
+      (alias, source_name) :: aliases
+  in
+  source_map
+  |> List.fold_left
+       (fun aliases entry ->
+          if entry.source_map_kind = "local_type" then
+            aliases
+          else
+            match native_core_ident_opt entry.source_map_source_name with
+            | None -> aliases
+            | Some source_name ->
+                native_core_symbol_name_aliases entry.source_map_tptp_name
+                @ native_core_symbol_name_aliases entry.source_map_source_name
+                |> List.fold_left
+                     (fun aliases alias ->
+                        add_alias alias source_name aliases)
+                     aliases)
+       []
+
+let native_core_normalize_source_named_aliases_tm aliases tm =
+  if aliases = [] then
+    tm
+  else
+    let rec normalize = function
+      | TmH name ->
+          begin match List.assoc_opt name aliases with
+          | Some source_name -> TmH source_name
+          | None -> TmH name
+          end
+      | TpAp (body, tp) -> TpAp (normalize body, tp)
+      | Ap (left, right) -> Ap (normalize left, normalize right)
+      | Lam (tp, body) -> Lam (tp, normalize body)
+      | Imp (left, right) -> Imp (normalize left, normalize right)
+      | All (tp, body) -> All (tp, normalize body)
+      | DB _ | Prim _ as tm -> tm
+    in
+    normalize tm
+
+let native_core_normalize_source_named_aliases_pf aliases proof =
+  if aliases = [] then
+    proof
+  else
+    let rec normalize = function
+      | PTpAp (body, tp) -> PTpAp (normalize body, tp)
+      | PTmAp (body, tm) ->
+          PTmAp
+            (normalize body,
+             native_core_normalize_source_named_aliases_tm aliases tm)
+      | PPfAp (left, right) -> PPfAp (normalize left, normalize right)
+      | PLam (prop, body) ->
+          PLam
+            (native_core_normalize_source_named_aliases_tm aliases prop,
+             normalize body)
+      | TLam (tp, body) -> TLam (tp, normalize body)
+      | Hyp _ | Known _ as proof -> proof
+    in
+    normalize proof
+
 let native_core_step_variables cert id =
   let variable_sort_pair sort =
     match String.index_opt sort ':' with
@@ -20878,11 +20942,20 @@ let elaborate_preprocess_refutation_native
   let source_local_aliases =
     native_core_source_local_alias_indices source_map variables
   in
+  let source_named_aliases =
+    native_core_source_named_aliases source_map
+  in
   let localize_source_locals_tm tm =
     native_core_localize_source_local_aliases_tm source_local_aliases tm
   in
   let localize_source_locals_pf proof =
     native_core_localize_source_local_aliases_pf source_local_aliases proof
+  in
+  let normalize_source_names_tm tm =
+    native_core_normalize_source_named_aliases_tm source_named_aliases tm
+  in
+  let normalize_source_names_pf proof =
+    native_core_normalize_source_named_aliases_pf source_named_aliases proof
   in
   let closed_source_context =
     (!source_inputs
@@ -20998,7 +21071,7 @@ let elaborate_preprocess_refutation_native
     incr final_check_counter;
     let final_check_id = string_of_int !final_check_counter in
     trace_step "checking" "final-refutation" final_check_id;
-    let proof = localize_source_locals_pf proof in
+    let proof = proof |> localize_source_locals_pf |> normalize_source_names_pf in
     let rec proof_node_count = function
       | Hyp _ | Known _ -> 1
       | PTpAp (body, _) -> 1 + proof_node_count body
@@ -22538,8 +22611,8 @@ let elaborate_preprocess_refutation_native
   end;
   let preprocess_proof_checks_against_prop label prop proof =
     trace_step "checking" "final-prop" label;
-    let prop = localize_source_locals_tm prop in
-    let proof = localize_source_locals_pf proof in
+    let prop = prop |> localize_source_locals_tm |> normalize_source_names_tm in
+    let proof = proof |> localize_source_locals_pf |> normalize_source_names_pf in
     let short_tm tm =
       let text = tm_to_str tm in
       if String.length text <= 500 then text
