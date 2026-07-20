@@ -3729,23 +3729,18 @@ let check_unit_resulting_resolution checked id main_parent_id traces result =
     error (id ^ ": URR result does not match final trace remaining clause")
 
 let check_equality_resolution_constraints checked id parent_id literal_index selected constraints result =
-  if constraints = [] then error (id ^ ": equality-resolution constraints must be non-empty");
   let parent_clause = lookup_clause checked parent_id in
-  let literal = nth literal_index parent_clause (id ^ " equality-resolution-constraints literal") in
-  if not (same_literal_mod_vampire_vars literal selected) then
-    error (id ^ ": selected literal does not match parent literal modulo Vampire variable renaming");
-  begin
-    match literal with
-    | Neg atom ->
-        begin match equality_sides atom with
-        | Some _ -> ()
-        | None -> error (id ^ ": selected literal is not an equality atom")
-        end
-    | Pos _ -> error (id ^ ": selected literal must be negative")
-  end;
-  let expected = remove_at literal_index parent_clause (id ^ " equality-resolution-constraints literal") @ constraints in
-  if not (same_clause_multiset expected result) then
-    error (id ^ ": equality-resolution constraints do not explain result")
+  try
+    Vampire_kernel_check.check_equality_resolution_constraints
+      ~id
+      ~equality_sides
+      ~same_literal:same_literal_mod_vampire_vars
+      ~parent:parent_clause
+      ~literal_index
+      ~selected
+      ~constraints
+      ~result
+  with Vampire_kernel_check.Error msg -> error msg
 
 let equality_atom_like equality_atom left right =
   match equality_atom with

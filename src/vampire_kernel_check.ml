@@ -202,6 +202,33 @@ let check_equality_resolution ~id ~equality_sides ~parent ~literal_index ~result
   if not (same_clause_multiset expected result) then
     error (id ^ ": equality-resolution result does not match parent after literal removal")
 
+let check_equality_resolution_constraints
+    ~id
+    ~equality_sides
+    ~same_literal
+    ~parent
+    ~literal_index
+    ~selected
+    ~constraints
+    ~result =
+  if constraints = [] then
+    error (id ^ ": equality-resolution constraints must be non-empty");
+  let literal = nth literal_index parent (id ^ " equality-resolution-constraints literal") in
+  if not (same_literal literal selected) then
+    error (id ^ ": selected literal does not match parent literal modulo Vampire variable renaming");
+  begin
+    match literal with
+    | Neg atom ->
+        begin match equality_sides atom with
+        | Some _ -> ()
+        | None -> error (id ^ ": selected literal is not an equality atom")
+        end
+    | Pos _ -> error (id ^ ": selected literal must be negative")
+  end;
+  let expected = remove_at literal_index parent (id ^ " equality-resolution-constraints literal") @ constraints in
+  if not (same_clause_multiset expected result) then
+    error (id ^ ": equality-resolution constraints do not explain result")
+
 let check_truth_conflict
     ~id
     ~equality_sides

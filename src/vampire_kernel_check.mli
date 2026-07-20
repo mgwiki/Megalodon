@@ -114,6 +114,18 @@ val check_equality_resolution :
   result:Vampire_kernel_syntax.clause ->
   unit
 
+val check_equality_resolution_constraints :
+  id:string ->
+  equality_sides:(Syntax.tm -> (Syntax.tm * Syntax.tm) option) ->
+  same_literal:
+    (Vampire_kernel_syntax.literal -> Vampire_kernel_syntax.literal -> bool) ->
+  parent:Vampire_kernel_syntax.clause ->
+  literal_index:int ->
+  selected:Vampire_kernel_syntax.literal ->
+  constraints:Vampire_kernel_syntax.clause ->
+  result:Vampire_kernel_syntax.clause ->
+  unit
+
 val check_truth_conflict :
   id:string ->
   equality_sides:(Syntax.tm -> (Syntax.tm * Syntax.tm) option) ->
