@@ -115,6 +115,10 @@ kept deliberately architectural rather than coverage-driven:
 - The Skolem lookup extraction was validated with the direct Skolem preprocess
   fixture, the `hammer.1032.16` preprocess fixture, and the existing 28-step
   strict smoke case.
+- The Vampire emitter was tightened to fail before printing any `kernel_v1`
+  rule with a primitive contract but without a `primitive_expansion=prefix`
+  marker.  A TH0 smoke proof emitted 34 `kernel_v1` records, all carrying the
+  marker.
 
 This still does not make the project complete, and it does not rehabilitate the
 old 28-command prefix as E1 evidence.  It is, however, the intended correction
