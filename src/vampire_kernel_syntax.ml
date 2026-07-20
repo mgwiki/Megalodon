@@ -71,6 +71,35 @@ type skolem_proof_object = {
 
 let schema = "prover9-small-kernel-v1"
 
+let primitive_rules = [
+  "avatar_component";
+  "avatar_definition";
+  "avatar_refutation";
+  "avatar_split";
+  "cnf_formula_clause";
+  "cnf_literal";
+  "ennf_formula";
+  "equality_factoring";
+  "equality_factoring_constraints";
+  "equality_resolution";
+  "equality_resolution_constraints";
+  "equality_symmetry";
+  "factor";
+  "fool_atom_lift";
+  "fool_exhaustiveness";
+  "formula_copy";
+  "formula_term_copy";
+  "paramodulate";
+  "predicate_definition_intro";
+  "rectify_formula";
+  "resolve";
+  "skolem_branch";
+  "skolem_formula";
+  "split_dependency";
+  "substitute";
+  "truth_conflict";
+]
+
 let primitive_contracts = [
   ("fool_formula", ["fool_atom_lift"]);
   ("rectify_formula", ["rectify_formula"]);
@@ -84,6 +113,7 @@ let primitive_contracts = [
    ["equality_resolution"; "equality_resolution_constraints"]);
   ("equality_factoring",
    ["equality_factoring"; "equality_factoring_constraints"]);
+  ("equality_symmetry", ["equality_symmetry"]);
   ("avatar_component", ["avatar_component"]);
   ("avatar_split", ["avatar_split"]);
   ("avatar_refutation", ["avatar_refutation"]);
@@ -110,6 +140,9 @@ let supported_rules =
 
 let is_supported_rule rule =
   List.mem rule supported_rules
+
+let is_primitive_rule rule =
+  List.mem rule primitive_rules
 
 let required_primitives_for_rule rule =
   match List.assoc_opt rule primitive_contracts with

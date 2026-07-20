@@ -71,6 +71,10 @@ type skolem_proof_object = {
 
 val schema : string
 
+val primitive_rules : string list
+
+val is_primitive_rule : string -> bool
+
 val supported_rules : string list
 
 val is_supported_rule : string -> bool

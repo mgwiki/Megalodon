@@ -7883,12 +7883,15 @@ let validate_primitive_expansion_contracts cert =
     | PredicateDefinitionFold _
     | PredicateDefinitionFoldChain _ -> None
   in
+  let step_matches_primitive step primitive =
+    step_rule_name step = primitive
+    || (primitive = "predicate_definition_intro"
+        && match step with PredicateDefinition _ -> true | _ -> false)
+  in
   let has_prefixed_primitive prefix primitive =
     List.exists
       (fun step ->
-         ((step_rule_name step = primitive)
-          || (primitive = "predicate_definition_intro"
-              && match step with PredicateDefinition _ -> true | _ -> false))
+         step_matches_primitive step primitive
          && has_id_prefix (step_id step) prefix)
       steps
   in
@@ -7923,12 +7926,16 @@ let validate_primitive_expansion_contracts cert =
           in
           let listed_rule = field_required (key_prefix ^ "_rule") in
           let listed_id = field_required (key_prefix ^ "_id") in
+          if not (Vampire_kernel_syntax.is_primitive_rule listed_rule) then
+            fail
+              ("primitive expansion step " ^ listed_id
+               ^ " uses non-primitive rule " ^ listed_rule);
           if not (has_id_prefix listed_id prefix) then
             fail
               ("primitive expansion step " ^ listed_id
                ^ " is outside prefix " ^ prefix);
           match step_by_id listed_id with
-          | Some step when step_rule_name step = listed_rule -> ()
+          | Some step when step_matches_primitive step listed_rule -> ()
           | Some step ->
               fail
                 ("primitive expansion step " ^ listed_id
@@ -7951,6 +7958,10 @@ let validate_primitive_expansion_contracts cert =
             field_required
               ("primitive_expansion_requires_" ^ string_of_int index)
           in
+          if not (Vampire_kernel_syntax.is_primitive_rule primitive) then
+            fail
+              ("primitive_expansion_requires_" ^ string_of_int index
+               ^ " uses non-primitive rule " ^ primitive);
           if not (has_prefixed_primitive prefix primitive) then
             fail
               ("requires a " ^ primitive
@@ -8388,6 +8399,10 @@ let validate_primitive_expansion_contracts cert =
           fail ("requires primitive_expansion_prefix for kernel rule " ^ kernel_rule)
     in
     begin match field_value "primitive_expansion_requires" fields with
+    | Some required when not (Vampire_kernel_syntax.is_primitive_rule required) ->
+        fail
+          ("primitive_expansion_requires " ^ required
+           ^ " is not a registered primitive rule")
     | Some required when required = primitive_required -> ()
     | Some required ->
         fail
@@ -8426,6 +8441,10 @@ let validate_primitive_expansion_contracts cert =
         in
         let primitive_required =
           match field_value "primitive_expansion_requires" fields with
+          | Some required when not (Vampire_kernel_syntax.is_primitive_rule required) ->
+              fail
+                ("primitive_expansion_requires " ^ required
+                 ^ " is not a registered primitive rule")
           | Some required when List.mem required primitive_options -> required
           | Some required ->
               fail
