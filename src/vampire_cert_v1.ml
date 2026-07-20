@@ -23164,6 +23164,9 @@ let elaborate_preprocess_refutation_native
     Sys.getenv_opt "MEGALODON_CERT_TRY_FINAL_CLEANUP" = Some "1"
     || Sys.getenv_opt "MEGALODON_CERT_FAIL_FAST_SKOLEM_CPS" = Some "1"
   in
+  let try_final_symbol_cleanup =
+    Sys.getenv_opt "MEGALODON_CERT_DISABLE_FINAL_SYMBOL_CLEANUP" <> Some "1"
+  in
   let proof =
     if not try_final_cleanup then
       proof
@@ -23794,7 +23797,7 @@ let elaborate_preprocess_refutation_native
       !skolem_cps_entries
   in
   let proof =
-    if not try_final_cleanup then
+    if not try_final_symbol_cleanup then
       proof
     else
     let split_replacements =
@@ -23851,7 +23854,7 @@ let elaborate_preprocess_refutation_native
       end
   in
   let proof =
-    if not try_final_cleanup then
+    if not try_final_symbol_cleanup then
       proof
     else
     let split_replacements =
@@ -23888,7 +23891,7 @@ let elaborate_preprocess_refutation_native
       end
   in
   let proof =
-    if not try_final_cleanup then
+    if not try_final_symbol_cleanup then
       proof
     else
     let replacements =

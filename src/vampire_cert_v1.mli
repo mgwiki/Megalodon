@@ -214,6 +214,7 @@ val validate_certificate_core_fragment : certificate -> int
 val approved_native_sgdelta : unit -> (string, int * Syntax.tm) Hashtbl.t
 val native_core_prop_ext_hash : string
 val native_core_dneg_hash : string
+val native_core_exists_choice_hash : Syntax.tp -> string
 val elaborate_core_resolution_refutation_native :
   ?source_map:source_map_entry list ->
   ?source_proofs:(string * Syntax.pf) list ->
