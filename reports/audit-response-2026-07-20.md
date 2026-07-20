@@ -127,6 +127,10 @@ kept deliberately architectural rather than coverage-driven:
   required primitive against the rule's allowed primitive set before emitting
   `kernel_v1` metadata.  The same TH0 emission and Megalodon strict check
   passed after this hardening.
+- A cross-repository vocabulary sync test now compares Vampire's C++ kernel
+  rule/contract declarations with Megalodon's OCaml declarations.  This is a
+  diagnostic guard only: it prevents drift in the small-kernel certificate
+  interface and is not used to reconstruct proofs.
 
 This still does not make the project complete, and it does not rehabilitate the
 old 28-command prefix as E1 evidence.  It is, however, the intended correction
