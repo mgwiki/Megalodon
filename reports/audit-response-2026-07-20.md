@@ -1023,3 +1023,27 @@ WORK_DIR=/project/tmp/prefix4_transport_terms.1784564128 TMPDIR=/project/tmp VAM
 This is still not a counted proof-frontier increase.  It is the next small
 extraction required before the `and3I` scoped transport proof can be added
 without broad importer search.
+
+## CPS Result Alias Consistency, 2026-07-20
+
+The Skolem CPS result-to-target path now applies the same witness-alias
+expansion to the checked result proposition that the formula side already
+uses.  This is a narrow consistency fix: it prevents the checked proof-target
+comparison from seeing a less-expanded witness replacement environment than
+the formula builder.
+
+This does not change the counted frontier.  The three qualifying original
+source reconstructions still pass, and the fourth theorem (`and3I`) still
+fails closed at the expected guard.  The remaining work is still the explicit
+scoped Skolem/choice transport proof between the epsilon-instantiated body and
+Vampire's witnessed body.
+
+Focused validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+WORK_DIR=/project/tmp/and_prefix_alias_checked.1784564318 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+WORK_DIR=/project/tmp/prefix4_alias_checked.1784564318 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+```

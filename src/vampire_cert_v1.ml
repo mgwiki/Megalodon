@@ -17230,7 +17230,8 @@ let native_core_skolem_refutation_cps_proof
 	    let checked_result_prop =
 	      tmshift 0 term_depth result_assumption_prop
 	      |> native_core_replace_witness_symbols_in_tm
-	           (replacements @ fallback_replacements)
+	           (expand_witness_alias_replacements
+	              (replacements @ fallback_replacements))
 	      |> native_core_replace_terms_in_tm term_replacements
 	    in
 	    let result_prop_after_term_replacements =
