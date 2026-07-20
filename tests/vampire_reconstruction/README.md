@@ -12,7 +12,21 @@ The replacement path is the small certificate calculus described in
 `reports/vampire-megalodon-certificate-spec.md`, with initial smoke tests in
 `tests/vampire_certificate/`.
 
-The strongest live check in this directory is currently:
+The only current original-hammer qualifying seed in this directory is:
+
+```sh
+VAMPIRE=/path/to/vampire \
+tests/vampire_reconstruction/run_live_hammer_falsee_qualifying.sh
+```
+
+It rewrites the first hammer `aby` site, `FalseE`, to a `vampire` command and
+runs Megalodon with `-vampireabyqualifying`. This is the current counted E1
+seed after the July 20 audit. A focused qualifying prefix probe through
+`andER` currently closes `FalseE` and then fails at `andEL`; that failure is
+intentional evidence that the old fallback/stateful path is no longer being
+counted.
+
+The strongest non-qualifying live check in this directory is currently:
 
 ```sh
 VAMPIRE=/path/to/vampire \
@@ -26,7 +40,7 @@ and checks the file without `-allowincompleteqed`.  The fixture contains no
 log.  This is still only a small E1-adjacent regression, not the broad
 100-theorem original-context milestone.
 
-The next stronger live check uses the beginning of the real hammer
+The next stronger non-qualifying live check uses the beginning of the real hammer
 development:
 
 ```sh
@@ -50,11 +64,15 @@ VAMPIRE=/path/to/vampire \
 tests/vampire_reconstruction/run_live_hammer_prefix_no_incomplete.sh
 ```
 
-The default gate now reconstructs 28 proof commands through `Empty_eq` at line
-289. This keeps a frequently run no-incomplete check available without making
-ordinary development iterations depend on the slower union certificates.
+The default gate reconstructs 28 proof commands through `Empty_eq` at line 289
+when run without `-vampireabyqualifying`. It is retained as a regression oracle
+for source-linking and broad proof-term diagnostics, but it is not E1 evidence:
+the July 20 audit found that this class of sequential prefix result can depend
+on certificate-local state or fallback routes unless it passes in qualifying
+mode.
 
-The current stronger opt-in gate extends the same no-incomplete source prefix
+The current stronger opt-in non-qualifying gate extends the same no-incomplete
+source prefix
 through `UnionI`:
 
 ```sh

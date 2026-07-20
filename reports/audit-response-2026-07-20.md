@@ -150,3 +150,32 @@ This still does not make the project complete, and it does not rehabilitate the
 old 28-command prefix as E1 evidence.  It is, however, the intended correction
 in direction: reduce the monolithic replay path and make the small deterministic
 checker/elaborator modules the home for qualifying proof logic.
+
+## Post-audit Correction, 2026-07-20
+
+After switching to `vampire/megalodon6`, I removed the uncommitted
+`vampire_cert_v1.ml` Skolem branch-choice replay experiment instead of
+committing it.  Even though it consumed real Vampire-emitted branch-choice
+metadata, it still added more qualifying-looking behavior to the monolithic
+importer.  That conflicts with the audit's freeze rule, so it is not part of
+this branch.
+
+I also re-ran a focused original-hammer qualifying prefix probe with
+`-vampireabyqualifying` and the current `/project/tmp/vampire-cmake-megalodon6`
+Vampire binary.  The result was:
+
+```text
+FalseE: reconstructed and Qed-checked
+andEL: rejected by qualifying mode
+```
+
+The failure is the expected consequence of disabling the global-delta/fallback
+routes.  It confirms that the older 28-command hammer prefix remains a
+non-qualifying regression oracle, not counted E1 evidence.  The reconstruction
+README now says this explicitly, and the live scripts now prefer the current
+`megalodon6` Vampire build under `/project/tmp`.
+
+The next implementation target is therefore not `UnionI`, broader AVATAR
+coverage, or another Skolem heuristic.  It is the first five small
+original-source qualifying proofs, starting with `andEL`, through the extracted
+small-kernel/source-context path.

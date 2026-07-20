@@ -28,6 +28,9 @@ supports_megalodon_proof() {
 
 if [[ -z "${VAMPIRE:-}" ]]; then
   for candidate in \
+    /project/tmp/vampire-cmake-megalodon6/vampire \
+    /project/tmp/vampire-megalodon6-build/vampire \
+    /project/tmp/vampire-build-megalodon6/vampire \
     /project/tmp/vampire-cmake-megalodon5/vampire \
     /project/tmp/vampire-megalodon5-build/vampire \
     /project/tmp/vampire-build-megalodon5/vampire \
