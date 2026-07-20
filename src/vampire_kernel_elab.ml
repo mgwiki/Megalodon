@@ -140,6 +140,36 @@ let skolem_choice_witness_proof
   | _ ->
       error "Skolem choice predicate is not a lambda"
 
+let church_exists_map_proof
+    ~witness_type
+    ~source_body
+    ~target_body
+    ~pointwise_proof
+    exists_proof =
+  let target_exists_case =
+    All (witness_type, Imp (tmshift 1 1 target_body, DB 1))
+  in
+  let source_body_at_witness = tmshift 1 1 source_body in
+  let pointwise_at_witness =
+    PPfAp
+      (PTmAp
+         (pftmshift 0 2 (pfshift 0 2 pointwise_proof), DB 0),
+       Hyp 0)
+  in
+  let target_body_at_witness =
+    PPfAp (PTmAp (Hyp 1, DB 0), pointwise_at_witness)
+  in
+  let source_case =
+    TLam (witness_type, PLam (source_body_at_witness, target_body_at_witness))
+  in
+  TLam
+    (Prop,
+     PLam
+       (target_exists_case,
+        PPfAp
+          (PTmAp (pftmshift 0 1 (pfshift 0 1 exists_proof), DB 0),
+           source_case)))
+
 let replace_exact_terms_in_proof ~normalize replacements proof =
   let rec replace_top_opt depth tm =
     match

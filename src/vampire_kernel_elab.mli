@@ -83,6 +83,14 @@ val skolem_choice_witness_proof :
   Syntax.pf ->
   Syntax.tm * Syntax.pf
 
+val church_exists_map_proof :
+  witness_type:Syntax.tp ->
+  source_body:Syntax.tm ->
+  target_body:Syntax.tm ->
+  pointwise_proof:Syntax.pf ->
+  Syntax.pf ->
+  Syntax.pf
+
 val replace_exact_terms_in_proof :
   normalize:(Syntax.tm -> Syntax.tm) ->
   (Syntax.tm * Syntax.tm) list ->

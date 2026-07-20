@@ -65,6 +65,34 @@ let () =
             ~witness_type:Set
             ~predicate:(Lam (Prop, DB 0))
             (Hyp 0)));
+  let exists_map =
+    Vampire_kernel_elab.church_exists_map_proof
+      ~witness_type:Prop
+      ~source_body:(Ap (TmH "P", DB 0))
+      ~target_body:(Ap (TmH "Q", DB 0))
+      ~pointwise_proof:(Known "PQ")
+      (Hyp 0)
+  in
+  expect_equal
+    "church_exists_map_proof should map Church-encoded existential witnesses"
+    (TLam
+       (Prop,
+        PLam
+          (All (Prop, Imp (Ap (TmH "Q", DB 0), DB 1)),
+           PPfAp
+             (PTmAp (pfshift 0 1 (pftmshift 0 1 (Hyp 0)), DB 0),
+              TLam
+                (Prop,
+                 PLam
+                   (Ap (TmH "P", DB 0),
+                    PPfAp
+                      (PTmAp (Hyp 1, DB 0),
+                       PPfAp
+                         (PTmAp
+                            (pftmshift 0 2 (pfshift 0 2 (Known "PQ")),
+                             DB 0),
+                          Hyp 0))))))))
+    exists_map;
   let inner_choice = Ap (TmH "eps", TmH "inner") in
   let outer_after_inner = Ap (TmH "eps", TmH "s0") in
   let outer_before_inner = Ap (TmH "eps", inner_choice) in

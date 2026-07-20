@@ -17066,6 +17066,59 @@ let native_core_skolem_refutation_cps_proof
                    target_right
                    target_right_proof)
           end
+      | Ap (TmH "vampire_exists_prop", Lam (source_tp, source_body)),
+        Ap (TmH "vampire_exists_prop", Lam (target_tp, target_body))
+          when source_tp = target_tp ->
+          let source_body_prop =
+            native_core_formula_prop source_body
+            |> native_core_normalize_bool_constants
+            |> tm_beta_eta_norm
+          in
+          let target_body_prop =
+            native_core_formula_prop target_body
+            |> native_core_normalize_bool_constants
+            |> tm_beta_eta_norm
+          in
+          begin match direction with
+          | `Forward ->
+              let pointwise_proof =
+                TLam
+                  (source_tp,
+                   PLam
+                     (tmshift 1 1 source_body_prop,
+                      skolem_formula_transport_at
+                        (path ^ ".exists.body")
+                        `Forward
+                        (tmshift 1 1 source_body)
+                        (tmshift 1 1 target_body)
+                        (Hyp 0)))
+              in
+              Vampire_kernel_elab.church_exists_map_proof
+                ~witness_type:source_tp
+                ~source_body:source_body_prop
+                ~target_body:target_body_prop
+                ~pointwise_proof
+                proof
+          | `Backward ->
+              let pointwise_proof =
+                TLam
+                  (source_tp,
+                   PLam
+                     (tmshift 1 1 target_body_prop,
+                      skolem_formula_transport_at
+                        (path ^ ".exists.body")
+                        `Backward
+                        (tmshift 1 1 source_body)
+                        (tmshift 1 1 target_body)
+                        (Hyp 0)))
+              in
+              Vampire_kernel_elab.church_exists_map_proof
+                ~witness_type:source_tp
+                ~source_body:target_body_prop
+                ~target_body:source_body_prop
+                ~pointwise_proof
+                proof
+          end
       | Ap (Ap (TmH "vampire_and", source_left), source_right),
         Ap (Ap (TmH "vampire_and", target_left), target_right) ->
           begin match direction with

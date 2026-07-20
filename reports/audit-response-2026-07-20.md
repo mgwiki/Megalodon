@@ -1138,3 +1138,32 @@ WORK_DIR=/project/tmp/and_prefix_elab_priority.1784566877 TMPDIR=/project/tmp VA
 `FalseE`, `andEL`, and `andER` remain the only qualifying original-source
 passes; `and3I` remains fail-closed at the scoped Skolem/choice proof
 boundary.
+
+## Extracted Church-Exists Map Proof, 2026-07-20
+
+The scoped Skolem/choice boundary will need explicit transport between
+existential predicates.  Earlier code had textual and importer-local versions
+of this idea, but the extracted elaborator did not expose a reusable proof-term
+constructor for Church-encoded existential mapping.
+
+`Vampire_kernel_elab.church_exists_map_proof` now builds the proof term for
+mapping `exists P` to `exists Q` from a pointwise proof `forall x, P x -> Q x`.
+The Skolem CPS formula-transport function uses this constructor for matching
+`vampire_exists_prop` structures.  The unit harness checks the generated proof
+shape directly.
+
+This still does not close `and3I`.  A focused debug run at
+`/project/tmp/and3I_exists_map_debug_1784567215` shows the current bad
+application remains at the choice-premise boundary (`expected Eps_prop`,
+`actual #sK0`), before this existential map case can discharge the mismatch.
+The change is therefore counted as proof-term infrastructure only.
+
+Focused validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+WORK_DIR=/project/tmp/prefix4_exists_map.1784567181 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+WORK_DIR=/project/tmp/and_prefix_exists_map.1784567199 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+```
