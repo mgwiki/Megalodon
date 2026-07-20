@@ -15409,55 +15409,6 @@ let rec native_core_direct_skolem_formula_proof
        ^ shape_tag source
        ^ " target_shape="
        ^ shape_tag target);
-  let replace_exact_terms_in_proof replacements proof =
-    let choice_witness_base_symbols =
-      [
-        "Eps_i";
-        "Eps_prop";
-        "Eps_set_prop";
-        "Eps_set_set";
-        "Eps_set_set_prop";
-      ]
-    in
-    let choice_witness_symbols =
-      choice_witness_base_symbols
-      |> List.concat_map native_core_symbol_name_aliases
-      |> List.sort_uniq String.compare
-    in
-    let rec normalize_choice_witness_heads = function
-      | TmH name when List.mem name choice_witness_symbols ->
-          let canonical =
-            choice_witness_base_symbols
-            |> List.find_opt
-                 (fun base ->
-                    List.mem name (native_core_symbol_name_aliases base))
-          in
-          begin match canonical with
-          | Some base -> TmH base
-          | None -> TmH name
-          end
-      | TpAp (body, tp) -> TpAp (normalize_choice_witness_heads body, tp)
-      | Ap (left, right) ->
-          Ap (normalize_choice_witness_heads left,
-              normalize_choice_witness_heads right)
-      | Lam (tp, body) -> Lam (tp, normalize_choice_witness_heads body)
-      | Imp (left, right) ->
-          Imp (normalize_choice_witness_heads left,
-               normalize_choice_witness_heads right)
-      | All (tp, body) -> All (tp, normalize_choice_witness_heads body)
-      | DB _ | TmH _ | Prim _ as tm -> tm
-    in
-    let normalize tm =
-      tm
-      |> normalize_choice_witness_heads
-      |> native_core_normalize_bool_constants
-      |> tm_beta_eta_norm
-    in
-    Vampire_kernel_elab.replace_exact_terms_in_proof
-      ~normalize
-      replacements
-      proof
-  in
   let matching_helper local_depth replacements source target helpers =
     Vampire_kernel_elab.matching_skolem_helper
       ~normalize_at_depth:normalized_formula_for_helper
@@ -15702,11 +15653,9 @@ let rec native_core_direct_skolem_formula_proof
                       (target_witness, epsilon_witness) :: replacements
                 in
                 let predicate = Lam (tp, checked_formula_prop (local_depth + 1) body) in
+                let epsilon_witness = Ap (TmH (native_core_eps_symbol tp), predicate) in
                 let choice_proof = PPfAp (PTmAp (Known choice, predicate), proof) in
-                let target_body = tmsubst body 0 target_witness in
-                let choice_proof =
-                  PPfAp (PLam (checked_formula_prop local_depth target_body, Hyp 0), choice_proof)
-                in
+                let target_body = tmsubst body 0 epsilon_witness in
                 choose_with_helpers
                   local_depth
                   helpers
@@ -15854,23 +15803,14 @@ let rec native_core_direct_skolem_formula_proof
   if not used_choice then
     error
       (id ^ ": native core proof-term skolemization supports only existential sources");
-  let orientation_target =
-    if helper_records = [] then rewrite_witnesses replacements target
-    else target
-  in
+  let orientation_target = rewrite_witnesses replacements target in
   let proof =
     native_core_formula_orientation_proof
       ~normalize_formula_for_match:(fun count tm ->
         normalize_formula_for_match (ambient_shift + count) tm)
       id [] [] [] orientation_source orientation_target choice_proof
   in
-  if skolem_branch_choices = [] then
-    proof
-  else
-    replacements
-    |> List.map (fun (target_witness, epsilon_witness) -> epsilon_witness, target_witness)
-    |> replace_exact_terms_in_proof
-    |> fun replace -> replace proof
+  proof
 
 let native_core_skolem_formula_proof
     ?(helper_formulas=[])

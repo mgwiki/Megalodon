@@ -617,3 +617,22 @@ stopping only at raw `#sK1` versus `Eps_prop` naming.  The next implementation
 step remains an extracted small-kernel Skolem/choice transformation that proves
 or eliminates the local witness definitions explicitly, rather than relying on
 certificate-local conversion.
+
+## Choice-Witness Coercion Removal, 2026-07-20
+
+The direct Skolem helper replay previously built a choice proof at
+`P (Eps P)` and then wrapped it in an identity proof whose declared
+proposition was `P sK`.  That made the live proof appear to have the
+certificate-local Skolem proposition even though the only real proof produced
+by the choice axiom was the epsilon-instantiated proposition.
+
+That coercion has now been removed.  The direct replay continues with the
+epsilon-instantiated body, and the final replay no longer rewrites epsilon
+witnesses back to Skolem symbols.  This also deleted the local proof-term
+replacement helper that existed solely for that final rewrite.
+
+This is still not new proof coverage.  The focused checks pass, but `and3I`
+continues to fail closed at the scoped Skolem/choice boundary.  The value of
+the change is that the remaining failure is no longer hidden behind a local
+Megalodon-side coercion; the next fix has to be a real small-kernel witness
+definition transformation.
