@@ -93,3 +93,23 @@ The qualifying implementation should move out of the large `megalodon.ml` and
 
 Until that extraction is real, this branch's qualifying mode is a guardrail,
 not the final architecture.
+
+## Follow-up Extraction, 2026-07-20
+
+After re-reading the audit on `vampire/megalodon6`, the next code changes were
+kept deliberately architectural rather than coverage-driven:
+
+- FOOL exhaustiveness and FOOL distinctness structural checks were moved from
+  the monolithic certificate importer into `vampire_kernel_check.ml`.
+- The shared `open_step_theorem` proof-term operation was moved from
+  `vampire_cert_v1.ml` into `vampire_kernel_elab.ml`; the importer now only
+  supplies certificate-specific variable lists and term-closing logic.
+- The validating checks were focused: both FOOL fixtures pass, the valid
+  derived-resolution open-step proof term still checks, the dropped-parent
+  open-step regression still fails closed, and the existing strict smoke case
+  still passes.
+
+This still does not make the project complete, and it does not rehabilitate the
+old 28-command prefix as E1 evidence.  It is, however, the intended correction
+in direction: reduce the monolithic replay path and make the small deterministic
+checker/elaborator modules the home for qualifying proof logic.
