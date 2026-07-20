@@ -842,3 +842,24 @@ The next work should therefore not be another global rewrite table change.  It
 should be a scoped transport proof object at the direct Skolem proof
 construction boundary, or richer Vampire-emitted small-kernel data from which
 that transport is deterministically elaborated.
+
+## CPS Alias Hygiene, 2026-07-20
+
+One further bounded cleanup was made in the CPS Skolem replay path.  Witness
+replacement lists are now expanded through the existing generated/native symbol
+alias relation before they are applied to propositions and proofs.  This means
+a replacement learned for `sK1` is also applied at the corresponding `#sK1`
+occurrence, and vice versa, using the same `native_core_symbol_name_aliases`
+metadata already used elsewhere.  The local existential-binder propositions
+now also include fallback witness replacements, so the proposition introduced
+by the local proof abstraction and the proof body use the same witness basis.
+
+This is deliberately not counted as a proof-frontier improvement.  Focused
+validation still gives the same honest result: `FalseE`, `andEL`, and `andER`
+pass in qualifying mode, while `and3I` fails closed.  The `and3I` debug trace
+shows that alias cleanup removes some incidental `#sK`/`sK` disagreement, but
+the final failure remains the substantive scoped Skolem/choice transport
+problem: a proof over Megalodon's epsilon witness is still being applied where
+the expected proposition contains the certificate-local Skolem witness.  The
+next accepted step should therefore be an explicit small-kernel transport for
+that transformation, not another fallback or search layer.

@@ -16310,6 +16310,14 @@ let native_core_skolem_refutation_cps_proof
   let witness_symbols =
     List.map fst witness_terms
   in
+  let expand_witness_alias_replacements replacements =
+    replacements
+    |> List.concat_map
+         (fun (name, replacement) ->
+            native_core_symbol_name_aliases name
+            |> List.map (fun alias -> (alias, replacement)))
+    |> List.sort_uniq compare
+  in
   let rec source_exists_types = function
     | Ap (TmH "vampire_exists_prop", Lam (tp, body)) ->
         tp :: source_exists_types body
@@ -16692,7 +16700,8 @@ let native_core_skolem_refutation_cps_proof
   let target_prop = tm_beta_eta_norm target_prop in
   let formula_prop_with_ordered_replacements close_depth ordered_replacements formula =
     native_core_formula_prop formula
-    |> native_core_replace_witness_symbols_in_tm ordered_replacements
+    |> native_core_replace_witness_symbols_in_tm
+         (expand_witness_alias_replacements ordered_replacements)
     |> native_core_close_tm ~depth:close_depth variables
     |> tm_beta_eta_norm
   in
@@ -16757,13 +16766,18 @@ let native_core_skolem_refutation_cps_proof
   in
   let proof_with_replacements term_replacements replacements fallback_replacements proof =
     let all_replacements = replacements @ fallback_replacements in
+    let all_replacements_with_aliases =
+      expand_witness_alias_replacements all_replacements
+    in
     let covered_witness_symbols = List.map fst all_replacements in
     let active_split_replacements =
       split_replacements
       |> List.filter
            (fun (_name, replacement) ->
               let replacement =
-                native_core_replace_witness_symbols_in_tm all_replacements replacement
+                native_core_replace_witness_symbols_in_tm
+                  all_replacements_with_aliases
+                  replacement
               in
               not
                 (List.exists
@@ -16773,7 +16787,7 @@ let native_core_skolem_refutation_cps_proof
                    witness_symbols))
     in
     native_core_replace_witness_symbols_in_pf
-      (active_split_replacements @ replacements @ fallback_replacements)
+      (active_split_replacements @ all_replacements_with_aliases)
       proof
     |> native_core_replace_terms_in_pf term_replacements
   in
@@ -17315,7 +17329,10 @@ let native_core_skolem_refutation_cps_proof
         in
         let body_prop =
           native_core_formula_prop body
-          |> native_core_replace_witness_symbols_in_tm replacements_under_binder
+          |> native_core_replace_witness_symbols_in_tm
+               (expand_witness_alias_replacements
+                  (replacements_under_binder
+                   @ fallback_replacements_under_binder))
           |> native_core_close_tm ~depth:(List.length replacements_under_binder) variables
           |> native_core_normalize_bool_constants
           |> tm_beta_eta_norm
@@ -17377,7 +17394,9 @@ let native_core_skolem_refutation_cps_proof
         let target_prop =
           target_prop
           |> native_core_replace_witness_symbols_in_tm
-               (replacements_under_binder @ fallback_replacements_under_binder)
+               (expand_witness_alias_replacements
+                  (replacements_under_binder
+                   @ fallback_replacements_under_binder))
           |> native_core_replace_terms_in_tm term_replacements_under_binder
           |> tm_beta_eta_norm
         in
@@ -17716,7 +17735,9 @@ let native_core_skolem_refutation_cps_proof
               let body_prop =
                 native_core_formula_prop body
                 |> native_core_replace_witness_symbols_in_tm
-                     (replacements_under_binder @ fallback_replacements_under_binder)
+                     (expand_witness_alias_replacements
+                        (replacements_under_binder
+                         @ fallback_replacements_under_binder))
                 |> native_core_close_tm
                      ~depth:(List.length replacements_under_binder)
                      variables

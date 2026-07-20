@@ -598,3 +598,12 @@ qualifying proof, showing that explicit witness expansion cannot simply be
 applied at formula storage time.  The missing object is still a scoped
 proof-term transport at the direct Skolem construction boundary, or equivalent
 Vampire-emitted small-kernel certificate data for that transport.
+
+Latest evidence on 2026-07-20: CPS witness replacement application now expands
+each replacement through the existing generated/native symbol aliases before
+rewriting proof terms or propositions, and local existential binder
+propositions include fallback witness replacements.  This fixes an incidental
+representation asymmetry between names such as `sK1` and `#sK1`, but it is not
+a Skolem proof rule.  The qualifying frontier remains unchanged:
+`FalseE`, `andEL`, and `andER` pass, and `and3I` still fails closed at the
+scoped Skolem/choice transport boundary.
