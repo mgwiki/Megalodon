@@ -27,6 +27,14 @@ let expect_bool label actual =
     exit 1
   end
 
+let expect_error label f =
+  try
+    f ();
+    prerr_endline ("kernel_elab unit failure: " ^ label);
+    exit 1
+  with
+  | Vampire_kernel_check.Error _ -> ()
+
 let () =
   let inner_choice = Ap (TmH "eps", TmH "inner") in
   let outer_after_inner = Ap (TmH "eps", TmH "s0") in
@@ -163,7 +171,7 @@ let () =
       skolem_branch_choice_symbol = "s0";
       skolem_branch_choice_replaced_variable = "X";
       skolem_branch_choice_type = Prop;
-      skolem_branch_choice_predicate = TmH "pred";
+      skolem_branch_choice_predicate = Lam (Prop, Ap (DB 0, TmH "a"));
       skolem_branch_choice_body = Ap (TmH "X", TmH "a");
       skolem_branch_choice_witness_term = Some (TmH "#s0");
     }
@@ -194,6 +202,44 @@ let () =
        ~target_witness:(TmH "#s0")
        ~witness_type:Prop
        [branch_choice]);
+  Vampire_kernel_check.check_skolem_branch_contract
+    ~id:"unit"
+    ~index:0
+    ~normalize:(fun tm -> tm)
+    ~alias_names:aliases
+    ~introduced_symbol_names:["s0"]
+    ~source_formula:(Some (TmH "src"))
+    ~target_formula:(Some (TmH "dst"))
+    ~propositions:[
+      {
+        Vampire_kernel_syntax.skolem_branch_prop_index = 0;
+        skolem_branch_prop_role = "source";
+        skolem_branch_prop_formula = TmH "src";
+      };
+      {
+        Vampire_kernel_syntax.skolem_branch_prop_index = 1;
+        skolem_branch_prop_role = "target";
+        skolem_branch_prop_formula = TmH "dst";
+      };
+    ]
+    ~choices:[branch_choice];
+  expect_error
+    "check_skolem_branch_contract should reject predicate/body mismatches"
+    (fun () ->
+       Vampire_kernel_check.check_skolem_branch_contract
+         ~id:"unit"
+         ~index:0
+         ~normalize:(fun tm -> tm)
+         ~alias_names:aliases
+         ~introduced_symbol_names:["s0"]
+         ~source_formula:None
+         ~target_formula:None
+         ~propositions:[]
+         ~choices:[{
+           branch_choice with
+           Vampire_kernel_syntax.skolem_branch_choice_predicate =
+             Lam (Prop, TmH "wrong");
+         }]);
   let helper_formula =
     All
       (Prop,
@@ -270,6 +316,7 @@ ocamlopt \
   "$ROOT/bin/mathdatapfg.cmx" \
   "$ROOT/bin/syntax.cmx" \
   "$ROOT/bin/vampire_kernel_syntax.cmx" \
+  "$ROOT/bin/vampire_kernel_check.cmx" \
   "$ROOT/bin/vampire_kernel_elab.cmx" \
   "$WORK_DIR/test_kernel_elab.ml"
 

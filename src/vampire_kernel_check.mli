@@ -320,3 +320,15 @@ val check_definition_rewrite_chain :
   rewrites:definition_rewrite list ->
   result:Vampire_kernel_syntax.clause ->
   unit
+
+val check_skolem_branch_contract :
+  id:string ->
+  index:int ->
+  normalize:(Syntax.tm -> Syntax.tm) ->
+  alias_names:(string -> string list) ->
+  introduced_symbol_names:string list ->
+  source_formula:Syntax.tm option ->
+  target_formula:Syntax.tm option ->
+  propositions:Vampire_kernel_syntax.skolem_branch_proposition list ->
+  choices:Vampire_kernel_syntax.skolem_branch_choice list ->
+  unit

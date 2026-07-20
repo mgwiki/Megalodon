@@ -636,3 +636,18 @@ continues to fail closed at the scoped Skolem/choice boundary.  The value of
 the change is that the remaining failure is no longer hidden behind a local
 Megalodon-side coercion; the next fix has to be a real small-kernel witness
 definition transformation.
+
+## Skolem Contract Checking Extraction, 2026-07-20
+
+The typed Skolem branch-choice contract checks have now moved out of
+`vampire_cert_v1.ml` and into `vampire_kernel_check.ml`.  The importer still
+parses the fields, but the deterministic validation of branch source/target
+roles, introduced-symbol membership, choice predicate/body consistency, and
+witness-head aliases is now in the small-kernel checker module.
+
+The fast kernel unit test covers both an accepted branch-choice contract and a
+rejected predicate/body mismatch.  This does not increase the proof frontier:
+the three original-source qualifying proofs still pass, and `and3I` still
+fails closed.  The point of the change is architectural alignment with the
+audit: Skolem contract validation is now part of the extracted checker, not a
+private importer-side rule.

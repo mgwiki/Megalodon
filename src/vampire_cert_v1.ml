@@ -9353,118 +9353,25 @@ let native_core_kernel_v1_skolem_branch_contract cert id index prefix =
                        cert id (choice_prefix ^ "_witness_term");
                  })
       in
-      let normalized_branch_formula tm =
-        tm_beta_eta_norm tm
-      in
-      List.iter
-        (fun proposition ->
-           let check_expected label = function
-             | Some expected
-                 when normalized_branch_formula expected
-                      <> normalized_branch_formula
-                           proposition
-                             .Vampire_kernel_syntax.skolem_branch_prop_formula ->
-                 error
-                   (Printf.sprintf
-                      "%s: typed Skolem branch contract %d proposition role %s does not match branch %s formula"
-                      id index
-                      proposition
-                        .Vampire_kernel_syntax.skolem_branch_prop_role
-                      label)
-             | _ -> ()
-           in
-           match
-             proposition.Vampire_kernel_syntax.skolem_branch_prop_role
-           with
-           | "source" -> check_expected "source" branch_source_formula
-           | "target" -> check_expected "target" branch_target_formula
-           | "" ->
-               error
-                 (Printf.sprintf
-                    "%s: typed Skolem branch contract %d has an empty branch proposition role"
-                    id index)
-           | _ -> ())
-        branch_propositions;
       let introduced_symbol_names =
         introduced_witnesses
         |> List.map
              (fun witness ->
                 witness.Vampire_kernel_syntax.skolem_witness_symbol)
       in
-      List.iter
-        (fun choice ->
-           if choice.Vampire_kernel_syntax.skolem_branch_choice_symbol = "" then
-             error
-               (Printf.sprintf
-                  "%s: typed Skolem branch contract %d has an empty branch choice symbol"
-                  id index);
-           if choice.Vampire_kernel_syntax.skolem_branch_choice_replaced_variable = "" then
-             error
-               (Printf.sprintf
-                  "%s: typed Skolem branch contract %d has an empty branch choice replaced variable"
-                  id index);
-           if not
-                (List.mem
-                   choice.Vampire_kernel_syntax.skolem_branch_choice_symbol
-                   introduced_symbol_names) then
-             error
-               (Printf.sprintf
-                  "%s: typed Skolem branch contract %d choice symbol %s is not introduced by the branch"
-                  id index
-                  choice.Vampire_kernel_syntax.skolem_branch_choice_symbol);
-           let expected_predicate =
-             let expected_body =
-               subst_named_tm
-                 choice.Vampire_kernel_syntax.skolem_branch_choice_replaced_variable
-                 choice.Vampire_kernel_syntax.skolem_branch_choice_body
-             in
-             Lam
-               (choice.Vampire_kernel_syntax.skolem_branch_choice_type,
-                expected_body)
-             |> tm_beta_eta_norm
-           in
-           if tm_beta_eta_norm
-                choice.Vampire_kernel_syntax.skolem_branch_choice_predicate
-              <> expected_predicate then
-             error
-               (Printf.sprintf
-                  "%s: typed Skolem branch contract %d choice predicate does not match its body"
-                  id index);
-           begin match
-             choice.Vampire_kernel_syntax.skolem_branch_choice_witness_term
-           with
-           | Some witness_term ->
-               let rec witness_head = function
-                 | Ap (head, _) | TpAp (head, _) -> witness_head head
-                 | head -> head
-               in
-               begin match witness_head witness_term with
-               | TmH head ->
-                   let expected_names =
-                     native_core_symbol_name_aliases
-                       choice.Vampire_kernel_syntax.skolem_branch_choice_symbol
-                   in
-                   let actual_names =
-                     native_core_symbol_name_aliases head
-                   in
-                   if not
-                        (List.exists
-                           (fun actual -> List.mem actual expected_names)
-                           actual_names) then
-                     error
-                       (Printf.sprintf
-                          "%s: typed Skolem branch contract %d choice witness term head does not match symbol %s"
-                          id index
-                          choice.Vampire_kernel_syntax.skolem_branch_choice_symbol)
-               | _ ->
-                   error
-                     (Printf.sprintf
-                        "%s: typed Skolem branch contract %d choice witness term is not headed by a symbol"
-                        id index)
-               end
-           | None -> ()
-           end)
-        branch_choices;
+      begin try
+        Vampire_kernel_check.check_skolem_branch_contract
+          ~id
+          ~index
+          ~normalize:tm_beta_eta_norm
+          ~alias_names:native_core_symbol_name_aliases
+          ~introduced_symbol_names
+          ~source_formula:branch_source_formula
+          ~target_formula:branch_target_formula
+          ~propositions:branch_propositions
+          ~choices:branch_choices
+      with Vampire_kernel_check.Error msg -> error msg
+      end;
       Some
         {
           Vampire_kernel_syntax.skolem_branch_index = index;

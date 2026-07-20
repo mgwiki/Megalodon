@@ -924,3 +924,106 @@ let check_definition_rewrite_chain
   in
   if not (same_clause_multiset current result) then
     error (id ^ ": definition_rewrite_chain result does not match explicit rewrite sequence")
+
+let substitute_named_term name tm =
+  let rec subst depth = function
+    | TmH candidate when candidate = name -> DB depth
+    | TpAp (body, tp) -> TpAp (subst depth body, tp)
+    | Ap (TmH "vLAM", body) -> Ap (TmH "vLAM", subst depth body)
+    | Ap (left, right) -> Ap (subst depth left, subst depth right)
+    | Lam (tp, body) -> Lam (tp, subst (depth + 1) body)
+    | Imp (left, right) -> Imp (subst depth left, subst depth right)
+    | All (tp, body) -> All (tp, subst (depth + 1) body)
+    | DB _ | TmH _ | Prim _ as tm -> tm
+  in
+  subst 0 tm
+
+let rec term_head = function
+  | Ap (head, _) | TpAp (head, _) -> term_head head
+  | head -> head
+
+let check_skolem_branch_contract
+    ~id
+    ~index
+    ~normalize
+    ~alias_names
+    ~introduced_symbol_names
+    ~source_formula
+    ~target_formula
+    ~propositions
+    ~choices =
+  let check_expected label expected proposition =
+    match expected with
+    | Some expected
+        when normalize expected <> normalize proposition.skolem_branch_prop_formula ->
+        error
+          (Printf.sprintf
+             "%s: typed Skolem branch contract %d proposition role %s does not match branch %s formula"
+             id index proposition.skolem_branch_prop_role label)
+    | _ -> ()
+  in
+  List.iter
+    (fun proposition ->
+       match proposition.skolem_branch_prop_role with
+       | "source" -> check_expected "source" source_formula proposition
+       | "target" -> check_expected "target" target_formula proposition
+       | "" ->
+           error
+             (Printf.sprintf
+                "%s: typed Skolem branch contract %d has an empty branch proposition role"
+                id index)
+       | _ -> ())
+    propositions;
+  List.iter
+    (fun choice ->
+       if choice.skolem_branch_choice_symbol = "" then
+         error
+           (Printf.sprintf
+              "%s: typed Skolem branch contract %d has an empty branch choice symbol"
+              id index);
+       if choice.skolem_branch_choice_replaced_variable = "" then
+         error
+           (Printf.sprintf
+              "%s: typed Skolem branch contract %d has an empty branch choice replaced variable"
+              id index);
+       if not (List.mem choice.skolem_branch_choice_symbol introduced_symbol_names) then
+         error
+           (Printf.sprintf
+              "%s: typed Skolem branch contract %d choice symbol %s is not introduced by the branch"
+              id index choice.skolem_branch_choice_symbol);
+       let expected_predicate =
+         let expected_body =
+           substitute_named_term
+             choice.skolem_branch_choice_replaced_variable
+             choice.skolem_branch_choice_body
+         in
+         Lam (choice.skolem_branch_choice_type, expected_body)
+         |> normalize
+       in
+       if normalize choice.skolem_branch_choice_predicate <> expected_predicate then
+         error
+           (Printf.sprintf
+              "%s: typed Skolem branch contract %d choice predicate does not match its body"
+              id index);
+       match choice.skolem_branch_choice_witness_term with
+       | Some witness_term ->
+           begin match term_head witness_term with
+           | TmH head ->
+               let expected_names = alias_names choice.skolem_branch_choice_symbol in
+               let actual_names = alias_names head in
+               if not
+                    (List.exists
+                       (fun actual -> List.mem actual expected_names)
+                       actual_names) then
+                 error
+                   (Printf.sprintf
+                      "%s: typed Skolem branch contract %d choice witness term head does not match symbol %s"
+                      id index choice.skolem_branch_choice_symbol)
+           | _ ->
+               error
+                 (Printf.sprintf
+                    "%s: typed Skolem branch contract %d choice witness term is not headed by a symbol"
+                    id index)
+           end
+       | None -> ())
+    choices
