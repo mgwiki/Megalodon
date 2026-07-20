@@ -486,6 +486,31 @@ let substitute_named_term name tm =
   in
   subst 0 tm
 
+let term_exists_head_types exists_head tm =
+  let rec collect = function
+    | Ap (TmH head, Lam (tp, body)) when head = exists_head ->
+        tp :: collect body
+    | Ap (Ap (TmH "vampire_and", left), right)
+    | Ap (Ap (TmH "vampire_or", left), right)
+    | Imp (left, right) ->
+        collect left @ collect right
+    | All (_, body)
+    | Lam (_, body)
+    | TpAp (body, _) ->
+        collect body
+    | Ap (TmH head, body) when head = exists_head ->
+        collect body
+    | Ap (TmH "vLAM", body) ->
+        collect body
+    | Ap (left, right) ->
+        collect left @ collect right
+    | DB _ | TmH _ | Prim _ -> []
+  in
+  collect tm
+
+let term_exists_head_count exists_head tm =
+  List.length (term_exists_head_types exists_head tm)
+
 let rec term_head = function
   | Ap (head, _) | TpAp (head, _) -> term_head head
   | head -> head

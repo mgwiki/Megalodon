@@ -16367,29 +16367,14 @@ let native_core_skolem_refutation_cps_proof
             |> List.map (fun alias -> (alias, replacement)))
     |> List.sort_uniq compare
   in
-  let rec source_exists_types = function
-    | Ap (TmH "vampire_exists_prop", Lam (tp, body)) ->
-        tp :: source_exists_types body
-    | Ap (Ap (TmH "vampire_and", left), right)
-    | Ap (Ap (TmH "vampire_or", left), right)
-    | Imp (left, right) ->
-        source_exists_types left @ source_exists_types right
-    | All (_, body)
-    | Lam (_, body)
-    | TpAp (body, _)
-    | Ap (TmH "vampire_exists_prop", body)
-    | Ap (TmH "vLAM", body) ->
-        source_exists_types body
-    | Ap (left, right) ->
-        source_exists_types left @ source_exists_types right
-    | _ -> []
-  in
   let witness_infos =
     try
       List.map2
         (fun (symbol, witness) tp -> (symbol, tp, witness))
         witness_terms
-        (source_exists_types source)
+        (Vampire_kernel_elab.term_exists_head_types
+           "vampire_exists_prop"
+           source)
     with Invalid_argument _ ->
       error
         (id ^ ": native preprocess Skolem CPS witness type count does not match substitution count")
@@ -16449,24 +16434,8 @@ let native_core_skolem_refutation_cps_proof
   let parent_proof = native_core_close_pf variables parent_proof in
   let result_proof = native_core_close_pf variables result_proof in
   let final_proof = native_core_close_pf variables final_proof in
-  let rec source_exists_count = function
-    | Ap (TmH "vampire_exists_prop", Lam (_, body)) ->
-        1 + source_exists_count body
-    | Ap (Ap (TmH "vampire_and", left), right)
-    | Ap (Ap (TmH "vampire_or", left), right) ->
-        source_exists_count left + source_exists_count right
-    | Imp (left, right) ->
-        source_exists_count left + source_exists_count right
-    | All (_, body)
-    | Lam (_, body) ->
-        source_exists_count body
-    | TpAp (body, _)
-    | Ap (TmH "vampire_exists_prop", body)
-    | Ap (TmH "vLAM", body) ->
-        source_exists_count body
-    | Ap (left, right) ->
-        source_exists_count left + source_exists_count right
-    | _ -> 0
+  let source_exists_count =
+    Vampire_kernel_elab.term_exists_head_count "vampire_exists_prop"
   in
   if source_exists_count source <> List.length witness_symbols then
     error

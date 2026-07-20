@@ -169,6 +169,16 @@ val substitute_named_term :
   Syntax.tm ->
   Syntax.tm
 
+val term_exists_head_types :
+  string ->
+  Syntax.tm ->
+  Syntax.tp list
+
+val term_exists_head_count :
+  string ->
+  Syntax.tm ->
+  int
+
 val term_head :
   Syntax.tm ->
   Syntax.tm

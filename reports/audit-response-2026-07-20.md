@@ -1047,3 +1047,28 @@ TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.s
 WORK_DIR=/project/tmp/and_prefix_alias_checked.1784564318 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
 WORK_DIR=/project/tmp/prefix4_alias_checked.1784564318 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
 ```
+
+## Existential Binder Accounting Extraction, 2026-07-20
+
+The Skolem CPS path no longer performs its own local recursive scan to count
+and type `vampire_exists_prop` binders.  That structural certificate
+inspection is now exposed by `vampire_kernel_elab.ml` as
+`term_exists_head_types` and `term_exists_head_count`, with unit tests for
+nested conjunction/implication shapes.
+
+This is an audit-aligned extraction, not a new proof-frontier claim.  It
+removes another deterministic Skolem bookkeeping operation from
+`vampire_cert_v1.ml` and puts it behind the small elaborator boundary.  The
+frontier remains the same: three qualifying original-source reconstructions
+pass and `and3I` still fails closed until the scoped Skolem/choice transport
+proof is made explicit.
+
+Focused validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+WORK_DIR=/project/tmp/and_prefix_exists_extract.1784564519 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+WORK_DIR=/project/tmp/prefix4_exists_extract.1784564520 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+```

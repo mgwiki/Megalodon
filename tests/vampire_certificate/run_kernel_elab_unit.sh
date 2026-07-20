@@ -231,6 +231,33 @@ let () =
     (Vampire_kernel_elab.substitute_named_term
        "X"
        (Ap (TmH "vLAM", Ap (TmH "X", TmH "z"))));
+  let nested_exists =
+    Ap
+      (Ap
+         (TmH "vampire_and",
+          Ap (TmH "vampire_exists_prop", Lam (Prop, DB 0))),
+       Imp
+         (TmH "guard",
+          Ap (TmH "vampire_exists_prop", Lam (Set, TmH "body"))))
+  in
+  expect_equal
+    "term_exists_head_types should collect nested existential witness types"
+    [Prop; Set]
+    (Vampire_kernel_elab.term_exists_head_types
+       "vampire_exists_prop"
+       nested_exists);
+  expect_equal
+    "term_exists_head_count should count nested existential binders"
+    2
+    (Vampire_kernel_elab.term_exists_head_count
+       "vampire_exists_prop"
+       nested_exists);
+  expect_equal
+    "term_exists_head_types should ignore other existential heads"
+    []
+    (Vampire_kernel_elab.term_exists_head_types
+       "other_exists"
+       nested_exists);
   expect_equal
     "term_head should peel type and term applications"
     (TmH "sK")
