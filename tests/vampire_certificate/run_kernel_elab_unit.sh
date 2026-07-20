@@ -226,6 +226,24 @@ let () =
         "kernel_elab unit failure: skolem_branch_choice_instantiation should keep emitted predicate and body aligned";
       exit 1
   end;
+  let lifted =
+    Vampire_kernel_elab.lift_skolem_branch_choice_instantiation
+      ~ambient_shift:4
+      {
+        Vampire_kernel_elab.skolem_choice_body =
+          Ap (DB 0, DB 2);
+        skolem_choice_predicate =
+          Lam (Prop, Ap (DB 0, DB 2));
+      }
+  in
+  expect_equal
+    "lift_skolem_branch_choice_instantiation should not move the implicit witness argument"
+    (Ap (DB 0, DB 6))
+    lifted.Vampire_kernel_elab.skolem_choice_body;
+  expect_equal
+    "lift_skolem_branch_choice_instantiation should lift free predicate body indices under the lambda"
+    (Lam (Prop, Ap (DB 0, DB 6)))
+    lifted.Vampire_kernel_elab.skolem_choice_predicate;
   expect_equal
     "skolem_branch_choice_instantiation should reject predicate/body drift"
     None

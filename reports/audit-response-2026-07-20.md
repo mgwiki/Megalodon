@@ -684,3 +684,21 @@ witnesses.  The next small-kernel step should make the Skolem witness
 definition itself an explicit replayed equality/transport step or avoid
 producing proof terms whose validity depends on the certificate-local
 `sK := Eps P` conversion.
+
+## Branch-Choice DB Lifting, 2026-07-20
+
+The branch-choice elaborator now has an explicit operation for lifting emitted
+choice metadata across ambient result binders.  This is deliberately separate
+from named-variable closing: closing can abstract named variables, but it does
+not shift de Bruijn indices that are already present in Vampire-emitted
+predicate/body metadata.  The body is lifted while preserving its implicit
+choice argument, and the predicate is lifted through its explicit lambda.  The
+kernel elaborator unit test now covers this behavior directly.
+
+This is still a narrowing step, not a frontier increase.  The focused debug run
+showed that the failing `and3I` direct choices are selected at `local_depth=0`
+with `ambient_shift=0` and `ambient_shift=1`, so the remaining four-index gap
+is not explained by result-step ambient lifting alone.  The new artifact is
+`/project/tmp/and3I_depth_debug.1784556183`.  The next target remains explicit
+transport across the certificate-local Skolem witness definition at the
+returned-proof/live-check boundary.

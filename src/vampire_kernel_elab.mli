@@ -151,6 +151,11 @@ type skolem_branch_choice_instantiation = {
   skolem_choice_predicate : Syntax.tm;
 }
 
+val lift_skolem_branch_choice_instantiation :
+  ambient_shift:int ->
+  skolem_branch_choice_instantiation ->
+  skolem_branch_choice_instantiation
+
 val skolem_branch_choice_instantiation :
   normalize:(Syntax.tm -> Syntax.tm) ->
   alias_names:(string -> string list) ->

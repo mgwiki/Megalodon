@@ -452,6 +452,16 @@ type skolem_branch_choice_instantiation = {
   skolem_choice_predicate : tm;
 }
 
+let lift_skolem_branch_choice_instantiation ~ambient_shift instantiation =
+  if ambient_shift = 0 then instantiation
+  else
+    {
+      skolem_choice_body =
+        tmshift 1 ambient_shift instantiation.skolem_choice_body;
+      skolem_choice_predicate =
+        tmshift 0 ambient_shift instantiation.skolem_choice_predicate;
+    }
+
 let skolem_branch_choice_instantiation
     ~normalize
     ~alias_names

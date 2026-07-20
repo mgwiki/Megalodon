@@ -15262,19 +15262,11 @@ let rec native_core_direct_skolem_formula_proof
       local_depth replacements substitution_name target_witness tp =
     let close_choice_body body =
       if closing_variables = [] then body
-      else
-        native_core_close_tm
-          ~depth:(ambient_shift + local_depth + 1)
-          closing_variables
-          body
+      else native_core_close_tm ~depth:(local_depth + 1) closing_variables body
     in
     let close_choice_predicate predicate =
       if closing_variables = [] then predicate
-      else
-        native_core_close_tm
-          ~depth:(ambient_shift + local_depth)
-          closing_variables
-          predicate
+      else native_core_close_tm ~depth:local_depth closing_variables predicate
     in
     let normalize tm = tm_beta_eta_norm tm in
     match
@@ -15289,6 +15281,11 @@ let rec native_core_direct_skolem_formula_proof
     with
     | None -> None
     | Some instantiation ->
+        let instantiation =
+          Vampire_kernel_elab.lift_skolem_branch_choice_instantiation
+            ~ambient_shift
+            instantiation
+        in
         let body =
           close_choice_body
             instantiation.Vampire_kernel_elab.skolem_choice_body
@@ -15316,7 +15313,11 @@ let rec native_core_direct_skolem_formula_proof
           prerr_endline
             (id
              ^ ": native core skolem used emitted branch choice for "
-             ^ tm_to_str target_witness);
+             ^ tm_to_str target_witness
+             ^ " at local_depth="
+             ^ string_of_int local_depth
+             ^ " ambient_shift="
+             ^ string_of_int ambient_shift);
         Some (body, predicate, (target_witness, epsilon_witness) :: replacements)
   in
   let helper_records =
