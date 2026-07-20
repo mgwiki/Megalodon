@@ -1818,10 +1818,10 @@ let vampire_loaded_prop_ext_expander ?delta:_ proof =
       expand proof
 
 let vampire_directional_prop_ext_expander proof =
-  match Hashtbl.find_opt sigknh "prop_ext", Hashtbl.find_opt sigknh "iffI" with
-  | Some prop_ext_hash, Some iffI_hash ->
+  match Hashtbl.find_opt sigknh "iffI" with
+  | Some iffI_hash ->
       let prop_ext_like h =
-        h = prop_ext_hash || h = Vampire_cert_v1.native_core_prop_ext_hash
+        h = Vampire_cert_v1.native_core_prop_ext_hash
       in
       let rec expand = function
         | PPfAp
@@ -1846,7 +1846,7 @@ let vampire_directional_prop_ext_expander proof =
         | Hyp _ | Known _ as proof -> proof
       in
       expand proof
-  | _ -> proof
+  | None -> proof
 
 let vampire_live_not_tm target =
   match Hashtbl.find_opt sigtmh "not" with
@@ -2236,10 +2236,10 @@ let vampire_live_basis_expander proof =
   match Hashtbl.find_opt sigknh "xm", Hashtbl.find_opt sigknh "dneg" with
   | None, _ -> proof
   | Some xm_hash, dneg_hash_opt ->
-      let rec expand = function
+      let rec expand depth = function
         | PPfAp (PTmAp (Known h, target), dnotnot)
             when h = Vampire_cert_v1.native_core_dneg_hash ->
-            let dnotnot = expand dnotnot in
+            let dnotnot = expand depth dnotnot in
             begin match dneg_hash_opt with
             | Some dneg_hash -> PPfAp (PTmAp (Known dneg_hash, target), dnotnot)
             | None ->
@@ -2260,36 +2260,37 @@ let vampire_live_basis_expander proof =
                       PLam (target, Hyp 0)),
                    PLam (not_target, PTmAp (false_proof, target)))
             end
-        | PTpAp (body, tp) -> PTpAp (expand body, tp)
+        | PTpAp (body, tp) -> PTpAp (expand depth body, tp)
         | PTmAp (body, tm) ->
-            PTmAp (expand body, vampire_live_basis_tm_expander tm)
-        | PPfAp (left, right) -> PPfAp (expand left, expand right)
+            PTmAp (expand depth body, vampire_live_basis_tm_expander tm)
+        | PPfAp (left, right) -> PPfAp (expand depth left, expand depth right)
         | PLam (prop, body) ->
-            PLam (vampire_live_basis_tm_expander prop, expand body)
-        | TLam (tp, body) -> TLam (tp, expand body)
+            PLam (vampire_live_basis_tm_expander prop, expand depth body)
+        | TLam (tp, body) -> TLam (tp, expand (depth + 1) body)
         | Known h ->
+            let insert_closed proof = pftmshift 0 depth proof in
             begin match vampire_native_core_not_forall_exists_hash_tp h with
             | Some tp ->
                 begin match vampire_live_not_forall_exists_proof tp with
-                | Some proof -> proof
+                | Some proof -> insert_closed proof
                 | None -> Known h
                 end
             | None ->
                 if h = Vampire_cert_v1.native_core_exists_choice_hash Set then
                   begin match vampire_live_exists_set_choice_proof () with
-                  | Some proof -> proof
+                  | Some proof -> insert_closed proof
                   | None -> Known h
                   end
                 else if h = Vampire_cert_v1.native_core_exists_choice_hash Prop then
                   begin match vampire_live_exists_prop_choice_checked_proof () with
-                  | Some proof -> proof
+                  | Some proof -> insert_closed proof
                   | None -> Known h
                   end
                 else Known h
             end
         | Hyp _ as proof -> proof
       in
-      expand proof
+      expand 0 proof
 
 let vampire_prop_ext_variants ?delta proof =
   let directional = vampire_directional_prop_ext_expander proof in

@@ -15642,11 +15642,18 @@ let rec native_core_direct_skolem_formula_proof
           true
     | _ -> source, proof, replacements, used_choice, remaining_substitution
   in
-  let helper_implication_proof_with_replacements replacements remaining_substitution tps helper_source helper_target =
+  let helper_implication_proof_with_replacements local_depth replacements remaining_substitution tps helper_source helper_target =
     let active_source = rewrite_witnesses replacements 0 helper_source in
     let active_target = rewrite_witnesses replacements 0 helper_target in
     let orientation_source, body_proof, helper_replacements, helper_used_choice, remaining_substitution =
-      choose_basic (List.length tps) active_target remaining_substitution active_source (Hyp 0) [] false
+      choose_basic
+        (local_depth + List.length tps)
+        active_target
+        remaining_substitution
+        active_source
+        (Hyp 0)
+        []
+        false
     in
     if not helper_used_choice then
       error (id ^ ": native core skolem helper implication did not eliminate an existential");
@@ -15654,7 +15661,9 @@ let rec native_core_direct_skolem_formula_proof
     let body_proof =
       native_core_formula_orientation_proof
         ~normalize_formula_for_match:(fun count tm ->
-          normalize_formula_for_match (ambient_shift + List.length tps + count) tm)
+          normalize_formula_for_match
+            (ambient_shift + local_depth + List.length tps + count)
+            tm)
         id [] [] [] orientation_source proved_target body_proof
     in
     let implication =
@@ -15663,10 +15672,10 @@ let rec native_core_direct_skolem_formula_proof
     let proof = List.fold_right (fun tp proof -> TLam (tp, proof)) tps implication in
     proved_target, proof, helper_replacements @ replacements, remaining_substitution
   in
-  let instantiate_helper_with_replacements replacements remaining_substitution tps helper_source helper_target current_proof =
+  let instantiate_helper_with_replacements local_depth replacements remaining_substitution tps helper_source helper_target current_proof =
     let proved_target, proof, replacements, remaining_substitution =
       helper_implication_proof_with_replacements
-        replacements remaining_substitution tps helper_source helper_target
+        local_depth replacements remaining_substitution tps helper_source helper_target
     in
     let args =
       List.mapi
@@ -15692,7 +15701,13 @@ let rec native_core_direct_skolem_formula_proof
           try
             let proved_target, proof, replacements, remaining_substitution =
               instantiate_helper_with_replacements
-                replacements remaining_substitution tps helper_source helper_target proof
+                local_depth
+                replacements
+                remaining_substitution
+                tps
+                helper_source
+                helper_target
+                proof
             in
             Some
               (choose_with_helpers
