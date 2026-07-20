@@ -247,3 +247,34 @@ The honest qualifying frontier remains the three small original-source proofs:
 `FalseE`, `andEL`, and `andER`.  The next real progress must make `and3I` pass
 through the extracted small-kernel/Skolem transformation route, not by
 re-enabling Megalodon-side candidate search.
+
+## Native Replay Normalization, 2026-07-20
+
+A later `and3I` probe showed that the remaining failure is now concentrated in
+native proof replay for Skolem/choice transformations under open proposition
+binders.  The branch therefore made two bounded normalization changes, both
+kept inside the proof-term replay path rather than Python or name-guessing
+code:
+
+- Megalodon's live proposition-extensionality normalizer no longer rewrites the
+  live library theorem `prop_ext` into the native-core two-implication shape.
+  That direct shape belongs to Vampire's internal prop-ext primitive, whereas
+  Megalodon's `prop_ext` expects an `iff` proof.
+- Live native-basis proof replacement now tracks term-binder depth when it
+  substitutes closed derived proofs such as prop-choice and not-forall/exists
+  expansions.
+- The direct Skolem helper elaborator now threads the current local term depth
+  into helper proof construction and normalization, so helper predicates are
+  not silently treated as depth-zero formulas.
+
+These changes are deliberately not reported as new E1 proof coverage.  The
+focused four-command original-hammer probe still reconstructs and Qed-checks
+`FalseE`, `andEL`, and `andER`, then fails closed at `and3I`.  The value of this
+iteration is narrower: it removes invalid replay shapes and makes the next
+`and3I` failure more specifically about the Skolem/choice transformation
+contract, not leaked global state or broad fallback search.
+
+The audit's central architectural criticism still stands.  The next corrective
+step should move the relevant Skolem/choice transformation replay out of the
+monolithic importer and into the extracted small-kernel checker/elaborator
+modules before claiming additional counted proofs.
