@@ -314,6 +314,7 @@ val globalhrefs : bool ref
 val url_friendly_name : string -> string
 val output_ltree_html : string list -> out_channel -> ltree -> (string,string) Hashtbl.t -> (string,string) Hashtbl.t -> unit
 val output_docitem_html : string list -> out_channel -> docitem -> (string,string) Hashtbl.t -> (string,string) Hashtbl.t -> unit
+val observe_compact_docitem : docitem -> unit
 val output_docitem_terse_html : string list -> out_channel -> docitem -> (string,string) Hashtbl.t -> (string,string) Hashtbl.t -> unit
 val output_pftacitem_html : string list -> out_channel -> pftacitem -> (string,string) Hashtbl.t -> (string,string) Hashtbl.t -> int -> unit
 val output_pftacitems_mizar_html : out_channel -> compact_pftacitem list -> (string,string) Hashtbl.t -> (string,string) Hashtbl.t -> unit

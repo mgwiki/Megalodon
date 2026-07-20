@@ -33,6 +33,27 @@ let compact_presentations : (string,compact_presentation) Hashtbl.t =
 let compact_presentation_scanned_files : (string,int) Hashtbl.t =
   Hashtbl.create 31
 
+(** Surface arities of definitions whose presentation rows use Proofgold-style
+    placeholder numbers.  Those numbers are semantic slots and can be sparse
+    or shifted relative to the explicit arguments in the .mg definition (for
+    example, a seven-argument definition can use [#9]).  Recording the source
+    arity lets the renderer align ordered slot runs without knowing anything
+    about a particular God1 identifier. *)
+let compact_definition_arities : (string,int * int) Hashtbl.t =
+  Hashtbl.create 1009
+
+(** Surface notation tokens are aliases for formal terms.  The checked
+    [PostInfixDecl] and [PrefixDecl] AST nodes preserve both sides of that
+    relationship, so compact formulas can follow [/\] to [and], [~] to
+    [not], and analogous user-defined operators without hard-coding either
+    the token or the mathematical identifier.  Values are stacks in order to
+    respect section-local notation shadowing. *)
+let compact_postinfix_targets : (string,string list) Hashtbl.t =
+  Hashtbl.create 127
+
+let compact_prefix_targets : (string,string list) Hashtbl.t =
+  Hashtbl.create 127
+
 let compact_presentation_exact_duplicates = ref 0
 let compact_presentation_conflicts = ref 0
 
@@ -49,6 +70,9 @@ let set_compact_full_formulas b =
 let clear_compact_presentations () =
   Hashtbl.clear compact_presentations;
   Hashtbl.clear compact_presentation_scanned_files;
+  Hashtbl.clear compact_definition_arities;
+  Hashtbl.clear compact_postinfix_targets;
+  Hashtbl.clear compact_prefix_targets;
   compact_presentation_exact_duplicates := 0;
   compact_presentation_conflicts := 0
 
@@ -198,6 +222,104 @@ let add_compact_presentation name p =
       end
   with Not_found -> Hashtbl.add compact_presentations name p
 
+let add_compact_definition_arity priority name arity =
+  try
+    let (_,old_priority) = Hashtbl.find compact_definition_arities name in
+    if priority >= old_priority then
+      Hashtbl.replace compact_definition_arities name (arity,priority)
+  with Not_found ->
+    Hashtbl.add compact_definition_arities name (arity,priority)
+
+let find_compact_definition_arity name =
+  try
+    let (arity,_) = Hashtbl.find compact_definition_arities name in
+    Some arity
+  with Not_found -> None
+
+let compact_string_starts_with s prefix =
+  let n = String.length s in
+  let m = String.length prefix in
+  n >= m && String.sub s 0 m = prefix
+
+let compact_definition_header line =
+  let line = compact_string_trim line in
+  let prefix = "Definition " in
+  if not (compact_string_starts_with line prefix) then None
+  else
+    let rest =
+      compact_string_trim
+        (String.sub line (String.length prefix)
+           (String.length line - String.length prefix))
+    in
+    match compact_find_substring_from rest ":" 0 with
+    | None -> None
+    | Some colon ->
+        let name = compact_string_trim (String.sub rest 0 colon) in
+        if not (compact_valid_presentation_name name) then None
+        else
+          Some(name,
+            compact_string_trim
+              (String.sub rest (colon+1) (String.length rest-colon-1)))
+
+let compact_count_top_level_arrows s =
+  let n = String.length s in
+  let rec loop i depth count =
+    if i >= n then count
+    else
+      match s.[i] with
+      | '(' | '[' | '{' -> loop (i+1) (depth+1) count
+      | ')' | ']' | '}' -> loop (i+1) (max 0 (depth-1)) count
+      | '-' when depth = 0 && i+1 < n && s.[i+1] = '>' ->
+          loop (i+2) depth (count+1)
+      | _ -> loop (i+1) depth count
+  in
+  loop 0 0 0
+
+(** Scan only definition headers.  This intentionally remains a light-weight
+    pre-lexer pass: it does not parse terms or proof bodies, and it stops each
+    declaration at the first [:=].  AST-derived arities registered later have
+    higher priority and therefore correct any unusual header that this scan
+    cannot understand. *)
+let scan_compact_definition_arities_file priority fn =
+  let ch = open_in fn in
+  let pending : (string * Buffer.t) option ref = ref None in
+  let finish_if_complete () =
+    match !pending with
+    | None -> ()
+    | Some(name,b) ->
+        let text = Buffer.contents b in
+        begin match compact_find_substring_from text ":=" 0 with
+        | None -> ()
+        | Some stop ->
+            let typ = String.sub text 0 stop in
+            add_compact_definition_arity priority name
+              (compact_count_top_level_arrows typ);
+            pending := None
+        end
+  in
+  try
+    while true do
+      let line = input_line ch in
+      begin match !pending with
+      | Some(_,b) ->
+          Buffer.add_char b ' ';
+          Buffer.add_string b (compact_string_trim line);
+          finish_if_complete ()
+      | None ->
+          begin match compact_definition_header line with
+          | None -> ()
+          | Some(name,rest) ->
+              let b = Buffer.create (String.length rest + 64) in
+              Buffer.add_string b rest;
+              pending := Some(name,b);
+              finish_if_complete ()
+          end
+      end
+    done
+  with
+  | End_of_file -> close_in ch
+  | e -> close_in_noerr ch; raise e
+
 let compact_presentation_scan_key fn =
   if Filename.is_relative fn then Filename.concat (Sys.getcwd ()) fn else fn
 
@@ -211,6 +333,7 @@ let load_compact_presentations_file_with_priority priority fn =
   | Some old_priority when old_priority >= priority -> 0
   | _ ->
       begin
+        scan_compact_definition_arities_file priority fn;
         let ch = open_in fn in
         Hashtbl.replace compact_presentation_scanned_files scan_key priority;
         let added = ref 0 in
@@ -6756,6 +6879,27 @@ let compact_application_head a =
   | (NaL x,args) -> Some(x,args)
   | _ -> None
 
+let compact_add_notation_target h token target =
+  let current = hashtbl_find_or_nil h token in
+  if current = [] || List.hd current <> target then
+    Hashtbl.replace h token (target::current)
+
+let compact_register_notation_target h token a =
+  match compact_application_head a with
+  | Some(target,_) -> compact_add_notation_target h token target
+  | None -> ()
+
+let compact_notation_targets h token =
+  hashtbl_find_or_nil h token
+
+let compact_unique_names names =
+  let seen = Hashtbl.create 11 in
+  List.filter
+    (fun x ->
+      if Hashtbl.mem seen x then false
+      else (Hashtbl.add seen x (); true))
+    names
+
 let rec compact_ltree_size a =
   match a with
   | ByteL _ | StringL _ | QStringL _ | NaL _ | NuL _ -> 1
@@ -6926,11 +7070,41 @@ let compact_html_escape_text x =
     x;
   Buffer.contents b
 
+let compact_output_description_html ch x =
+  let n = String.length x in
+  let rec text_end i =
+    if i >= n || x.[i] = '$' then i else text_end (i+1)
+  in
+  let rec math_end i =
+    if i >= n || x.[i] = '$' then i else math_end (i+1)
+  in
+  let rec loop i =
+    if i < n then
+      let j = text_end i in
+      if j > i then
+        output_string ch
+          (compact_html_escape_text (String.sub x i (j-i)));
+      if j < n then
+        let k = math_end (j+1) in
+        if k < n then
+          begin
+            output_string ch "\\(";
+            output_string ch
+              (compact_html_escape_text (String.sub x (j+1) (k-j-1)));
+            output_string ch "\\)";
+            loop (k+1)
+          end
+        else
+          output_string ch
+            (compact_html_escape_text (String.sub x j (n-j)))
+  in
+  loop 0
+
 let compact_tex_escape_text x =
   let b = Buffer.create (String.length x + 16) in
   String.iter
     (function
-      | '\\' -> Buffer.add_string b "\\textbackslash{}"
+      | '\\' -> Buffer.add_string b "\\backslash{}"
       | '{' -> Buffer.add_string b "\\{"
       | '}' -> Buffer.add_string b "\\}"
       | '#' -> Buffer.add_string b "\\#"
@@ -6984,42 +7158,190 @@ let compact_template_arguments tex =
   loop 0;
   List.rev !acc
 
-let compact_template_usable tex argc =
-  List.for_all (fun k -> k <= argc) (compact_template_arguments tex)
+let compact_max_template_argument tex =
+  List.fold_left max 0 (compact_template_arguments tex)
 
-let compact_substitute_template tex args =
-  let n = String.length tex in
-  let b = Buffer.create (n + 64) in
-  let rec digits j value seen =
-    if j < n then
-      match tex.[j] with
-      | '0'..'9' as c -> digits (j+1) (10 * value + Char.code c - Char.code '0') true
-      | _ -> (j,value,seen)
-    else (j,value,seen)
-  in
-  let rec loop i =
-    if i >= n then Some(Buffer.contents b)
-    else if tex.[i] = '#' then
-      let (j,k,seen) = digits (i+1) 0 false in
-      if seen && k > 0 then
-        begin
-          try
-            Buffer.add_string b (List.nth args (k-1));
-            loop j
-          with Failure _ -> None
-        end
+let compact_replace_all s old repl =
+  let n = String.length s in
+  let m = String.length old in
+  if m = 0 then s
+  else
+    let b = Buffer.create (n + 16) in
+    let rec loop i =
+      if i >= n then Buffer.contents b
+      else if i + m <= n && String.sub s i m = old then
+        begin Buffer.add_string b repl; loop (i+m) end
       else
-        begin
-          Buffer.add_char b '#';
-          loop (i+1)
-        end
-    else
-      begin
-        Buffer.add_char b tex.[i];
-        loop (i+1)
-      end
+        begin Buffer.add_char b s.[i]; loop (i+1) end
+    in
+    loop 0
+
+let compact_clean_partial_template tex =
+  let rec clean n tex =
+    let tex = compact_replace_all tex "\\left(\\right)" "" in
+    let tex = compact_replace_all tex "\\left[\\right]" "" in
+    let tex = compact_replace_all tex "\\left\\{\\right\\}" "" in
+    let tex = compact_replace_all tex "()" "" in
+    let tex = compact_replace_all tex "[]" "" in
+    let tex = compact_replace_all tex "_{}" "" in
+    let tex = compact_replace_all tex "^{}" "" in
+    let tex = compact_replace_all tex "{}" "" in
+    let tex = compact_string_trim tex in
+    if n = 0 then tex else clean (n-1) tex
   in
-  loop 0
+  clean 3 tex
+
+(** Build a data-driven map from presentation slots to the explicit
+    arguments of the current definition.  Presentation rows are historical
+    interface metadata: their [#N] slots can include semantic parameters that
+    are absent from the compact formal definition.  The stable information is
+    the order and grouping of the slots that remain.  We therefore preserve
+    direct numbering whenever possible and otherwise align each maximal
+    consecutive slot run, from right to left, with the definition's explicit
+    argument list.  For example:
+
+      [#9,#10] against arity 8  -> arguments 7,8
+      [#7,#8]  against arity 3  -> arguments 2,3
+      [#1,#3,#7] against arity 5 -> arguments 1,3,5
+
+    This is deliberately generic: no identifier or mathematical domain is
+    mentioned in the rule. *)
+let compact_template_slot_positions tex expected_arity =
+  let slots = List.sort_uniq compare (compact_template_arguments tex) in
+  match slots with
+  | [] -> Some []
+  | _ when List.for_all (fun k -> k <= expected_arity) slots ->
+      Some(List.map (fun k -> (k,k)) slots)
+  | _ ->
+      let rec make_runs current runs = function
+        | [] ->
+            begin match current with
+            | [] -> List.rev runs
+            | _ -> List.rev (List.rev current::runs)
+            end
+        | k::rest ->
+            begin match current with
+            | last::_ when k = last + 1 -> make_runs (k::current) runs rest
+            | [] -> make_runs [k] runs rest
+            | _ -> make_runs [k] (List.rev current::runs) rest
+            end
+      in
+      let runs = make_runs [] [] slots in
+      let rec align available acc = function
+        | [] -> Some acc
+        | run::rest ->
+            let len = List.length run in
+            let slot_end = List.hd (List.rev run) in
+            let pos_end = min slot_end available in
+            let pos_start = pos_end - len + 1 in
+            if pos_start < 1 then None
+            else
+              let rec pair pos acc = function
+                | [] -> acc
+                | slot::more -> pair (pos+1) ((slot,pos)::acc) more
+              in
+              align (pos_start-1) (pair pos_start acc run) rest
+      in
+      align expected_arity [] (List.rev runs)
+
+(** Substitute a presentation template against the explicit surface
+    arguments of a definition.  Direct substitution wins when the selected
+    surface argument list already contains every referenced slot.  The
+    slot-run map above handles sparse/shifted metadata.  Missing arguments are
+    allowed for partial applications, which turns templates such as
+    [#7\circ #8] into the operator [\circ]. *)
+let compact_substitute_template_with_arity
+    ?(group_arguments=true) tex args expected_arity allow_missing =
+  let n = String.length tex in
+  let argc = List.length args in
+  let slots = compact_template_arguments tex in
+  let max_slot = List.fold_left max 0 slots in
+  let positions =
+    if max_slot <= argc then Some(List.map (fun k -> (k,k)) slots)
+    else compact_template_slot_positions tex expected_arity
+  in
+  match positions with
+  | None -> None
+  | Some positions ->
+      let position k =
+        try Some(List.assoc k positions) with Not_found -> None
+      in
+      let used = ref 0 in
+      let missing = ref 0 in
+      let b = Buffer.create (n + 64) in
+      let rec digits j value seen =
+        if j < n then
+          match tex.[j] with
+          | '0'..'9' as c ->
+              digits (j+1) (10 * value + Char.code c - Char.code '0') true
+          | _ -> (j,value,seen)
+        else (j,value,seen)
+      in
+      let rec loop i =
+        if i >= n then
+          let tex = Buffer.contents b in
+          let tex =
+            if allow_missing && !missing > 0 then compact_clean_partial_template tex
+            else tex
+          in
+          Some(tex,!used,!missing)
+        else if tex.[i] = '#' then
+          let (j,k,seen) = digits (i+1) 0 false in
+          if seen && k > 0 then
+            begin match position k with
+            | Some pos when pos >= 1 && pos <= argc ->
+                (* Every presentation argument is inserted as a TeX group.
+                   Besides making substitution compositional, this prevents
+                   three classes of MathJax parse errors:
+
+                     [#3^{-1}] applied to [x^{-1}]
+                       must become [{x^{-1}}^{-1}], not [x^{-1}^{-1}];
+
+                     [#2_{#3,#4}] applied to [[u]_{b}]
+                       must become [{[u]_{b}}_{i,j}], not [[u]_{b}_{i,j}];
+
+                     [\in#7] followed by [I]
+                       must become [\in{I}], not the control word [\inI].
+
+                   TeX grouping is semantically transparent in ordinary
+                   positions, so doing this uniformly is safer than trying to
+                   recognize all script and control-word contexts here. *)
+                if group_arguments then
+                  begin
+                    Buffer.add_char b '{';
+                    Buffer.add_string b (List.nth args (pos-1));
+                    Buffer.add_char b '}'
+                  end
+                else
+                  Buffer.add_string b (List.nth args (pos-1));
+                incr used;
+                loop j
+            | Some pos when allow_missing && pos >= 1 && pos <= expected_arity ->
+                incr missing;
+                loop j
+            | _ -> None
+            end
+          else
+            begin Buffer.add_char b '#'; loop (i+1) end
+        else
+          begin Buffer.add_char b tex.[i]; loop (i+1) end
+      in
+      loop 0
+
+let compact_substitute_template_direct tex args =
+  compact_substitute_template_with_arity tex args (List.length args) false
+
+let rec compact_split_at n acc xl =
+  if n <= 0 then (List.rev acc,xl)
+  else
+    match xl with
+    | [] -> (List.rev acc,[])
+    | x::xr -> compact_split_at (n-1) (x::acc) xr
+
+let compact_append_applied_arguments tex extra =
+  List.fold_left
+    (fun f x -> "\\left(" ^ f ^ "\\right)\\left(" ^ x ^ "\\right)")
+    tex extra
 
 let compact_presentation_from_rendered_args names args =
   let argc = List.length args in
@@ -7027,19 +7349,44 @@ let compact_presentation_from_rendered_args names args =
     | [] -> None
     | name::rest ->
         begin match find_compact_presentation name with
-        | Some p when compact_template_usable p.compact_presentation_tex argc ->
-            begin match compact_substitute_template p.compact_presentation_tex args with
-            | Some tex -> Some(p,tex)
-            | None -> find rest
+        | None -> find rest
+        | Some p ->
+            begin match find_compact_definition_arity name with
+            | Some expected_arity ->
+                let (base_args,extra_args) =
+                  compact_split_at expected_arity [] args
+                in
+                let allow_missing = argc < expected_arity in
+                begin match
+                  compact_substitute_template_with_arity
+                    p.compact_presentation_tex base_args expected_arity allow_missing
+                with
+                | Some(tex,used,missing)
+                  when tex <> ""
+                    && (compact_template_arguments p.compact_presentation_tex = []
+                        || used > 0 || (argc > 0 && missing > 0)) ->
+                    Some(p,compact_append_applied_arguments tex extra_args)
+                | _ -> find rest
+                end
+            | None ->
+                begin match compact_substitute_template_direct
+                  p.compact_presentation_tex args
+                with
+                | Some(tex,_,_) when tex <> "" -> Some(p,tex)
+                | _ -> find rest
+                end
             end
-        | _ -> find rest
         end
   in
   find names
 
 let compact_infix_presentation_names = function
-  | InfNam "=" -> ["="; "eq"]
-  | InfNam x -> [x]
+  | InfNam "=" ->
+      compact_unique_names
+        ("=" :: compact_notation_targets compact_postinfix_targets "=" @ ["eq"])
+  | InfNam x ->
+      compact_unique_names
+        (x :: compact_notation_targets compact_postinfix_targets x)
   | InfSet InfMem -> ["In"]
   | InfSet InfSubq -> ["Subq"]
 
@@ -7104,13 +7451,21 @@ let rec compact_ltree_tex depth a =
         end
     | PreoL(x,b) ->
         let argtex = [compact_ltree_tex (depth-1) b] in
-        begin match compact_presentation_from_rendered_args [x] argtex with
+        let names =
+          compact_unique_names
+            (x :: compact_notation_targets compact_prefix_targets x)
+        in
+        begin match compact_presentation_from_rendered_args names argtex with
         | Some(_,tex) -> tex
         | None -> compact_tex_name x ^ " " ^ List.hd argtex
         end
     | PostoL(x,b) ->
         let argtex = [compact_ltree_tex (depth-1) b] in
-        begin match compact_presentation_from_rendered_args [x] argtex with
+        let names =
+          compact_unique_names
+            (x :: compact_notation_targets compact_postinfix_targets x)
+        in
+        begin match compact_presentation_from_rendered_args names argtex with
         | Some(_,tex) -> tex
         | None -> List.hd argtex ^ " " ^ compact_tex_name x
         end
@@ -7118,6 +7473,7 @@ let rec compact_ltree_tex depth a =
         let q =
           if x = "forall" then "\\forall"
           else if x = "exists" then "\\exists"
+          else if x = "fun" then "\\lambda"
           else compact_tex_name x
         in
         let groups =
@@ -7200,52 +7556,19 @@ let compact_output_formula_tex_html ch tex =
 let compact_output_full_formula_html ch a =
   compact_output_formula_tex_html ch (compact_ltree_tex max_int a)
 
-let rec compact_output_object_html depth cx ch a stmh sknh =
+let compact_output_formula_preview_html ch depth a =
+  Printf.fprintf ch
+    "<span class='compactformula compactformulapreview'>\\(%s\\)</span>"
+    (compact_html_escape_text (compact_ltree_tex depth a))
+
+let compact_output_object_html depth _cx ch a _stmh _sknh =
   let a = compact_strip_parens a in
   if !compact_full_formulas then
     compact_output_full_formula_html ch a
-  else if depth <= 0 then
-    output_string ch "&hellip;"
   else
     match compact_presentation_for_ltree a with
     | Some(p,tex) -> compact_output_presentation_html ch p tex
-    | None ->
-        match a with
-        | NaL _ | NuL _ | ByteL _ | StringL _ | QStringL _ ->
-            compact_output_small_term_html cx ch a stmh sknh
-        | SepL(x,InfMem,e,InfoL(InfSet InfMem,NaL y,f)) when x = y ->
-            compact_output_object_html (depth-1) cx ch e stmh sknh;
-            output_string ch " &#x2229; ";
-            compact_output_object_html (depth-1) cx ch f stmh sknh
-        | InfoL(InfSet InfMem,l,r) ->
-            compact_output_object_html (depth-1) cx ch l stmh sknh;
-            output_string ch " &#x2208; ";
-            compact_output_object_html (depth-1) cx ch r stmh sknh
-        | InfoL(InfSet InfSubq,l,r) ->
-            compact_output_object_html (depth-1) cx ch l stmh sknh;
-            output_string ch " &#x2286; ";
-            compact_output_object_html (depth-1) cx ch r stmh sknh
-        | InfoL(InfNam op,l,r) when op = "=" ->
-            compact_output_object_html (depth-1) cx ch l stmh sknh;
-            output_string ch " = ";
-            compact_output_object_html (depth-1) cx ch r stmh sknh
-        | _ ->
-            begin match compact_application_head a with
-            | Some(x,args) when compact_ltree_size a > 10 ->
-                compact_output_name_term_html cx ch x stmh sknh;
-                begin match compact_last_opt args with
-                | Some z when compact_ltree_size z <= 5 ->
-                    output_string ch "(&hellip;, ";
-                    compact_output_object_html (depth-1) cx ch z stmh sknh;
-                    output_char ch ')'
-                | _ -> output_string ch "&hellip;"
-                end
-            | _ ->
-                if compact_ltree_size a <= 14 then
-                  compact_output_small_term_html cx ch a stmh sknh
-                else
-                  output_string ch "&hellip;"
-            end
+    | None -> compact_output_formula_preview_html ch (max 1 depth) a
 
 let compact_output_binder_preview_html cx ch x vll body stmh sknh =
   let q =
@@ -7277,35 +7600,14 @@ let compact_output_binder_preview_html cx ch x vll body stmh sknh =
   output_string ch ", ";
   compact_output_object_html 3 cx ch body stmh sknh
 
-let rec compact_output_goal_preview_html e ch a stmh sknh =
-  let cx = e.pfti_context in
-  let a0 = compact_strip_parens a in
+let compact_output_goal_preview_html _e ch a _stmh _sknh =
+  let a = compact_strip_parens a in
   if !compact_full_formulas then
-    compact_output_full_formula_html ch a0
-  else match compact_presentation_for_ltree a0 with
-  | Some(p,tex) -> compact_output_presentation_html ch p tex
-  | None ->
-      if compact_ltree_size a <= 18 then
-        output_ltree_html cx ch a stmh sknh
-      else
-        match a0 with
-        | BiL(x,_,vll,b) ->
-            compact_output_binder_preview_html cx ch x vll b stmh sknh
-        | InfoL(InfNam op,l,r) when op = "and" || op = "iff" ->
-            compact_output_goal_preview_html e ch l stmh sknh;
-            output_char ch ' ';
-            compact_output_name_term_html cx ch op stmh sknh;
-            output_char ch ' ';
-            compact_output_goal_preview_html e ch r stmh sknh
-        | InfoL(InfNam op,l,r) when op = "=" ->
-            compact_output_object_html 3 cx ch l stmh sknh;
-            output_char ch ' ';
-            compact_output_name_term_html cx ch op stmh sknh;
-            output_char ch ' ';
-            compact_output_object_html 3 cx ch r stmh sknh
-        | InfoL(InfSet _,_,_) as b ->
-            compact_output_object_html 3 cx ch b stmh sknh
-        | b -> compact_output_object_html 4 cx ch b stmh sknh
+    compact_output_full_formula_html ch a
+  else
+    match compact_presentation_for_ltree a with
+    | Some(p,tex) -> compact_output_presentation_html ch p tex
+    | None -> compact_output_formula_preview_html ch 6 a
 
 type compact_terse_expansion =
   | CompactAliasFact of string
@@ -7763,8 +8065,196 @@ let compact_output_theorem_synopsis_html cx ch a stmh sknh =
   compact_output_goal_preview_html e ch conclusion stmh sknh;
   output_string ch "</span>"
 
+let rec compact_ltree_arrow_arity a =
+  match compact_strip_parens a with
+  | InfoL(InfNam "->",_,b) -> 1 + compact_ltree_arrow_arity b
+  | _ -> 0
+
+let rec compact_outer_fun_arity a =
+  match compact_strip_parens a with
+  | BiL("fun",_,vll,b) ->
+      List.fold_left (fun n (xl,_) -> n + List.length xl) 0 vll
+      + compact_outer_fun_arity b
+  | _ -> 0
+
+let rec compact_take_binder_groups n names groups =
+  if n <= 0 then (List.rev names,groups,0)
+  else
+    match groups with
+    | [] -> (List.rev names,[],0)
+    | (xl,o)::rest ->
+        let len = List.length xl in
+        if len <= n then
+          let (more,remaining,used) =
+            compact_take_binder_groups (n-len) (List.rev_append xl names) rest
+          in
+          (more,remaining,len+used)
+        else
+          let (taken,left) = compact_split_at n [] xl in
+          (List.rev_append names taken,(left,o)::rest,List.length taken)
+
+let rec compact_peel_definition_parameters n a =
+  if n <= 0 then ([],compact_strip_parens a)
+  else
+    match compact_strip_parens a with
+    | BiL("fun",m,vll,b) ->
+        let (here,remaining,used) = compact_take_binder_groups n [] vll in
+        if used = 0 then ([],a)
+        else if remaining = [] then
+          let (later,body) = compact_peel_definition_parameters (n-used) b in
+          (here @ later,body)
+        else
+          (here,BiL("fun",m,remaining,b))
+    | b -> ([],b)
+
+let compact_definition_surface_arity typ body template =
+  let body_arity = compact_outer_fun_arity body in
+  let declared_arity =
+    match typ with
+    | Some t -> compact_ltree_arrow_arity t
+    | None -> body_arity
+  in
+  let presented_slots =
+    List.length (List.sort_uniq compare (compact_template_arguments template))
+  in
+  (* A parenthesized function result is not normally another argument of the
+     definition: for example, composition has three arguments and returns a
+     function.  A presentation row may explicitly expose a curried result,
+     though (the elementary [pow_seq] row is the canonical example).  Extend
+     only as far as both the leading lambda body and the template require. *)
+  max declared_arity (min body_arity presented_slots)
+
+let compact_render_definition_template
+    ?(group_arguments=true) template args arity =
+  match compact_substitute_template_with_arity
+    ~group_arguments template args arity false
+  with
+  | Some(rendered,_,_) when rendered <> "" -> Some rendered
+  | _ -> None
+
+let compact_output_definition_pfglinks_html ch x =
+  if !show_pfglinks then
+    try
+      let xpfgtmroot = Hashtbl.find pfgtmroot x in
+      let xpfgobjid = Hashtbl.find pfgobjid x in
+      Printf.fprintf ch
+        "<div class='pfglinks'>In Proofgold the corresponding term root is <a href='%s?b=%s'>%s...</a> and object id is <a href='%s?b=%s'>%s...</a></div>\n"
+        !explorerurl xpfgtmroot (String.sub xpfgtmroot 0 6)
+        !explorerurl xpfgobjid (String.sub xpfgobjid 0 6)
+    with Not_found -> ()
+
+(** Render a definition through the same table used for compact formulas.
+    The formal identifier stays visible and linkable; the table supplies the
+    reader-facing notation and prose, while the lambda body supplies the
+    mathematical meaning.  The original declaration remains available in a
+    disclosure panel. *)
+let compact_output_terse_definition_html cx ch x typ body stmh sknh =
+  match find_compact_presentation x with
+  | None -> false
+  | Some p ->
+      let arity =
+        compact_definition_surface_arity typ body p.compact_presentation_tex
+      in
+      let (params,rhs) = compact_peel_definition_parameters arity body in
+      add_compact_definition_arity 2 x arity;
+      if List.length params <> arity
+         && compact_template_arguments p.compact_presentation_tex <> []
+      then false
+      else
+        let tex_args = List.map compact_tex_name params in
+        begin match compact_render_definition_template
+          p.compact_presentation_tex tex_args arity
+        with
+        | None -> false
+        | Some notation ->
+            let description =
+              match compact_render_definition_template
+                ~group_arguments:false
+                p.compact_presentation_description params arity
+              with
+              | Some d -> d
+              | None -> p.compact_presentation_description
+            in
+            output_string ch
+              "<div class='docitemwrap compactdocitemwrap compactdefinitionwrap'>";
+            output_srcline_html ch;
+            Hashtbl.add localhrefh x ();
+            output_string ch "<a name='";
+            output_string ch (url_friendly_name x);
+            output_string ch "'/>";
+            Printf.fprintf ch
+              "<div class='defdecl compactdefdecl' data-definition-name='%s'><b>Definition.</b> <span class='ltree compactdefinitionname'>"
+              (compact_html_escape_text x);
+            output_name_whrefa_html cx ch x stmh sknh;
+            output_string ch "</span>: ";
+            Printf.fprintf ch
+              "<span class='compactpresentation compactpresentationtex compactdefinitionnotation' title='%s' data-presentation-source='%s:%d'>\\(%s\\)</span>"
+              (compact_html_escape_text description)
+              (compact_html_escape_text p.compact_presentation_origin)
+              p.compact_presentation_line
+              (compact_html_escape_text notation);
+            if description <> "" then
+              begin
+                output_string ch
+                  " <span class='compactdefinitiondescription'>&mdash; &ldquo;";
+                compact_output_description_html ch description;
+                output_string ch "&rdquo;</span>"
+              end;
+            output_string ch
+              "<span class='compactdefinitionmeans'>; this means </span>";
+            if !compact_full_formulas then
+              compact_output_full_formula_html ch rhs
+            else
+              compact_output_formula_preview_html ch 10 rhs;
+            output_string ch ". ";
+            output_string ch
+              "<details class='compactdefinitiondetails compactinlinedetails' style='display:inline;margin-left:.4em'><summary title='Show the full formal definition' style='display:inline;cursor:pointer;font-size:.85em'>formal</summary><div class='compactfulldefinition'><span class='ltree'>";
+            output_name_whrefa_html cx ch x stmh sknh;
+            begin match typ with
+            | None -> ()
+            | Some t ->
+                output_string ch " : ";
+                output_ltree_html cx ch t stmh sknh
+            end;
+            output_string ch " := ";
+            output_ltree_html cx ch body stmh sknh;
+            output_string ch
+              "</span></div></details></div>\n";
+            compact_output_definition_pfglinks_html ch x;
+            output_string ch "</div>\n";
+            true
+        end
+
+(** Observe checked declaration ASTs independently of whether the declaration
+    itself is emitted to a particular HTML target.  This is important for
+    notation introduced by included signature files: their declarations can
+    be hidden while later compact formulas still need the semantic alias. *)
+let observe_compact_docitem = function
+  | Section _ ->
+      copy_head_notationhashtbl compact_postinfix_targets;
+      copy_head_notationhashtbl compact_prefix_targets
+  | End _ ->
+      pop_notationhashtbl compact_postinfix_targets;
+      pop_notationhashtbl compact_prefix_targets
+  | PostInfixDecl(token,target,_,_) ->
+      compact_register_notation_target compact_postinfix_targets token target
+  | PrefixDecl(token,target,_) ->
+      compact_register_notation_target compact_prefix_targets token target
+  | DefDecl(x,typ,body) ->
+      begin match find_compact_presentation x with
+      | None -> ()
+      | Some p ->
+          add_compact_definition_arity 2 x
+            (compact_definition_surface_arity
+               typ body p.compact_presentation_tex)
+      end
+  | _ -> ()
+
 let output_docitem_terse_html cx ch ditem stmh sknh =
   match ditem with
+  | DefDecl(x,typ,body) ->
+      if compact_output_terse_definition_html cx ch x typ body stmh sknh then ()
+      else output_docitem_html cx ch ditem stmh sknh
   | ThmDecl(c,x,a) ->
       output_string ch "<div class='docitemwrap compactdocitemwrap'>";
       output_srcline_html ch;

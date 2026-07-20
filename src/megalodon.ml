@@ -488,23 +488,432 @@ let ensure_directory path =
     Unix.mkdir path 0o755
 
 let mathjax_component_url =
-  "https://cdn.jsdelivr.net/npm/mathjax@4/tex-chtml.js"
+  "https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"
+
+let mathjax_configuration_javascript =
+  "window.MathJax={tex:{inlineMath:[['\\\\(','\\\\)']],displayMath:[['\\\\[','\\\\]']]}};"
+
+(** MathJax's startup pass only processes mathematics already present in the
+    document.  God1's [bin/mk_ajax.py] moves proofs into separate files and
+    restores them later by assigning fetched HTML to a proof container.  Script
+    elements inside such an [innerHTML] assignment do not execute, so a loader
+    embedded in the proof fragment cannot reliably request another MathJax
+    pass.
+
+    Install one bridge in the containing page instead.  It provides an explicit
+    [MegalodonMathJax.typeset(root)] hook for ajaxifiers and a MutationObserver
+    fallback for existing loaders.  Calls are serialized because this build
+    uses MathJax 3, where overlapping [typesetPromise] calls can interfere with
+    one another.  Every queued root is checked again immediately before it is
+    typeset; this prevents the explicit hook and observer from processing the
+    same insertion twice. *)
+let mathjax_dynamic_javascript = {|
+(function () {
+  "use strict";
+
+  if (window.MegalodonMathJax && window.MegalodonMathJax.version >= 4) return;
+
+  var loaderSelector =
+    "#MathJax-script,script[data-megalodon-mathjax],script[src*='mathjax']";
+  var ignoredSelector = "script,style,textarea,pre,code,mjx-container";
+  var pendingRoots = [];
+  var flushTimer = null;
+  var observer = null;
+  var readyPromise = null;
+  var typesetQueue = Promise.resolve();
+  var texDelimiter = /\\\(|\\\[/;
+
+  function warn(error) {
+    if (window.console && typeof window.console.warn === "function") {
+      window.console.warn("MathJax dynamic typesetting failed", error);
+    }
+  }
+
+  function currentReadyPromise() {
+    if (!window.MathJax ||
+        typeof window.MathJax.typesetPromise !== "function") {
+      return null;
+    }
+    if (window.MathJax.startup && window.MathJax.startup.promise &&
+        typeof window.MathJax.startup.promise.then === "function") {
+      return window.MathJax.startup.promise;
+    }
+    return Promise.resolve();
+  }
+
+  function waitForMathJax() {
+    var current = currentReadyPromise();
+    if (current) return current;
+    if (readyPromise) return readyPromise;
+
+    readyPromise = new Promise(function (resolve, reject) {
+      var script = document.querySelector(loaderSelector);
+      var interval = null;
+      var attempts = 0;
+      var settled = false;
+
+      function cleanup() {
+        if (interval !== null) window.clearInterval(interval);
+        if (script) {
+          script.removeEventListener("load", check);
+          script.removeEventListener("error", failed);
+        }
+      }
+
+      function finish(ok, value) {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        if (ok) resolve(value); else reject(value);
+      }
+
+      function check() {
+        var promise = currentReadyPromise();
+        if (!promise) return false;
+        finish(true, promise);
+        return true;
+      }
+
+      function failed() {
+        finish(false, new Error("the MathJax loader failed"));
+      }
+
+      if (check()) return;
+      if (script) {
+        script.addEventListener("load", check);
+        script.addEventListener("error", failed);
+      }
+      interval = window.setInterval(function () {
+        if (check()) return;
+        attempts += 1;
+        if (attempts >= 600) {
+          finish(false, new Error("timed out waiting for MathJax"));
+        }
+      }, 50);
+    }).catch(function (error) {
+      readyPromise = null;
+      throw error;
+    });
+
+    return readyPromise;
+  }
+
+  function asArray(value) {
+    if (!value) return [];
+    if (value.nodeType) return [value];
+    try {
+      return Array.prototype.slice.call(value);
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function normalizeRoots(value) {
+    var input = asArray(value);
+    var roots = [];
+    var i;
+    var j;
+
+    for (i = 0; i < input.length; i += 1) {
+      var root = input[i];
+      if (!root) continue;
+      if (root.nodeType === 9) root = root.body || root.documentElement;
+      if (root.nodeType === 3) root = root.parentElement;
+      if (!root || root.nodeType !== 1 || root.isConnected === false) continue;
+      if (root.closest && root.closest("mjx-container")) continue;
+
+      var redundant = false;
+      for (j = roots.length - 1; j >= 0; j -= 1) {
+        if (roots[j] === root || roots[j].contains(root)) {
+          redundant = true;
+          break;
+        }
+        if (root.contains(roots[j])) roots.splice(j, 1);
+      }
+      if (!redundant) roots.push(root);
+    }
+    return roots;
+  }
+
+  function ignoredTextNode(node) {
+    var parent = node && node.parentElement;
+    return !!(parent && parent.closest && parent.closest(ignoredSelector));
+  }
+
+  /* Do not use an element's undifferentiated textContent here.  An AJAX
+     proof retains a nonexecuted fragment-loader script, and that script itself
+     contains strings such as "\\(".  Those strings are not mathematics. */
+  function containsUnprocessedTeX(node) {
+    if (!node) return false;
+    if (node.nodeType === 3) {
+      return !ignoredTextNode(node) && texDelimiter.test(node.nodeValue || "");
+    }
+    if (node.nodeType === 9) node = node.body || node.documentElement;
+    if (node.nodeType !== 1 && node.nodeType !== 11) return false;
+    if (node.nodeType === 1) {
+      if (node.closest && node.closest("mjx-container")) return false;
+      if (node.matches && node.matches(ignoredSelector)) return false;
+    }
+
+    var walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+    var text;
+    while ((text = walker.nextNode())) {
+      if (!ignoredTextNode(text) && texDelimiter.test(text.nodeValue || "")) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function typeset(value) {
+    var roots = normalizeRoots(value);
+    if (roots.length === 0) return Promise.resolve();
+
+    typesetQueue = typesetQueue
+      .catch(function () { return undefined; })
+      .then(waitForMathJax)
+      .then(function () {
+        roots = normalizeRoots(roots).filter(containsUnprocessedTeX);
+        if (roots.length === 0 || !window.MathJax ||
+            typeof window.MathJax.typesetPromise !== "function") {
+          return undefined;
+        }
+        return window.MathJax.typesetPromise(roots);
+      })
+      .catch(function (error) {
+        warn(error);
+        return undefined;
+      });
+
+    return typesetQueue;
+  }
+
+  function clear(value) {
+    var roots = normalizeRoots(value);
+    if (roots.length === 0) return Promise.resolve();
+
+    typesetQueue = typesetQueue
+      .catch(function () { return undefined; })
+      .then(waitForMathJax)
+      .then(function () {
+        roots = normalizeRoots(roots);
+        if (roots.length > 0 && window.MathJax &&
+            typeof window.MathJax.typesetClear === "function") {
+          window.MathJax.typesetClear(roots);
+        }
+      })
+      .catch(function (error) {
+        warn(error);
+        return undefined;
+      });
+
+    return typesetQueue;
+  }
+
+  function replace(root, html) {
+    if (!root || root.nodeType !== 1) return Promise.resolve();
+    return clear([root]).then(function () {
+      root.innerHTML = html;
+      return typeset([root]);
+    });
+  }
+
+  function addPendingRoot(root) {
+    var i;
+    if (!root) return;
+    if (root.nodeType === 3) root = root.parentElement;
+    if (!root || root.nodeType !== 1) return;
+    if (root.closest && root.closest("mjx-container")) return;
+    if (root.matches && root.matches(ignoredSelector)) return;
+
+    for (i = pendingRoots.length - 1; i >= 0; i -= 1) {
+      if (pendingRoots[i] === root || pendingRoots[i].contains(root)) return;
+      if (root.contains(pendingRoots[i])) pendingRoots.splice(i, 1);
+    }
+    pendingRoots.push(root);
+  }
+
+  function flushPending() {
+    var roots = pendingRoots;
+    pendingRoots = [];
+    flushTimer = null;
+    typeset(roots);
+  }
+
+  function schedulePending() {
+    if (pendingRoots.length > 0 && flushTimer === null) {
+      flushTimer = window.setTimeout(flushPending, 0);
+    }
+  }
+
+  function mutations(records) {
+    var i;
+    var j;
+
+    for (i = 0; i < records.length; i += 1) {
+      var record = records[i];
+      var target = record.target;
+      if (!record.addedNodes || record.addedNodes.length === 0) continue;
+      if (target && target.nodeType === 1 && target.closest &&
+          target.closest("mjx-container")) {
+        continue;
+      }
+
+      for (j = 0; j < record.addedNodes.length; j += 1) {
+        var node = record.addedNodes[j];
+        if (!containsUnprocessedTeX(node)) continue;
+        if (target && target.nodeType === 1 && target !== document.body &&
+            target !== document.documentElement) {
+          addPendingRoot(target);
+        } else if (node.nodeType === 1) {
+          addPendingRoot(node);
+        } else {
+          addPendingRoot(node.parentElement || target);
+        }
+        break;
+      }
+    }
+
+    schedulePending();
+  }
+
+  function startObserver() {
+    if (observer || !window.MutationObserver) return;
+    var root = document.body || document.documentElement;
+    if (!root) return;
+    observer = new MutationObserver(mutations);
+    observer.observe(root, {childList: true, subtree: true});
+  }
+
+  function scanAfterStartup() {
+    var root = document.body || document.documentElement;
+    if (root && containsUnprocessedTeX(root)) {
+      addPendingRoot(root);
+      schedulePending();
+    }
+  }
+
+  function startAfterStartup() {
+    waitForMathJax().then(function () {
+      startObserver();
+      scanAfterStartup();
+    }).catch(function (error) {
+      warn(error);
+      /* Keep observing so a late or replacement loader can still recover. */
+      startObserver();
+    });
+  }
+
+  function armObserver() {
+    if (document.readyState !== "loading") {
+      startAfterStartup();
+      return;
+    }
+
+    var onReadyState = function () {
+      if (document.readyState === "loading") return;
+      document.removeEventListener("readystatechange", onReadyState);
+      startAfterStartup();
+    };
+    document.addEventListener("readystatechange", onReadyState);
+    document.addEventListener("DOMContentLoaded", startAfterStartup, {once: true});
+  }
+
+  function eventRoot(event) {
+    if (event && event.detail) {
+      if (event.detail.nodeType) return event.detail;
+      if (event.detail.root && event.detail.root.nodeType) {
+        return event.detail.root;
+      }
+    }
+    if (event && event.target && event.target.nodeType === 1) {
+      return event.target;
+    }
+    return document.body || document.documentElement;
+  }
+
+  window.MegalodonMathJax = {
+    version: 4,
+    ready: waitForMathJax,
+    typeset: typeset,
+    contentLoaded: function (root) {
+      return typeset([root || document.body || document.documentElement]);
+    },
+    clear: clear,
+    replace: replace,
+    startObserver: startObserver
+  };
+
+  window.megalodonTypesetMath = function (root) {
+    return window.MegalodonMathJax.contentLoaded(root);
+  };
+
+  document.addEventListener("megalodon:content-loaded", function (event) {
+    typeset([eventRoot(event)]);
+  });
+
+  armObserver();
+}());
+|}
 
 let output_mathjax_head ch =
   if !mathjax_enabled then
-    Printf.fprintf ch
-      "<script defer data-megalodon-mathjax='1' src=\"%s\"></script>\n"
-      mathjax_component_url
+    begin
+      Printf.fprintf ch
+        "<script data-megalodon-mathjax-config='1'>%s</script>\n"
+        mathjax_configuration_javascript;
+      Printf.fprintf ch
+        "<script defer id='MathJax-script' data-megalodon-mathjax='1' src='%s'></script>\n"
+        mathjax_component_url;
+      Printf.fprintf ch
+        "<script data-megalodon-mathjax-dynamic='1'>%s</script>\n"
+        mathjax_dynamic_javascript
+    end
 
-(** Megawiki entries are HTML fragments rather than complete documents, so
-    they have no [head] in which to place a normal loader.  This small,
-    idempotent bootstrap loads MathJax when necessary and asks an already
-    loaded MathJax instance to typeset a fragment that was inserted later. *)
+(** Megawiki entries are HTML fragments rather than complete documents.  Put
+    the bridge in every directly loaded fragment as well as in standalone HTML.
+    Its version guard makes repeated executions cheap, while ensuring that a
+    page assembled from Megawiki fragments has a persistent observer before
+    [bin/mk_ajax.py] later inserts a proof.  A copy of this script inside the
+    fetched proof itself will be inert after an [innerHTML] assignment, but the
+    already-running observer in the containing page will typeset that proof. *)
 let mathjax_fragment_loader_html () =
   if !mathjax_enabled then
-    Printf.sprintf
-      "<script class='megalodon-mathjax-loader'>(function(){var c=document.currentScript,r=c&&c.parentElement,w=function(e){if(window.console&&console.warn)console.warn('MathJax typesetting failed',e);},t=function(){if(!window.MathJax)return;var p=MathJax.startup&&MathJax.startup.promise?MathJax.startup.promise:Promise.resolve();p.then(function(){if(MathJax.typesetPromise)return MathJax.typesetPromise(r?[r]:undefined);}).catch(w);},s=document.querySelector(\"script[data-megalodon-mathjax],script[src*='mathjax']\");if(window.MathJax&&MathJax.typesetPromise){t();return;}if(s){s.addEventListener('load',t,{once:true});t();return;}s=document.createElement('script');s.src='%s';s.setAttribute('data-megalodon-mathjax','1');s.addEventListener('load',t,{once:true});(document.head||document.documentElement).appendChild(s);})();</script>\n"
-      mathjax_component_url
+    let load_and_typeset =
+      Printf.sprintf {|
+(function () {
+  var current = document.currentScript;
+  var root = current && current.parentElement;
+  var mj = window.MathJax || {};
+  var script;
+
+  mj.tex = mj.tex || {};
+  mj.tex.inlineMath = mj.tex.inlineMath || [['\\(', '\\)']];
+  mj.tex.displayMath = mj.tex.displayMath || [['\\[', '\\]']];
+  window.MathJax = mj;
+
+  script = document.querySelector(
+    "#MathJax-script,script[data-megalodon-mathjax],script[src*='mathjax']"
+  );
+  if ((!window.MathJax ||
+       typeof window.MathJax.typesetPromise !== "function") && !script) {
+    script = document.createElement("script");
+    script.id = "MathJax-script";
+    script.defer = true;
+    script.src = "%s";
+    script.setAttribute("data-megalodon-mathjax", "1");
+    (document.head || document.documentElement).appendChild(script);
+  }
+
+  if (window.MegalodonMathJax && window.MegalodonMathJax.typeset) {
+    window.MegalodonMathJax.typeset(root ? [root] : undefined);
+  }
+}());
+|} mathjax_component_url
+    in
+    "<script class='megalodon-mathjax-loader'>\n" ^
+    mathjax_dynamic_javascript ^ load_and_typeset ^
+    "</script>\n"
   else
     ""
 
@@ -2080,6 +2489,7 @@ let evaluate_docitem ditem =
     | _ -> ()
   end;
   evaluate_docitem_1 ditem;
+  observe_compact_docitem ditem;
   begin
     let cx = html_context () in
     let html_targets = ref [] in
