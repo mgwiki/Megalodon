@@ -39,6 +39,13 @@ let input_step basis ~id ~clause proof =
     step_proof = proof;
   }
 
+let bind_result_step_variables ~result_step_variables ~close_body body_proof =
+  let body_proof = close_body body_proof in
+  List.fold_right
+    (fun (_, tp) proof -> TLam (tp, proof))
+    result_step_variables
+    body_proof
+
 let open_step_theorem_body_in_result_context
     ?(shift_parent_proof=true)
     ~id

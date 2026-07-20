@@ -34,6 +34,12 @@ val input_step :
   Syntax.pf ->
   proof_step
 
+val bind_result_step_variables :
+  result_step_variables:(string * Syntax.tp) list ->
+  close_body:(Syntax.pf -> Syntax.pf) ->
+  Syntax.pf ->
+  Syntax.pf
+
 val open_step_theorem_body_in_result_context :
   ?shift_parent_proof:bool ->
   id:string ->

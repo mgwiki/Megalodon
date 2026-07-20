@@ -13415,12 +13415,9 @@ let native_core_predicate_definition_proof id formula =
   prove formula
 
 let native_core_bind_result_step_variables variables result_step_variables body_proof =
-  let body_proof =
-    native_core_close_pf (variables @ result_step_variables) body_proof
-  in
-  List.fold_right
-    (fun (_, tp) proof -> TLam (tp, proof))
-    result_step_variables
+  Vampire_kernel_elab.bind_result_step_variables
+    ~result_step_variables
+    ~close_body:(native_core_close_pf (variables @ result_step_variables))
     body_proof
 
 let native_core_fool_formula_proof
