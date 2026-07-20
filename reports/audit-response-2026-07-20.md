@@ -137,6 +137,14 @@ kept deliberately architectural rather than coverage-driven:
   suite includes a negative fixture for the Megalodon side, and a fresh TH0
   Vampire certificate passed strict Megalodon checking for 28 steps after the
   emitter-side hardening.
+- Skolem branch-choice contracts are no longer hidden behind
+  `MEGALODON_CERT_ENABLE_BRANCH_CHOICE_CONTRACTS=1`.  When Vampire emits
+  `skolem_macro_edge_*_contract_branch_choice_*` fields, Megalodon now parses
+  and validates the typed choice symbol, replaced variable, predicate, body and
+  witness term by default.  This surfaced the current `exactly1of2_I1`
+  frontier more honestly: the certificate contains the needed branch-choice
+  data, but the replay path still has to use those exact emitted predicates
+  rather than reconstructing equivalent-looking epsilon predicates locally.
 
 This still does not make the project complete, and it does not rehabilitate the
 old 28-command prefix as E1 evidence.  It is, however, the intended correction

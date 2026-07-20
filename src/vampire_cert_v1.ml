@@ -9287,17 +9287,10 @@ let native_core_kernel_v1_skolem_branch_contract cert id index prefix =
         native_core_kernel_v1_tm_field
           cert id (prefix ^ "_contract_target_formula")
       in
-      let branch_choice_contracts_enabled =
-        Sys.getenv_opt "MEGALODON_CERT_ENABLE_BRANCH_CHOICE_CONTRACTS"
-        = Some "1"
-      in
       let branch_choices =
         match
-          if branch_choice_contracts_enabled then
-            native_core_kernel_v1_int_field
-              cert id (prefix ^ "_contract_branch_choice_count")
-          else
-            None
+          native_core_kernel_v1_int_field
+            cert id (prefix ^ "_contract_branch_choice_count")
         with
         | None -> []
         | Some count ->
