@@ -2165,3 +2165,50 @@ TMPDIR=/project/tmp ./makeopt
 TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
 WORK_DIR=/project/tmp/prefix9_single_expand_delta_1784580615 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire MEGALODON_CERT_DEBUG=1 MEGALODON_CERT_DEBUG_GUIDED=1 MEGALODON_CERT_DEBUG_SUPPLIED=1 MEGALODON_CERT_DEBUG_SOURCE_APPLY=1 MEGALODON_CERT_DEBUG_LIVE_SAFE_DELTA=1 tests/vampire_reconstruction/run_live_hammer_prefix9_failclosed_qualifying.sh
 ```
+
+## Double-Negation Bridge Diagnostic, 2026-07-20
+
+The next diagnostic was aimed at the remaining live theorem bridge, not at
+adding another reconstruction heuristic.  Under `MEGALODON_CERT_DEBUG=1`, the
+double-negation eliminator now tries to inspect the proposition proved by the
+already-expanded `dnotnot` proof before applying the `xm`/double-negation
+bridge, and reports the first structural target mismatch when that proposition
+is available.
+
+On the focused prefix guard, the saved `or3E` certificate still checks as a
+standalone native proof term and the primitive certificate replay still reaches
+the final native step.  The live original-source command still fails closed at
+line 203 char 8 after eight successful reconstructed commands.  The timing
+trace now makes the failure boundary more explicit:
+
+```text
+Vampire native supplied-refutation timing native_refutation:none at line 203 char 8
+Vampire native supplied-refutation timing cps:none at line 203 char 8
+Vampire native supplied-refutation timing double_negation_elim:start at line 203 char 8
+Vampire native certificate double-negation input proposition unavailable under live checking.
+firstdiff=... DB index 12 <> 15
+```
+
+This does **not** count as E1 progress.  It does rule out another broad class
+of wrong explanations: the current blocker is not missing clause inference
+support in the native certificate, and it is not solved by re-running the
+returned-proof expander or by relaxing qualifying mode.  The failing frontier is
+the deterministic live source-goal transport immediately before the classical
+bridge.  The fact that actual-prop extraction is unavailable for the already
+live `dnotnot` term also means the next implementation should carry or rebuild
+the transported target explicitly from the certificate contracts, rather than
+asking the Megalodon elaborator to discover it after the fact.
+
+The concrete next target is to implement a deterministic retargeting object for
+the Skolem/choice frontier (`sP0`, `sF3`, `#sK1`) before applying `xm`/`dneg`.
+That remains aligned with the audit direction: Vampire-side small-kernel
+certificate detail plus deterministic Megalodon replay, not Megalodon-side
+search.
+
+Validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+WORK_DIR=/project/tmp/prefix9_dneg_target_diag2_1784581087 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire MEGALODON_CERT_DEBUG=1 MEGALODON_CERT_DEBUG_GUIDED=1 MEGALODON_CERT_DEBUG_SUPPLIED=1 MEGALODON_CERT_DEBUG_SOURCE_APPLY=1 MEGALODON_CERT_DEBUG_LIVE_SAFE_DELTA=1 tests/vampire_reconstruction/run_live_hammer_prefix9_failclosed_qualifying.sh
+```

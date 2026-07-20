@@ -3424,6 +3424,68 @@ let vampire_actual_prop_of_proof ?source_map ?extra_delta ?extra_symbols cxtm cx
 
 let vampire_xm_double_negation_elim_to ?source_map ?extra_delta ?extra_symbols ?(already_live=false) target cxtm cxpf dnotnot =
   let debug = Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" in
+  let local_false_like tm =
+    tm = vampire_native_core_false_tm || tm = TmH (!fal)
+  in
+  let rec local_double_negation_target = function
+    | Imp (Imp (target, false_left), false_right)
+        when local_false_like false_left && local_false_like false_right ->
+        Some target
+    | All (tp, body) ->
+        begin match local_double_negation_target body with
+        | Some target ->
+            if free_in_tm_p target 0 then Some (All (tp, target))
+            else
+              begin
+                try Some (tmshift 0 (-1) target)
+                with NegDB -> None
+              end
+        | None -> None
+        end
+    | _ -> None
+  in
+  let debug_target_mismatch () =
+    if debug then
+      begin match
+        vampire_actual_prop_of_proof
+          ?source_map
+          ?extra_delta
+          ?extra_symbols
+          cxtm
+          cxpf
+          dnotnot
+      with
+      | Some actual_prop ->
+          Printf.printf
+            "Vampire native certificate double-negation input proposition: %s\n"
+            (tm_to_str actual_prop);
+          begin match local_double_negation_target actual_prop with
+          | Some actual_target ->
+              let first_difference =
+                match
+                  Vampire_kernel_elab.first_term_difference
+                    target
+                    actual_target
+                with
+                | Some detail -> detail
+                | None -> "<none>"
+              in
+              Printf.printf
+                "Vampire native certificate double-negation target mismatch detail.\nexpected target: %s\nactual target: %s\nfirstdiff: %s\n"
+                (tm_to_str target)
+                (tm_to_str actual_target)
+                first_difference
+          | None ->
+              Printf.printf
+                "Vampire native certificate double-negation input has no extractable double-negation target.\n"
+          end;
+          flush stdout
+      | None ->
+          Printf.printf
+            "Vampire native certificate double-negation input proposition unavailable under live checking.\n";
+          flush stdout
+      end
+  in
   let check candidate =
     vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols ~already_live cxtm cxpf target candidate
   in
@@ -3512,6 +3574,7 @@ let vampire_xm_double_negation_elim_to ?source_map ?extra_delta ?extra_symbols ?
       in
       if result = None && debug then
         begin
+          debug_target_mismatch ();
           Printf.printf
             "Vampire native certificate double-negation elimination candidate rejected for target: %s\n"
             (tm_to_str target);
