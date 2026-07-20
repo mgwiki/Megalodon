@@ -227,6 +227,22 @@ val skolem_witness_cleanup_plan :
   Syntax.pf ->
   skolem_witness_cleanup_plan
 
+type skolem_branch_choice_template_expansion_plan = {
+  skolem_template_replacement_names : string list;
+  skolem_template_local_templates : Syntax.tm list;
+}
+
+val skolem_branch_choice_template_expansion_plan :
+  alias_names:(string -> string list) ->
+  template_limit:int ->
+  skolem_witness_transport list ->
+  skolem_branch_choice_template_expansion_plan
+
+val skolem_branch_choice_template_replacements :
+  skolem_branch_choice_template_expansion_plan ->
+  Syntax.tm ->
+  (string * Syntax.tm) list
+
 val canonical_witness_name :
   string ->
   string

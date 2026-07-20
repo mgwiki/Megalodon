@@ -23328,48 +23328,31 @@ let elaborate_preprocess_refutation_native
 	               cleanup_plan
 	                 .Vampire_kernel_elab.skolem_cleanup_introduced_classification
 	             in
-             let branch_choice_expanded_candidate =
-               let template_attempt_limit =
-                 match Sys.getenv_opt "MEGALODON_CERT_BRANCH_CHOICE_TEMPLATE_LIMIT" with
-                 | Some value ->
-                     begin try max 0 (int_of_string value)
-                     with Failure _ -> 0
-                     end
-                 | None -> 0
-               in
-               let rec take n = function
-                 | _ when n <= 0 -> []
-                 | [] -> []
-                 | item :: rest -> item :: take (n - 1) rest
-               in
-               let branch_choice_templates =
-                 branch_choice_candidate_replacements
-                 |> List.map
-                      (fun (_replacement_name, _actual_choice, _definition,
-                            local_template) ->
-                         local_template)
-                 |> List.sort_uniq compare
-                 |> take template_attempt_limit
-               in
-               let branch_choice_replacement_names =
-                 branch_choice_candidate_replacements
-                 |> List.concat_map
-                      (fun (replacement_name, _actual_choice, _definition,
-                            _local_template) ->
-                         native_core_symbol_name_aliases replacement_name)
-                 |> List.sort_uniq String.compare
-               in
-               let rec try_templates = function
-                 | [] -> None
-                 | local_template :: rest ->
-                     let replacements =
-                       branch_choice_replacement_names
-                       |> List.map
-                            (fun replacement_name ->
-                               (replacement_name, local_template))
-                     in
-                     let expanded =
-                       native_core_replace_witness_symbols_in_pf
+	             let branch_choice_expanded_candidate =
+	               let template_attempt_limit =
+	                 match Sys.getenv_opt "MEGALODON_CERT_BRANCH_CHOICE_TEMPLATE_LIMIT" with
+	                 | Some value ->
+	                     begin try max 0 (int_of_string value)
+	                     with Failure _ -> 0
+	                     end
+	                 | None -> 0
+	               in
+	               let template_plan =
+	                 Vampire_kernel_elab.skolem_branch_choice_template_expansion_plan
+	                   ~alias_names:native_core_symbol_name_aliases
+	                   ~template_limit:template_attempt_limit
+	                   branch_choice_transports
+	               in
+	               let rec try_templates = function
+	                 | [] -> None
+	                 | local_template :: rest ->
+	                     let replacements =
+	                       Vampire_kernel_elab.skolem_branch_choice_template_replacements
+	                         template_plan
+	                         local_template
+	                     in
+	                     let expanded =
+	                       native_core_replace_witness_symbols_in_pf
                          replacements
                          candidate
                      in
@@ -23382,16 +23365,22 @@ let elaborate_preprocess_refutation_native
                          prerr_endline
                            (id
                             ^ ": native preprocess Skolem CPS discharged branch-choice witness by scoped choice expansion");
-                       Some expanded
-                     end else
-                       try_templates rest
-               in
-               if branch_choice_templates = []
-                  || branch_choice_replacement_names = [] then
-                 None
-               else
-                 try_templates branch_choice_templates
-             in
+	                       Some expanded
+	                     end else
+	                       try_templates rest
+	               in
+	               if template_plan
+	                    .Vampire_kernel_elab.skolem_template_local_templates
+	                  = []
+	                  || template_plan
+	                       .Vampire_kernel_elab.skolem_template_replacement_names
+	                     = [] then
+	                 None
+	               else
+	                 try_templates
+	                   template_plan
+	                     .Vampire_kernel_elab.skolem_template_local_templates
+	             in
              let cleaned_candidate =
                if registered_choice_replacements = [] then
                  None

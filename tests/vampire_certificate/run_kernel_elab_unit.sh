@@ -247,13 +247,15 @@ let () =
     [TmH "#s1", TmH "def1"; closed_binder_witness, TmH "def1"]
     (Vampire_kernel_elab.skolem_witness_transport_proof_replacements
        transports);
-  let aliases = function
-    | "#s0" -> ["#s0"; "s0"]
-    | "s0" -> ["#s0"; "s0"]
-    | "#s1" -> ["#s1"; "s1"]
-    | "s1" -> ["#s1"; "s1"]
-    | name -> [name]
-  in
+	  let aliases = function
+	    | "#s0" -> ["#s0"; "s0"]
+	    | "s0" -> ["#s0"; "s0"]
+	    | "#s1" -> ["#s1"; "s1"]
+	    | "s1" -> ["#s1"; "s1"]
+	    | "#s2" -> ["#s2"; "s2"]
+	    | "s2" -> ["#s2"; "s2"]
+	    | name -> [name]
+	  in
   expect_equal
     "skolem_witness_transport_proof_replacements_with_aliases should rewrite all introduced-symbol aliases"
     [TmH "#s1", TmH "def1"; TmH "s1", TmH "def1"; closed_binder_witness, TmH "def1"]
@@ -323,6 +325,44 @@ let () =
 	      introduced_symbols_without_direct_replacement = [];
 	    }
 	    cleanup_plan.Vampire_kernel_elab.skolem_cleanup_introduced_classification;
+	  let template_plan =
+	    Vampire_kernel_elab.skolem_branch_choice_template_expansion_plan
+	      ~alias_names:aliases
+	      ~template_limit:1
+	      [
+	        {
+	          Vampire_kernel_elab.skolem_transport_name = "#s1";
+	          skolem_transport_choice_occurrence = closed_binder_witness;
+	          skolem_transport_definition = TmH "def1";
+	          skolem_transport_local_template = TmH "template1";
+	        };
+	        {
+	          Vampire_kernel_elab.skolem_transport_name = "#s2";
+	          skolem_transport_choice_occurrence = outer_before_inner;
+	          skolem_transport_definition = TmH "def2";
+	          skolem_transport_local_template = TmH "template2";
+	        };
+	      ]
+	  in
+	  expect_equal
+	    "skolem_branch_choice_template_expansion_plan should collect aliases and obey the template limit"
+	    {
+	      Vampire_kernel_elab.skolem_template_replacement_names =
+	        ["#s1"; "#s2"; "s1"; "s2"];
+	      skolem_template_local_templates = [TmH "template1"];
+	    }
+	    template_plan;
+	  expect_equal
+	    "skolem_branch_choice_template_replacements should build name-to-template replacements"
+	    [
+	      "#s1", TmH "template1";
+	      "#s2", TmH "template1";
+	      "s1", TmH "template1";
+	      "s2", TmH "template1";
+	    ]
+	    (Vampire_kernel_elab.skolem_branch_choice_template_replacements
+	       template_plan
+	       (TmH "template1"));
 	  expect_equal
 	    "canonical_witness_name should erase certificate-local hash prefixes"
 	    "s1"

@@ -1359,3 +1359,33 @@ TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.s
 WORK_DIR=/project/tmp/and_prefix_unique_choice_extract_final_1784569856 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
 WORK_DIR=/project/tmp/prefix4_unique_choice_extract_final_1784569838 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
 ```
+
+## Branch-Choice Template Plan Extraction, 2026-07-20
+
+A bounded diagnostic with `MEGALODON_CERT_BRANCH_CHOICE_TEMPLATE_LIMIT=12` at
+`/project/tmp/and3I_template_limit_probe_1784570013` confirmed that the old
+template-expansion path is not the missing `and3I` proof.  It fails at the
+same conceptual boundary: the proof checker expects the locally bound witness
+variable, while the expanded candidate contains a certificate-local
+`Eps_prop(...)`.  I therefore did not enable or count that path.
+
+The durable change is another extraction from `vampire_cert_v1.ml`:
+`Vampire_kernel_elab.skolem_branch_choice_template_expansion_plan` now owns
+the pure work of selecting local branch-choice templates under a configured
+limit and expanding replacement-name aliases.  The importer still only applies
+a returned template and runs the live final proof check.
+
+This does not change the qualifying frontier.  It removes another piece of
+Skolem/choice planning from the monolithic importer and records that the
+current template path is diagnostic only, not a solution for scoped
+Skolem/choice transport.
+
+Focused validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+WORK_DIR=/project/tmp/and_prefix_template_plan_extract_retry_1784570439 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+WORK_DIR=/project/tmp/prefix4_template_plan_extract_retry_1784570420 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+```

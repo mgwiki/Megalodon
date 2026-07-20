@@ -680,6 +680,41 @@ let skolem_witness_cleanup_plan
       introduced_classification;
   }
 
+type skolem_branch_choice_template_expansion_plan = {
+  skolem_template_replacement_names : string list;
+  skolem_template_local_templates : tm list;
+}
+
+let skolem_branch_choice_template_expansion_plan
+    ~alias_names
+    ~template_limit
+    transports =
+  let rec take n = function
+    | _ when n <= 0 -> []
+    | [] -> []
+    | item :: rest -> item :: take (n - 1) rest
+  in
+  let local_templates =
+    transports
+    |> List.map (fun transport -> transport.skolem_transport_local_template)
+    |> List.sort_uniq compare
+    |> take template_limit
+  in
+  let replacement_names =
+    transports
+    |> List.concat_map
+         (fun transport -> alias_names transport.skolem_transport_name)
+    |> List.sort_uniq String.compare
+  in
+  {
+    skolem_template_replacement_names = replacement_names;
+    skolem_template_local_templates = local_templates;
+  }
+
+let skolem_branch_choice_template_replacements plan local_template =
+  plan.skolem_template_replacement_names
+  |> List.map (fun replacement_name -> replacement_name, local_template)
+
 let canonical_witness_name name =
   if String.length name > 0 && name.[0] = '#' then
     String.sub name 1 (String.length name - 1)
