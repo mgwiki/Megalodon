@@ -467,3 +467,34 @@ witness-replacement mismatch: the checked live proof expects certificate
 Skolem symbols such as `sK1`, while the live-safe proof body contains the
 Megalodon choice witness `Eps_prop (...)`.  That is the next Skolem/choice
 transformation issue to solve in the extracted path.
+
+## Scoped Choice-Witness Frontier, 2026-07-20
+
+The latest focused `and3I` iteration narrows the remaining failure further.
+The branch-choice metadata is present, parsed, selected, and used; the failure
+is not caused by missing Vampire-side detail.  It is also not acceptable to
+paper over the problem with the old unique-choice expansion heuristic, because
+that would reintroduce exactly the Megalodon-side reconstruction/search pattern
+the audit rejects.
+
+One small deterministic cleanup was made: generated/native aliases are now
+symmetric for `name` and `#name`, and the direct Skolem witness replacement
+normalizes only the known choice-witness heads (`Eps_prop`, `Eps_i`, and their
+typed variants) before exact comparison.  This is an alias-normalization fix,
+not a new inference rule.
+
+The focused validation remains conservative:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+```
+
+The frontier is unchanged: `FalseE`, `andEL`, and `andER` are the only current
+original-source qualifying proofs, and `and3I` still fails closed.  The next
+implementation step should make the Skolem/choice transformation driver
+construct the live witness proof at the same scoped proposition as the emitted
+branch-choice predicate, inside the extracted small-kernel elaboration path.
+No broader candidate search, source-audit fallback, or monolithic Skolem
+heuristic should be counted as progress.

@@ -8443,10 +8443,16 @@ let native_core_symbol_name_aliases name =
     if candidate = "" || candidate.[0] = '#' then names
     else add ("#" ^ candidate) names
   in
+  let add_unhash candidate names =
+    if String.length candidate > 1 && candidate.[0] = '#' then
+      add (String.sub candidate 1 (String.length candidate - 1)) names
+    else names
+  in
   let names =
     []
     |> add name
     |> add_hash name
+    |> add_unhash name
   in
   match native_core_ident_opt name with
   | Some ident ->
@@ -15404,8 +15410,46 @@ let rec native_core_direct_skolem_formula_proof
        ^ " target_shape="
        ^ shape_tag target);
   let replace_exact_terms_in_proof replacements proof =
+    let choice_witness_base_symbols =
+      [
+        "Eps_i";
+        "Eps_prop";
+        "Eps_set_prop";
+        "Eps_set_set";
+        "Eps_set_set_prop";
+      ]
+    in
+    let choice_witness_symbols =
+      choice_witness_base_symbols
+      |> List.concat_map native_core_symbol_name_aliases
+      |> List.sort_uniq String.compare
+    in
+    let rec normalize_choice_witness_heads = function
+      | TmH name when List.mem name choice_witness_symbols ->
+          let canonical =
+            choice_witness_base_symbols
+            |> List.find_opt
+                 (fun base ->
+                    List.mem name (native_core_symbol_name_aliases base))
+          in
+          begin match canonical with
+          | Some base -> TmH base
+          | None -> TmH name
+          end
+      | TpAp (body, tp) -> TpAp (normalize_choice_witness_heads body, tp)
+      | Ap (left, right) ->
+          Ap (normalize_choice_witness_heads left,
+              normalize_choice_witness_heads right)
+      | Lam (tp, body) -> Lam (tp, normalize_choice_witness_heads body)
+      | Imp (left, right) ->
+          Imp (normalize_choice_witness_heads left,
+               normalize_choice_witness_heads right)
+      | All (tp, body) -> All (tp, normalize_choice_witness_heads body)
+      | DB _ | TmH _ | Prim _ as tm -> tm
+    in
     let normalize tm =
       tm
+      |> normalize_choice_witness_heads
       |> native_core_normalize_bool_constants
       |> tm_beta_eta_norm
     in
