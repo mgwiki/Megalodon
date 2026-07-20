@@ -2301,6 +2301,23 @@ let rec strip_forall = function
   | All (_, body) -> strip_forall body
   | tm -> tm
 
+let simple_open_forall_prefix_body prefix body =
+  let names = List.map fst prefix in
+  let count = List.length names in
+  let rec open_tm depth tm =
+    match tm with
+    | DB index when index >= depth && index < depth + count ->
+        let prefix_index = count - 1 - (index - depth) in
+        TmH (List.nth names prefix_index)
+    | DB _ | TmH _ | Prim _ -> tm
+    | TpAp (m, a) -> TpAp (open_tm depth m, a)
+    | Ap (m, n) -> Ap (open_tm depth m, open_tm depth n)
+    | Lam (tp, body) -> Lam (tp, open_tm (depth + 1) body)
+    | Imp (left, right) -> Imp (open_tm depth left, open_tm depth right)
+    | All (tp, body) -> All (tp, open_tm (depth + 1) body)
+  in
+  open_tm 0 body
+
 let rec prefix_forall_count = function
   | All (_, body) -> 1 + prefix_forall_count body
   | _ -> 0
@@ -27718,17 +27735,51 @@ let simple_cnf_and_projection_proof
   | _ ->
       emit_error "CNF conjunction projection supports only vampire_and parents"
 
+let simple_cnf_clause_equiv expected result =
+  same_clause_multiset expected result
+  || same_clause_multiset_mod_bound_names expected result
+  || same_clause_multiset_mod_bound_names
+       (List.map normalize_literal_bool_equality_orientation expected)
+       (List.map normalize_literal_bool_equality_orientation result)
+  || same_clause_multiset_mod_bound_names
+       (List.map normalize_literal_equality_orientation expected)
+       (List.map normalize_literal_equality_orientation result)
+
+let simple_cnf_literal_equiv expected result =
+  simple_cnf_clause_equiv [expected] [result]
+
+let simple_cnf_literal_exact_variants literal =
+  [ literal;
+    normalize_literal_bool_equality_orientation literal;
+    normalize_literal_equality_orientation literal;
+    normalize_literal_equality_orientation
+      (normalize_literal_bool_equality_orientation literal)
+  ]
+
+let simple_cnf_find_target_literal literal target_clause =
+  let variants = simple_cnf_literal_exact_variants literal in
+  match
+    List.find_opt
+      (fun candidate -> List.exists ((=) candidate) variants)
+      target_clause
+  with
+  | Some target_literal -> Some target_literal
+  | None -> List.find_opt (simple_cnf_literal_equiv literal) target_clause
+
 let simple_cnf_clause_projection_proof
     type_env parent_sorts target_sorts source target_clause parent_name =
-  let source_clauses = cnf_clauses source in
-  if not (List.exists (fun source_clause -> same_clause_multiset source_clause target_clause) source_clauses) then
+  let source_prefix_sorts = take_prefix (prefix_forall_count source) parent_sorts in
+  let opened_source_body =
+    simple_open_forall_prefix_body source_prefix_sorts (strip_forall source)
+  in
+  let source_clauses = cnf_clauses opened_source_body in
+  if not (List.exists (fun source_clause -> simple_cnf_clause_equiv source_clause target_clause) source_clauses) then
     emit_error "CNF clause projection target is not the source clause multiset";
   let clause_is_subset_of_target source_clause =
     List.for_all
-      (fun lit -> List.exists ((=) lit) target_clause)
+      (fun lit -> List.exists (simple_cnf_literal_equiv lit) target_clause)
       source_clause
   in
-  let source_prefix_sorts = take_prefix (prefix_forall_count source) parent_sorts in
   let source_proof = simple_apply_forall_vars parent_name source_prefix_sorts in
   let target_prop =
     try simple_clause_prop_with_type_env type_env target_clause
@@ -27896,13 +27947,19 @@ let simple_cnf_clause_projection_proof
           left_name left_branch
           right_name right_branch
     | atom ->
-        simple_clause_intro_proof target_clause (literal_of_formula_tm atom) proof
+        let literal = literal_of_formula_tm atom in
+        let target_literal =
+          match simple_cnf_find_target_literal literal target_clause with
+          | Some target_literal -> target_literal
+          | None -> literal
+        in
+        simple_clause_intro_proof target_clause target_literal proof
   in
   let used_prefix_binders =
     List.map (fun (name, _) -> megalodon_ident name) source_prefix_sorts
   in
   simple_wrap_forall_intro target_sorts
-    (project_formula 0 used_prefix_binders type_env (strip_forall source) source_proof)
+    (project_formula 0 used_prefix_binders type_env opened_source_body source_proof)
 
 let simple_cnf_imp_false_singleton_proof
     parent_sorts target_sorts source target_clause parent_name =
@@ -27965,7 +28022,10 @@ let simple_fool_formula_proof type_env id parent_sorts result_sorts source targe
         ignore target_body;
         let binder = fallback_binder sort in
         let env = (binder, sort) :: env in
-        let body_proof = convert direction env source_body target_body ("(" ^ proof ^ " " ^ binder ^ ")") in
+        let body_proof =
+          simple_with_db_aliases [binder] (fun () ->
+              convert direction env source_body target_body ("(" ^ proof ^ " " ^ binder ^ ")"))
+        in
           "(fun " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ " => " ^ body_proof ^ ")"
     | Imp (source_left, source_right), Imp (target_left, target_right) ->
         begin match direction with
@@ -30996,7 +31056,10 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
         let sort = simple_tp_expr source_tp in
         let binder = binder_for_body env sort target_body in
         let env = (binder, sort) :: env in
-        let body_proof = convert env source_body target_body ("(" ^ proof ^ " " ^ binder ^ ")") in
+        let body_proof =
+          simple_with_db_aliases [binder] (fun () ->
+              convert env source_body target_body ("(" ^ proof ^ " " ^ binder ^ ")"))
+        in
         "(fun " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ " => " ^ body_proof ^ ")"
     | _ when source = target -> proof
     | Imp (Imp (left, right), false_tm),
@@ -33269,22 +33332,40 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                   Some
                     (simple_cnf_imp_false_singleton_proof
                        parent_prefix_sorts target_sorts parent_formula result parent_name)
-                with Error _ ->
+                with Error msg ->
+                debug_emit_error ("cnf_formula_clause " ^ id ^ " imp_false") msg;
                 let expected = nth index (cnf_clauses parent_formula) (id ^ " CNF clause") in
-                if not (same_clause_multiset expected result) then None
-                else if not (simple_sorts_subset parent_prefix_sorts target_sorts) then None
+                if not (simple_cnf_clause_equiv expected result) then begin
+                  debug_emit_error
+                    ("cnf_formula_clause " ^ id)
+                    "deterministic CNF projection does not match target clause";
+                  None
+                end
+                else if not (simple_sorts_subset parent_prefix_sorts target_sorts) then begin
+                  debug_emit_error
+                    ("cnf_formula_clause " ^ id)
+                    "parent prefix sorts are not available in target sorts";
+                  None
+                end
                 else
                   try
                     Some
                       (simple_cnf_clause_projection_proof
                          type_env parent_prefix_sorts target_sorts parent_formula result
                          parent_name)
-                  with Error _ ->
-                    Some
-                      (simple_cnf_and_projection_proof
-                         type_env parent_prefix_sorts target_sorts parent_formula result
-                         parent_name)
-              with Error _ -> None
+                  with Error msg ->
+                    debug_emit_error ("cnf_formula_clause " ^ id ^ " clause") msg;
+                    try
+                      Some
+                        (simple_cnf_and_projection_proof
+                           type_env parent_prefix_sorts target_sorts parent_formula result
+                           parent_name)
+                    with Error msg ->
+                      debug_emit_error ("cnf_formula_clause " ^ id ^ " and") msg;
+                      None
+              with Error msg ->
+                debug_emit_error ("cnf_formula_clause " ^ id) msg;
+                None
             with
             | Some proof ->
                 add_emitted id name;
