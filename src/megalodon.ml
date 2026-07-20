@@ -955,22 +955,23 @@ let vampire_source_map_expander cxtm source_map =
   fun proof -> (vampire_local_definition_expander cxtm) (expand_pf 0 proof)
 
 let vampire_extra_delta_expander extra_delta proof =
-  let rec expand_tm depth tm =
-    let expanded =
-      match tm with
-      | TmH name ->
-          begin match Hashtbl.find_opt extra_delta name with
-          | Some (_, body) -> tmshift 0 depth body
-          | None -> TmH name
-          end
-      | TpAp (body, tp) -> TpAp (expand_tm depth body, tp)
-      | Ap (left, right) -> Ap (expand_tm depth left, expand_tm depth right)
-      | Lam (tp, body) -> Lam (tp, expand_tm (depth + 1) body)
-      | Imp (left, right) -> Imp (expand_tm depth left, expand_tm depth right)
-      | All (tp, body) -> All (tp, expand_tm (depth + 1) body)
-      | DB _ | Prim _ as tm -> tm
-    in
-    tm_beta_eta_norm expanded
+  let rec expand_tm_raw depth = function
+    | TmH name ->
+        begin match Hashtbl.find_opt extra_delta name with
+        | Some (_, body) -> tmshift 0 depth body
+        | None -> TmH name
+        end
+    | TpAp (body, tp) -> TpAp (expand_tm_raw depth body, tp)
+    | Ap (left, right) ->
+        Ap (expand_tm_raw depth left, expand_tm_raw depth right)
+    | Lam (tp, body) -> Lam (tp, expand_tm_raw (depth + 1) body)
+    | Imp (left, right) ->
+        Imp (expand_tm_raw depth left, expand_tm_raw depth right)
+    | All (tp, body) -> All (tp, expand_tm_raw (depth + 1) body)
+    | DB _ | Prim _ as tm -> tm
+  in
+  let expand_tm depth tm =
+    tm_beta_eta_norm (expand_tm_raw depth tm)
   in
   let rec expand_pf depth = function
     | PTpAp (proof, tp) -> PTpAp (expand_pf depth proof, tp)
@@ -983,21 +984,48 @@ let vampire_extra_delta_expander extra_delta proof =
   expand_pf 0 proof
 
 let vampire_expand_returned_proof ?extra_delta cxtm source_map proof =
+  let timing_start = Unix.gettimeofday () in
+  let timing_last = ref timing_start in
+  let timing stage =
+    if Sys.getenv_opt "MEGALODON_CERT_DEBUG_TIMING" = Some "1" then
+      begin
+        let now = Unix.gettimeofday () in
+        Printf.printf
+          "Vampire returned-proof expansion timing %s: +%.3fs total %.3fs.\n"
+          stage
+          (now -. !timing_last)
+          (now -. timing_start);
+        timing_last := now;
+        flush stdout
+      end
+  in
   let base_expander =
     match source_map with
     | None -> vampire_local_definition_expander cxtm
     | Some source_map -> vampire_source_map_expander cxtm source_map
   in
   match extra_delta with
-  | None -> base_expander proof
+  | None ->
+      timing "base:start";
+      let result = base_expander proof in
+      timing "base:done";
+      result
   | Some extra_delta ->
+      timing "merge:start";
       let merged_delta = Hashtbl.create 17 in
       Hashtbl.iter
         (fun h v ->
            if not (Hashtbl.mem sigdelta h) then Hashtbl.replace merged_delta h v)
         (Vampire_cert_v1.approved_native_sgdelta ());
       vampire_merge_reconstruction_delta merged_delta extra_delta;
-      base_expander (vampire_extra_delta_expander merged_delta proof)
+      timing "merge:done";
+      timing "extra_delta:start";
+      let expanded = vampire_extra_delta_expander merged_delta proof in
+      timing "extra_delta:done";
+      timing "base:start";
+      let result = base_expander expanded in
+      timing "base:done";
+      result
 
 let vampire_expand_returned_tm ?extra_delta cxtm source_map tm =
   match vampire_expand_returned_proof ?extra_delta cxtm source_map (PLam (tm, Hyp 0)) with
@@ -1026,9 +1054,17 @@ let vampire_certificate_only_symbol_in_tm live_symbols extra_symbols tm =
 
 let vampire_live_safe_extra_delta ?(body_expander=(fun tm -> tm)) live_symbols extra_symbols extra_delta =
   let filtered = Hashtbl.create (Hashtbl.length extra_delta) in
+  let expanded_bodies = Hashtbl.create (Hashtbl.length extra_delta) in
   let debug = Sys.getenv_opt "MEGALODON_CERT_DEBUG_LIVE_SAFE_DELTA" = Some "1" in
+  let expanded_body name body =
+    match Hashtbl.find_opt expanded_bodies name with
+    | Some body -> body
+    | None ->
+        let body = body_expander body in
+        Hashtbl.replace expanded_bodies name body;
+        body
+  in
   let add_filtered_definition name arity body =
-    let body = body_expander body in
     let add name =
       Hashtbl.replace filtered name (arity, body)
     in
@@ -1069,7 +1105,7 @@ let vampire_live_safe_extra_delta ?(body_expander=(fun tm -> tm)) live_symbols e
     Hashtbl.iter
       (fun name (arity, body) ->
          if not (Hashtbl.mem filtered name) then
-           let body = body_expander body in
+           let body = expanded_body name body in
            match unsafe_symbol_in_tm body with
            | Some _ -> ()
            | None ->
@@ -1090,7 +1126,7 @@ let vampire_live_safe_extra_delta ?(body_expander=(fun tm -> tm)) live_symbols e
       Hashtbl.iter
         (fun name (_, body) ->
            if not (Hashtbl.mem filtered name) then
-             let body = body_expander body in
+             let body = expanded_body name body in
              match unsafe_symbol_in_tm body with
              | Some symbol ->
                  Printf.printf
@@ -4270,14 +4306,20 @@ let vampire_reconstruct_goal_from_supplied_refutation
           target_proof
           target
       in
+      let unchecked_timing_start = Unix.gettimeofday () in
+      let unchecked_timing_last = ref unchecked_timing_start in
       let unchecked_timing stage =
         if Sys.getenv_opt "MEGALODON_CERT_DEBUG_TIMING" = Some "1" then
           begin
+            let now = Unix.gettimeofday () in
             Printf.printf
-              "Vampire native supplied-refutation unchecked finish timing %s at line %d char %d.\n"
+              "Vampire native supplied-refutation unchecked finish timing %s at line %d char %d: +%.3fs total %.3fs.\n"
               stage
               !lineno
-              !charno;
+              !charno
+              (now -. !unchecked_timing_last)
+              (now -. unchecked_timing_start);
+            unchecked_timing_last := now;
             flush stdout
           end
       in
@@ -4364,15 +4406,21 @@ let vampire_reconstruct_goal_from_supplied_refutation
         let debug_timing =
           Sys.getenv_opt "MEGALODON_CERT_DEBUG_TIMING" = Some "1"
         in
+        let timing_start = Unix.gettimeofday () in
+        let timing_last = ref timing_start in
         let timing stage =
           if debug_timing then
             begin
+              let now = Unix.gettimeofday () in
               Printf.printf
-                "Vampire native supplied-refutation timing %s at line %d char %d depth=%d.\n"
+                "Vampire native supplied-refutation timing %s at line %d char %d depth=%d: +%.3fs total %.3fs.\n"
                 stage
                 !lineno
                 !charno
-                depth;
+                depth
+                (now -. !timing_last)
+                (now -. timing_start);
+              timing_last := now;
               flush stdout
             end
         in
