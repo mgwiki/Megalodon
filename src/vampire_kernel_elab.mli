@@ -91,6 +91,12 @@ val church_exists_map_proof :
   Syntax.pf ->
   Syntax.pf
 
+val church_exists_elim_proof :
+  target_prop:Syntax.tm ->
+  continuation:Syntax.pf ->
+  Syntax.pf ->
+  Syntax.pf
+
 val replace_exact_terms_in_proof :
   normalize:(Syntax.tm -> Syntax.tm) ->
   (Syntax.tm * Syntax.tm) list ->

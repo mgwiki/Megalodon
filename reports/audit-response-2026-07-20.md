@@ -1264,3 +1264,33 @@ TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.s
 WORK_DIR=/project/tmp/and_prefix_classify_extract.1784568842 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
 WORK_DIR=/project/tmp/prefix4_classify_extract.1784568842 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
 ```
+
+## Church-Exists Eliminator Extraction, 2026-07-20
+
+The scoped `and3I` failure occurs exactly at a Church-encoded existential
+continuation boundary.  The CPS replay path was still constructing that
+boundary inline as:
+
+```ocaml
+PPfAp (PTmAp (exists_proof, target_prop), continuation)
+```
+
+That construction now lives in the extracted elaborator as
+`Vampire_kernel_elab.church_exists_elim_proof`, with a unit test for the proof
+shape.  `vampire_cert_v1.ml` calls the helper from the Skolem-CPS exists case.
+
+This is intentionally behavior-preserving: the focused gates still accept the
+first three original-source hammer proofs and fail closed at `and3I`.  The
+benefit is architectural.  The exact proof-term operation that must receive the
+next scoped witness transport is now isolated in the small elaborator module
+instead of being embedded directly in the importer.
+
+Focused validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+WORK_DIR=/project/tmp/and_prefix_exists_elim_extract.1784569037 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+WORK_DIR=/project/tmp/prefix4_exists_elim_extract.1784569038 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+```

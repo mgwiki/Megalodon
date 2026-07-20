@@ -170,6 +170,9 @@ let church_exists_map_proof
           (PTmAp (pftmshift 0 1 (pfshift 0 1 exists_proof), DB 0),
            source_case)))
 
+let church_exists_elim_proof ~target_prop ~continuation exists_proof =
+  PPfAp (PTmAp (exists_proof, target_prop), continuation)
+
 let replace_exact_terms_in_proof ~normalize replacements proof =
   let rec replace_top_opt depth tm =
     match

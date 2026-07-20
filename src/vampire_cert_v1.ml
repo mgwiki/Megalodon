@@ -17522,7 +17522,12 @@ let native_core_skolem_refutation_cps_proof
         debug_witness_pf ("exists-source-proof " ^ witness) proof;
         debug_witness_tm ("exists-target-prop " ^ witness) target_prop;
         debug_witness_pf ("exists-continuation-only " ^ witness) continuation;
-	        let candidate = PPfAp (PTmAp (proof, target_prop), continuation) in
+	        let candidate =
+            Vampire_kernel_elab.church_exists_elim_proof
+              ~target_prop
+              ~continuation
+              proof
+          in
 	        debug_witness_pf ("exists-continuation " ^ witness) candidate;
 	        candidate
     | Ap (Ap (TmH "vampire_and", source_left), source_right),

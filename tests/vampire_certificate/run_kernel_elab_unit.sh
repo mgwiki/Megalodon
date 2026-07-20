@@ -90,9 +90,16 @@ let () =
                        PPfAp
                          (PTmAp
                             (pftmshift 0 2 (pfshift 0 2 (Known "PQ")),
-                             DB 0),
+                            DB 0),
                           Hyp 0))))))))
     exists_map;
+  expect_equal
+    "church_exists_elim_proof should apply a Church-encoded existential to a target and continuation"
+    (PPfAp (PTmAp (Hyp 0, TmH "target"), Known "case"))
+    (Vampire_kernel_elab.church_exists_elim_proof
+       ~target_prop:(TmH "target")
+       ~continuation:(Known "case")
+       (Hyp 0));
   let inner_choice = Ap (TmH "eps", TmH "inner") in
   let outer_after_inner = Ap (TmH "eps", TmH "s0") in
   let outer_before_inner = Ap (TmH "eps", inner_choice) in
