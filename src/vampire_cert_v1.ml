@@ -15547,40 +15547,10 @@ let rec native_core_direct_skolem_formula_proof
       |> native_core_normalize_bool_constants
       |> tm_beta_eta_norm
     in
-    let rec replace_tm depth tm =
-      match
-        replacements
-        |> List.find_opt
-             (fun (needle, _) ->
-                normalize tm = (tmshift 0 depth needle |> normalize))
-      with
-      | Some (_, replacement) -> tmshift 0 depth replacement
-      | None ->
-          match tm with
-          | TmH _ | DB _ | Prim _ -> tm
-          | TpAp (body, tp) -> TpAp (replace_tm depth body, tp)
-          | Ap (left, right) ->
-              Ap (replace_tm depth left, replace_tm depth right)
-          | Lam (tp, body) ->
-              Lam (tp, replace_tm (depth + 1) body)
-          | Imp (left, right) ->
-              Imp (replace_tm depth left, replace_tm depth right)
-          | All (tp, body) ->
-              All (tp, replace_tm (depth + 1) body)
-    in
-    let rec replace_pf depth proof =
-      match proof with
-      | PTpAp (body, tp) -> PTpAp (replace_pf depth body, tp)
-      | PTmAp (body, tm) ->
-          PTmAp (replace_pf depth body, replace_tm depth tm)
-      | PPfAp (left, right) ->
-          PPfAp (replace_pf depth left, replace_pf depth right)
-      | PLam (prop, body) ->
-          PLam (replace_tm depth prop, replace_pf depth body)
-      | TLam (tp, body) -> TLam (tp, replace_pf (depth + 1) body)
-      | Hyp _ | Known _ -> proof
-    in
-    replace_pf 0 proof
+    Vampire_kernel_elab.replace_exact_terms_in_proof
+      ~normalize
+      replacements
+      proof
   in
   let helper_target_matches_current local_depth replacements helper_target target =
     let helper_target = rewrite_witnesses replacements local_depth helper_target in

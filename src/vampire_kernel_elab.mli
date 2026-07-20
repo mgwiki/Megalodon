@@ -74,3 +74,9 @@ val open_step_theorem_body_in_result_context :
   close_witness:(Syntax.tm -> Syntax.tm) ->
   Syntax.pf ->
   Syntax.pf
+
+val replace_exact_terms_in_proof :
+  normalize:(Syntax.tm -> Syntax.tm) ->
+  (Syntax.tm * Syntax.tm) list ->
+  Syntax.pf ->
+  Syntax.pf
