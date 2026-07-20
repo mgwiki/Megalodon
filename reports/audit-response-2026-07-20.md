@@ -131,6 +131,12 @@ kept deliberately architectural rather than coverage-driven:
   rule/contract declarations with Megalodon's OCaml declarations.  This is a
   diagnostic guard only: it prevents drift in the small-kernel certificate
   interface and is not used to reconstruct proofs.
+- Strict Megalodon checking now rejects `primitive_expansion_requires_count`
+  lists that omit the singular `primitive_expansion_requires` primitive, and
+  Vampire now enforces the same invariant before emission.  The native smoke
+  suite includes a negative fixture for the Megalodon side, and a fresh TH0
+  Vampire certificate passed strict Megalodon checking for 28 steps after the
+  emitter-side hardening.
 
 This still does not make the project complete, and it does not rehabilitate the
 old 28-command prefix as E1 evidence.  It is, however, the intended correction
