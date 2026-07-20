@@ -1140,6 +1140,18 @@ let vampire_live_safe_extra_delta ?(body_expander=(fun tm -> tm)) live_symbols e
     end;
   filtered
 
+let vampire_register_reconstruction_delta_for_qed extra_symbols extra_delta =
+  Hashtbl.iter
+    (fun name (arity, body) ->
+       if not (Hashtbl.mem sigdelta name) then
+         Hashtbl.add sigdelta name (arity, body))
+    extra_delta;
+  Hashtbl.iter
+    (fun name binding ->
+       if not (Hashtbl.mem sigtmof name) then
+         Hashtbl.add sigtmof name binding)
+    extra_symbols
+
 let vampire_certificate_only_symbol_in_proof live_symbols extra_delta extra_symbols proof =
   let tm_symbol = vampire_certificate_only_symbol_in_tm live_symbols extra_symbols in
   let rec pf_symbol = function
@@ -4357,12 +4369,27 @@ let vampire_reconstruct_goal_from_supplied_refutation
                 | None, _ -> None
               in
               unchecked_timing "expand_returned:start";
+              let compact_delta =
+                Sys.getenv_opt "MEGALODON_CERT_COMPACT_QED_DELTA" <> Some "0"
+              in
               let expanded =
-                vampire_expand_returned_proof
-                  ?extra_delta:live_extra_delta
-                  cxtm
-                  source_map
-                  target_proof
+                if compact_delta then
+                  begin
+                    begin match live_extra_delta, extra_symbols with
+                    | Some live_extra_delta, Some extra_symbols ->
+                        vampire_register_reconstruction_delta_for_qed
+                          extra_symbols
+                          live_extra_delta
+                    | _ -> ()
+                    end;
+                    vampire_expand_returned_proof cxtm source_map target_proof
+                  end
+                else
+                  vampire_expand_returned_proof
+                    ?extra_delta:live_extra_delta
+                    cxtm
+                    source_map
+                    target_proof
               in
               unchecked_timing "expand_returned:done";
               unchecked_timing "live_basis:start";

@@ -3746,12 +3746,26 @@ let rec tm_beta_eta_norm_1 m =
   | TpAp(m1,a1) -> (m,true) (*** invariant: polydefs are gone, so m1 is either Prim(0) or TmH(h) where h is the id of Prim(0). No reduction here. ***)
   | _ -> (m,true)
 
-let rec tm_beta_eta_norm m =
+let rec tm_beta_eta_norm_uncached m =
   let (mr,mb) = tm_beta_eta_norm_1 m in
   if mb then
     mr
   else
-    tm_beta_eta_norm mr
+    tm_beta_eta_norm_uncached mr
+
+let tm_beta_eta_norm_cache : ((tm, tm) Hashtbl.t option) ref = ref None
+
+let tm_beta_eta_norm m =
+  match !tm_beta_eta_norm_cache with
+  | None -> tm_beta_eta_norm_uncached m
+  | Some cache ->
+      begin match Hashtbl.find_opt cache m with
+      | Some result -> result
+      | None ->
+          let result = tm_beta_eta_norm_uncached m in
+          Hashtbl.replace cache m result;
+          result
+      end
 
 let rec tm_beta_eta_exeq_norm_1 m =
   match m with
@@ -4392,8 +4406,17 @@ let extr_propofpf sgdelta sgtmof cxtm cxpf d dl =
   extr_propofpf_at (List.length cxtm) sgdelta sgtmof cxtm cxpf d dl
 
 let check_propofpf sgdelta sgtmof cxtm cxpf d p dl =
-  let (q,dl) = extr_propofpf sgdelta sgtmof cxtm cxpf d dl in
-  conv q p sgdelta dl
+  let previous_cache = !tm_beta_eta_norm_cache in
+  let cache = Hashtbl.create 10007 in
+  tm_beta_eta_norm_cache := Some cache;
+  try
+    let (q,dl) = extr_propofpf sgdelta sgtmof cxtm cxpf d dl in
+    let result = conv q p sgdelta dl in
+    tm_beta_eta_norm_cache := previous_cache;
+    result
+  with exn ->
+    tm_beta_eta_norm_cache := previous_cache;
+    raise exn
 
 exception MatchFail
 
