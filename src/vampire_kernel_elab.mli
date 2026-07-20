@@ -181,6 +181,7 @@ val skolem_branch_choice_matches_witness :
 type skolem_branch_choice_instantiation = {
   skolem_choice_body : Syntax.tm;
   skolem_choice_predicate : Syntax.tm;
+  skolem_choice_witnessed_body : Syntax.tm option;
 }
 
 val lift_skolem_branch_choice_instantiation :

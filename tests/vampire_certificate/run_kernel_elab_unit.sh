@@ -266,7 +266,11 @@ let () =
       expect_equal
         "skolem_branch_choice_instantiation should return the emitted predicate"
         (Lam (Prop, Ap (DB 0, TmH "a")))
-        instantiation.Vampire_kernel_elab.skolem_choice_predicate
+        instantiation.Vampire_kernel_elab.skolem_choice_predicate;
+      expect_equal
+        "skolem_branch_choice_instantiation should return the emitted witnessed body"
+        (Some (Ap (TmH "#s0", TmH "a")))
+        instantiation.Vampire_kernel_elab.skolem_choice_witnessed_body
   | None ->
       prerr_endline
         "kernel_elab unit failure: skolem_branch_choice_instantiation should keep emitted predicate and body aligned";
@@ -280,6 +284,8 @@ let () =
           Ap (DB 0, DB 2);
         skolem_choice_predicate =
           Lam (Prop, Ap (DB 0, DB 2));
+        skolem_choice_witnessed_body =
+          Some (Ap (TmH "s0", DB 2));
       }
   in
   expect_equal
@@ -290,6 +296,10 @@ let () =
     "lift_skolem_branch_choice_instantiation should lift free predicate body indices under the lambda"
     (Lam (Prop, Ap (DB 0, DB 6)))
     lifted.Vampire_kernel_elab.skolem_choice_predicate;
+  expect_equal
+    "lift_skolem_branch_choice_instantiation should lift free witnessed-body indices"
+    (Some (Ap (TmH "s0", DB 6)))
+    lifted.Vampire_kernel_elab.skolem_choice_witnessed_body;
   expect_equal
     "skolem_branch_choice_instantiation should reject predicate/body drift"
     None
@@ -303,6 +313,19 @@ let () =
        [{ branch_choice with
           Vampire_kernel_syntax.skolem_branch_choice_predicate =
             Lam (Prop, Ap (DB 0, TmH "b")) }]);
+  expect_equal
+    "skolem_branch_choice_instantiation should reject witnessed-body drift"
+    None
+    (Vampire_kernel_elab.skolem_branch_choice_instantiation
+       ~normalize:(fun tm -> tm)
+       ~alias_names:aliases
+       ~replacements:[]
+       ~substitution_name:(Some "X")
+       ~target_witness:(TmH "#s0")
+       ~witness_type:Prop
+       [{ branch_choice with
+          Vampire_kernel_syntax.skolem_branch_choice_witnessed_body =
+            Some (Ap (TmH "#s0", TmH "b")) }]);
   Vampire_kernel_check.check_skolem_branch_contract
     ~id:"unit"
     ~index:0

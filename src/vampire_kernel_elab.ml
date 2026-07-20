@@ -525,6 +525,7 @@ let skolem_branch_choice_matches_witness
 type skolem_branch_choice_instantiation = {
   skolem_choice_body : tm;
   skolem_choice_predicate : tm;
+  skolem_choice_witnessed_body : tm option;
 }
 
 let lift_skolem_branch_choice_instantiation ~ambient_shift instantiation =
@@ -535,6 +536,10 @@ let lift_skolem_branch_choice_instantiation ~ambient_shift instantiation =
         tmshift 1 ambient_shift instantiation.skolem_choice_body;
       skolem_choice_predicate =
         tmshift 0 ambient_shift instantiation.skolem_choice_predicate;
+      skolem_choice_witnessed_body =
+        Option.map
+          (tmshift 0 ambient_shift)
+          instantiation.skolem_choice_witnessed_body;
     }
 
 let skolem_branch_choice_instantiation
@@ -570,14 +575,28 @@ let skolem_branch_choice_instantiation
               choice.skolem_branch_choice_predicate
               |> rewrite_head_symbols_by_alias ~alias_names replacements
             in
+            let witnessed_body =
+              choice.skolem_branch_choice_witnessed_body
+              |> Option.map
+                   (rewrite_head_symbols_by_alias ~alias_names replacements)
+            in
+            let witnessed_body_matches =
+              match witnessed_body with
+              | None -> true
+              | Some witnessed_body ->
+                  normalize witnessed_body
+                  = normalize (tmsubst body 0 target_witness)
+            in
             begin match normalize predicate with
             | Lam (predicate_type, predicate_body)
                 when predicate_type = choice.skolem_branch_choice_type
-                     && normalize predicate_body = normalize body ->
+                     && normalize predicate_body = normalize body
+                     && witnessed_body_matches ->
                 Some
                   {
                     skolem_choice_body = body;
                     skolem_choice_predicate = predicate;
+                    skolem_choice_witnessed_body = witnessed_body;
                   }
             | Lam _ -> None
             | _ -> None
