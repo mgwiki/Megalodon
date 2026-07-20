@@ -5195,11 +5195,14 @@ let vampire_guided_negated_conjecture_reconstruction
       proof
       proposition =
     begin match
-      try_supplied_refutation
-        ~preferred_prop_terms:preferred_locals
-        source_target
-        proof
-        proposition
+      if proposition_ready_for_target source_target proposition then
+        try_supplied_refutation
+          ~preferred_prop_terms:preferred_locals
+          source_target
+          proof
+          proposition
+      else
+        None
     with
     | Some _ as result -> result
     | None ->

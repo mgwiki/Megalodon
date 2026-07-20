@@ -447,3 +447,23 @@ native-core adapter.
 This is not new proof coverage.  The `and3I` frontier remains a fail-closed
 case until the remaining proof-term orientation/replacement mismatch is solved
 through the extracted Skolem/choice transformation path.
+
+## Guided Refutation Attempt Scheduling, 2026-07-20
+
+The next `and3I` probe showed a smaller but concrete qualifying-mode bug.  The
+guided negated-conjecture path is allowed one supplied-refutation attempt by
+default, but `try_guided_proposition_suffix` spent that attempt before the
+proposition had any native-refutation, CPS, or double-negation shape for the
+matched source target.  Later deterministic suffix instantiations did reach a
+ready shape, but the attempt budget had already been exhausted.
+
+The guided path now calls the supplied-refutation bridge only after
+`proposition_ready_for_target` succeeds.  This preserves the one-attempt
+qualifying policy while making that attempt correspond to an actually
+checkable refutation shape.
+
+This still does not close `and3I`.  The next failure is again the substantive
+witness-replacement mismatch: the checked live proof expects certificate
+Skolem symbols such as `sK1`, while the live-safe proof body contains the
+Megalodon choice witness `Eps_prop (...)`.  That is the next Skolem/choice
+transformation issue to solve in the extracted path.
