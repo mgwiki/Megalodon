@@ -3942,16 +3942,14 @@ let check_truth_conflict checked id parent_id literal_index result =
 
 let check_equality_symmetry checked id parent_id literal_index result =
   let parent_clause = lookup_clause checked parent_id in
-  let literal = nth literal_index parent_clause (id ^ " equality-symmetry literal") in
-  let swapped_literal =
-    match swap_literal_equality literal with
-    | Some swapped -> swapped
-    | None -> error (id ^ ": equality-symmetry literal is not an equality")
-  in
-  let without_literal = remove_at literal_index parent_clause (id ^ " equality-symmetry literal") in
-  let expected = without_literal @ [swapped_literal] in
-  if not (same_clause_multiset expected result) then
-    error (id ^ ": equality-symmetry result does not match parent clause")
+  try
+    Vampire_kernel_check.check_equality_symmetry
+      ~id
+      ~swap_equality_literal:swap_literal_equality
+      ~parent:parent_clause
+      ~literal_index
+      ~result
+  with Vampire_kernel_check.Error msg -> error msg
 
 let check_paramodulate checked id equality_parent_id target_parent_id equality_index target_index position from_tm to_tm result =
   let equality_clause = lookup_clause checked equality_parent_id in

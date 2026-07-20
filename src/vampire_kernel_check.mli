@@ -120,6 +120,15 @@ val check_truth_conflict :
   result:Vampire_kernel_syntax.clause ->
   unit
 
+val check_equality_symmetry :
+  id:string ->
+  swap_equality_literal:
+    (Vampire_kernel_syntax.literal -> Vampire_kernel_syntax.literal option) ->
+  parent:Vampire_kernel_syntax.clause ->
+  literal_index:int ->
+  result:Vampire_kernel_syntax.clause ->
+  unit
+
 val check_definition_rewrite_chain :
   id:string ->
   equality_sides:(Syntax.tm -> (Syntax.tm * Syntax.tm) option) ->

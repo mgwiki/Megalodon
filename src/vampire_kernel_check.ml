@@ -221,6 +221,18 @@ let check_truth_conflict
   if not (same_clause_multiset expected result) then
     error (id ^ ": truth-conflict result does not match parent after literal removal")
 
+let check_equality_symmetry ~id ~swap_equality_literal ~parent ~literal_index ~result =
+  let literal = nth literal_index parent (id ^ " equality-symmetry literal") in
+  let swapped_literal =
+    match swap_equality_literal literal with
+    | Some swapped -> swapped
+    | None -> error (id ^ ": equality-symmetry literal is not an equality")
+  in
+  let without_literal = remove_at literal_index parent (id ^ " equality-symmetry literal") in
+  let expected = without_literal @ [swapped_literal] in
+  if not (same_clause_multiset expected result) then
+    error (id ^ ": equality-symmetry result does not match parent clause")
+
 let check_definition_rewrite_chain
     ~id
     ~equality_sides
