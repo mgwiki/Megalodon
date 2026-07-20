@@ -119,6 +119,10 @@ kept deliberately architectural rather than coverage-driven:
   rule with a primitive contract but without a `primitive_expansion=prefix`
   marker.  A TH0 smoke proof emitted 34 `kernel_v1` records, all carrying the
   marker.
+- The older string-based primitive expansion-chain metadata now also emits the
+  singular `primitive_expansion_requires=...` field expected by strict
+  Megalodon validation.  A fresh Vampire-emitted TH0 certificate was extracted
+  and accepted by Megalodon strict checking for 28 steps.
 
 This still does not make the project complete, and it does not rehabilitate the
 old 28-command prefix as E1 evidence.  It is, however, the intended correction
