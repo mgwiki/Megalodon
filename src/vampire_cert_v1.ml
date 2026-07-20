@@ -13420,11 +13420,27 @@ let native_core_bind_result_step_variables variables result_step_variables body_
     ~close_body:(native_core_close_pf (variables @ result_step_variables))
     body_proof
 
+let native_core_apply_parent_step_variables
+    ?(shift_parent_proof=true)
+    parent_step_variables
+    result_step_variables
+    resolve_parent_variable
+    missing_parent_variable
+    proof =
+  try
+    Vampire_kernel_elab.apply_parent_step_variables
+      ~shift_parent_proof
+      ~parent_step_variables
+      ~result_step_variables
+      ~resolve_parent_variable
+      ~missing_parent_variable
+      proof
+  with Vampire_kernel_elab.Error msg -> error msg
+
 let native_core_fool_formula_proof
     id symbol_table variables parent_step_variables result_step_variables source target proof =
   let source = native_core_close_tm (variables @ result_step_variables) source in
   let target = native_core_close_tm (variables @ result_step_variables) target in
-  let result_variable_count = List.length result_step_variables in
   let db_for_result_variable name tp =
     Vampire_kernel_elab.db_for_result_variable ~result_step_variables name tp
   in
@@ -13476,22 +13492,16 @@ let native_core_fool_formula_proof
         end
   in
   let parent_proof =
-    List.fold_left
-      (fun proof (name, tp) ->
-         let arg =
-           match db_for_result_variable name tp with
-           | Some tm -> tm
-           | None ->
-               begin match fallback_variable tp with
-               | Some tm -> tm
-               | None ->
-                   error
-                     (id ^ ": native preprocess proof-term fool_formula cannot instantiate dropped parent variable " ^ name)
-               end
-         in
-         PTmAp (proof, arg))
-      (pftmshift 0 result_variable_count proof)
+    native_core_apply_parent_step_variables
       parent_step_variables
+      result_step_variables
+      (fun name tp ->
+         match db_for_result_variable name tp with
+         | Some _ as result -> result
+         | None -> fallback_variable tp)
+      (fun name ->
+         id ^ ": native preprocess proof-term fool_formula cannot instantiate dropped parent variable " ^ name)
+      proof
   in
   let initial_context = List.rev (List.map snd result_step_variables) in
   let witness context tp =
@@ -14372,25 +14382,20 @@ let native_core_formula_orientation_proof
     | Some tm -> Some (native_core_close_tm (variables @ result_step_variables) tm)
   in
   let parent_proof =
-    List.fold_left
-      (fun proof (name, tp) ->
-         let arg =
-           match mapped_parent_variable name tp with
-           | Some tm -> tm
-           | None ->
-           match db_for_result_variable name tp with
-           | Some tm -> tm
-           | None ->
-               begin match fallback_variable tp with
-               | Some tm -> tm
-               | None ->
-                   error
-                     (id ^ ": native preprocess proof-term formula orientation cannot instantiate dropped parent variable " ^ name)
-               end
-         in
-         PTmAp (proof, arg))
-      (pftmshift 0 result_variable_count proof)
+    native_core_apply_parent_step_variables
       parent_step_variables
+      result_step_variables
+      (fun name tp ->
+         match mapped_parent_variable name tp with
+         | Some _ as result -> result
+         | None ->
+             begin match db_for_result_variable name tp with
+             | Some _ as result -> result
+             | None -> fallback_variable tp
+             end)
+      (fun name ->
+         id ^ ": native preprocess proof-term formula orientation cannot instantiate dropped parent variable " ^ name)
+      proof
   in
   let source = native_core_close_tm (variables @ result_step_variables) source in
   let target = native_core_close_tm (variables @ result_step_variables) target in
@@ -14805,7 +14810,6 @@ let native_core_predicate_definition_fold_step_proof
   let _, definiendum, body = predicate_definition_parts id definition in
   let base_depth = universal_binder_count definition in
   let patterns = predicate_definition_fold_patterns base_depth body definiendum in
-  let result_variable_count = List.length result_step_variables in
   let db_for_result_variable name tp =
     Vampire_kernel_elab.db_for_result_variable ~result_step_variables name tp
   in
@@ -14827,22 +14831,16 @@ let native_core_predicate_definition_fold_step_proof
         end
   in
   let parent_proof =
-    List.fold_left
-      (fun proof (name, tp) ->
-         let arg =
-           match db_for_result_variable name tp with
-           | Some tm -> tm
-           | None ->
-               begin match fallback_variable tp with
-               | Some tm -> tm
-               | None ->
-                   error
-                     (id ^ ": native preprocess proof-term predicate fold cannot instantiate dropped parent variable " ^ name)
-               end
-         in
-         PTmAp (proof, arg))
-      (pftmshift 0 result_variable_count proof)
+    native_core_apply_parent_step_variables
       parent_step_variables
+      result_step_variables
+      (fun name tp ->
+         match db_for_result_variable name tp with
+         | Some _ as result -> result
+         | None -> fallback_variable tp)
+      (fun name ->
+         id ^ ": native preprocess proof-term predicate fold cannot instantiate dropped parent variable " ^ name)
+      proof
   in
   let close_tm tm = native_core_close_tm (variables @ result_step_variables) tm in
   let source = close_tm source in
@@ -15809,30 +15807,24 @@ let native_core_skolem_formula_proof
     | None -> fallback_declared_variable tp
   in
   let parent_proof =
-    List.fold_left
-      (fun proof (name, tp) ->
-         let arg =
-           match db_for_result_variable name tp with
-           | Some tm -> tm
-           | None ->
-               begin match instantiation_for_parent_variable name tp with
-               | Some tm -> tm
-               | None ->
-                   begin match substitution_for_parent_variable name tp with
-                   | Some tm -> tm
-                   | None ->
-                       begin match fallback_variable tp with
-                       | Some tm -> tm
-                       | None ->
-                           error
-                             (id ^ ": native core proof-term skolemization cannot instantiate dropped parent variable " ^ name)
-                       end
-                   end
-               end
-         in
-         PTmAp (proof, arg))
-      (pftmshift 0 result_variable_count proof)
+    native_core_apply_parent_step_variables
       parent_step_variables
+      result_step_variables
+      (fun name tp ->
+         match db_for_result_variable name tp with
+         | Some _ as result -> result
+         | None ->
+             begin match instantiation_for_parent_variable name tp with
+             | Some _ as result -> result
+             | None ->
+                 begin match substitution_for_parent_variable name tp with
+                 | Some _ as result -> result
+                 | None -> fallback_variable tp
+                 end
+             end)
+      (fun name ->
+         id ^ ": native core proof-term skolemization cannot instantiate dropped parent variable " ^ name)
+      proof
   in
   let rec convert source target proof =
     if native_core_formula_prop source = native_core_formula_prop target then proof

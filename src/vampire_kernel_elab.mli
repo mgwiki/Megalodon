@@ -56,6 +56,15 @@ val bind_result_step_variables :
   Syntax.pf ->
   Syntax.pf
 
+val apply_parent_step_variables :
+  ?shift_parent_proof:bool ->
+  parent_step_variables:(string * Syntax.tp) list ->
+  result_step_variables:(string * Syntax.tp) list ->
+  resolve_parent_variable:(string -> Syntax.tp -> Syntax.tm option) ->
+  missing_parent_variable:(string -> string) ->
+  Syntax.pf ->
+  Syntax.pf
+
 val open_step_theorem_body_in_result_context :
   ?shift_parent_proof:bool ->
   id:string ->

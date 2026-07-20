@@ -78,6 +78,25 @@ let bind_result_step_variables ~result_step_variables ~close_body body_proof =
     result_step_variables
     body_proof
 
+let apply_parent_step_variables
+    ?(shift_parent_proof=true)
+    ~parent_step_variables
+    ~result_step_variables
+    ~resolve_parent_variable
+    ~missing_parent_variable
+    proof =
+  let result_variable_count = List.length result_step_variables in
+  List.fold_left
+    (fun proof (name, tp) ->
+       let arg =
+         match resolve_parent_variable name tp with
+         | Some tm -> tm
+         | None -> error (missing_parent_variable name)
+       in
+       PTmAp (proof, arg))
+    (if shift_parent_proof then pftmshift 0 result_variable_count proof else proof)
+    parent_step_variables
+
 let open_step_theorem_body_in_result_context
     ?(shift_parent_proof=true)
     ~id
