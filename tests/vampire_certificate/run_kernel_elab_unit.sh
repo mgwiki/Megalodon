@@ -101,6 +101,16 @@ let () =
        ~normalize:(fun tm -> tm)
        choice_symbols
        binder_proof);
+  let free_witness = Ap (TmH "eps", DB 0) in
+  let shifted_binder_proof =
+    TLam (Prop, PTmAp (Known "k", Ap (TmH "eps", DB 1)))
+  in
+  expect_bool
+    "proof_contains_exact_term should shift needles under term binders"
+    (Vampire_kernel_elab.proof_contains_exact_term
+       ~normalize:(fun tm -> tm)
+       free_witness
+       shifted_binder_proof);
   expect_equal
     "registered_witness_term_replacements should map exact witnesses to introduced symbols"
     [outer_before_inner, TmH "#s0"]

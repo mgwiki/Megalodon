@@ -189,25 +189,30 @@ let proof_contains_term_symbol names proof =
 
 let proof_contains_exact_term ~normalize needle proof =
   let needle = normalize needle in
-  let rec tm_contains tm =
-    normalize tm = needle
+  let shifted_needle depth =
+    tmshift 0 depth needle |> normalize
+  in
+  let rec tm_contains depth tm =
+    normalize tm = shifted_needle depth
     ||
     match tm with
-    | TpAp (body, _) -> tm_contains body
+    | TpAp (body, _) -> tm_contains depth body
     | Ap (left, right) | Imp (left, right) ->
-        tm_contains left || tm_contains right
-    | Lam (_, body) | All (_, body) -> tm_contains body
+        tm_contains depth left || tm_contains depth right
+    | Lam (_, body) | All (_, body) -> tm_contains (depth + 1) body
     | DB _ | TmH _ | Prim _ -> false
   in
-  let rec pf_contains = function
-    | PTpAp (body, _) -> pf_contains body
-    | PTmAp (body, tm) -> pf_contains body || tm_contains tm
-    | PPfAp (left, right) -> pf_contains left || pf_contains right
-    | PLam (prop, body) -> tm_contains prop || pf_contains body
-    | TLam (_, body) -> pf_contains body
+  let rec pf_contains depth = function
+    | PTpAp (body, _) -> pf_contains depth body
+    | PTmAp (body, tm) -> pf_contains depth body || tm_contains depth tm
+    | PPfAp (left, right) ->
+        pf_contains depth left || pf_contains depth right
+    | PLam (prop, body) ->
+        tm_contains depth prop || pf_contains depth body
+    | TLam (_, body) -> pf_contains (depth + 1) body
     | Hyp _ | Known _ -> false
   in
-  pf_contains proof
+  pf_contains 0 proof
 
 let first_enclosing_term_with_symbol names proof =
   let rec tm_detail path enclosing = function
