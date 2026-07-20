@@ -805,3 +805,40 @@ expansion: both sides use library `not`/`Eps_prop`, but their de Bruijn depths
 inside the nested predicate differ.  The next accepted change must therefore
 address the branch-choice predicate lifting/closing discipline at the proof
 application where the mismatch is created.
+
+## Multi-Choice Cleanup Guard, 2026-07-20
+
+Commit `83da761` removes an artificial restriction in the CPS branch-choice
+cleanup path: a Skolem entry no longer has to be the only staged branch witness
+before contract-backed local choice transports are considered.  This matters
+for the active `and3I` shape, where `u30` has both `sK0` and `sK1`.
+
+The change is still fail-closed.  Before a transport list is used, the checker
+groups candidates by the actual local choice occurrence.  If a single
+occurrence would be mapped to more than one distinct backed definition, that
+occurrence is discarded and the proof must still pass the ordinary final
+`check_propofpf` gate.  This is not a new heuristic and it does not count as a
+proof frontier increase.
+
+Focused validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+WORK_DIR=/project/tmp/and_prefix_multi_choice_final.1784559155 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+WORK_DIR=/project/tmp/prefix4_multi_choice_final.1784559155 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+```
+
+The result remains three qualifying original-source proofs, and `and3I` still
+fails closed.
+
+I also tested a broader explicit-state experiment: storing Skolem formula-table
+entries after eagerly replacing generated `#sK` symbols by their `Eps_prop`
+definitions.  That is conceptually aligned with removing hidden certificate
+delta state, but applying it at formula storage time is too broad and
+regresses the first focused proof, `FalseE`.  The experiment was reverted.
+The next work should therefore not be another global rewrite table change.  It
+should be a scoped transport proof object at the direct Skolem proof
+construction boundary, or richer Vampire-emitted small-kernel data from which
+that transport is deterministically elaborated.

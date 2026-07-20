@@ -544,8 +544,10 @@ This prototype is intentionally fail-closed:
 
 - branch-choice records are parsed and validated by default, but they do not
   by themselves count as a proof of the Skolem transformation;
-- local choice-term candidates are considered only for a single staged branch
-  witness whose symbol is named by a parsed branch-choice contract;
+- local choice-term candidates are considered only for staged branch witnesses
+  whose symbols are named by parsed branch-choice contracts;
+- if one local choice occurrence would be transported to multiple distinct
+  definitions, that occurrence is discarded before proof checking;
 - candidate definitions are installed into the delta tables only while the
   transformed proof is being checked;
 - failed candidates restore the previous delta state and are not committed to
@@ -581,3 +583,18 @@ implication argument contains `#sK1`, while the available checked proof was
 constructed through Megalodon's `Eps_prop` choice witness.  The next accepted
 milestone must therefore construct or emit the scoped proof transport between
 those propositions.
+
+Follow-up evidence on 2026-07-20: the importer no longer requires there to be
+exactly one staged branch witness before it collects contract-backed local
+choice transports.  Multi-witness entries are allowed, but the collection is
+still fail-closed: any local choice occurrence with conflicting candidate
+definitions is filtered out before the temporary delta check.  The focused
+frontier remains unchanged at `FalseE`, `andEL`, and `andER`; prefix-4 still
+fails closed at `and3I`.
+
+A broader experiment that stored Skolem formula-table entries with generated
+symbols eagerly expanded to `Eps_prop` was rejected.  It regressed the first
+qualifying proof, showing that explicit witness expansion cannot simply be
+applied at formula storage time.  The missing object is still a scoped
+proof-term transport at the direct Skolem construction boundary, or equivalent
+Vampire-emitted small-kernel certificate data for that transport.
