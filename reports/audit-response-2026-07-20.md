@@ -702,3 +702,40 @@ is not explained by result-step ambient lifting alone.  The new artifact is
 `/project/tmp/and3I_depth_debug.1784556183`.  The next target remains explicit
 transport across the certificate-local Skolem witness definition at the
 returned-proof/live-check boundary.
+
+## Post-Read Amendment, 2026-07-20
+
+After re-reading the audit on `vampire/megalodon6`, I tested whether the
+existing broad Skolem-CPS fail-fast guard could simply become part of
+qualifying mode:
+
+```text
+WORK_DIR=/project/tmp/prefix4_skolem_cps_failfast.1784557025 \
+TMPDIR=/project/tmp \
+VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire \
+MEGALODON_CERT_FAIL_FAST_SKOLEM_CPS=1 \
+tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+```
+
+That is too coarse.  It regressed the focused original-source prefix from
+three reconstructed commands to one, failing already at `andEL`.  So the
+correct audit response is not to flip a global debug knob and call that
+determinism.  The useful narrowed invariant is:
+
+- keep the first three qualifying proofs as the current source-bound frontier;
+- keep broad CPS fail-fast as a diagnostic option only;
+- do not add more Skolem heuristics in `vampire_cert_v1.ml`;
+- implement the next proof step as an explicit small-kernel
+  witness-transport object for `sK := Eps P`, with the transport proof
+  constructed in `vampire_kernel_elab.ml` and checked through
+  `vampire_kernel_check.ml`;
+- make the exported proof independent of certificate-local Skolem delta
+  conversion before counting `and3I` or anything after it as E1.
+
+This also corrects the immediate interpretation of the current `and3I`
+failure.  Vampire is emitting enough branch-choice metadata for the selected
+Skolem witnesses, and Megalodon is selecting it.  The missing piece is not
+another branch-choice matcher.  It is a scoped proof-term transport from the
+epsilon witness proposition to the Skolem-symbol proposition, or an equivalent
+proof construction that eliminates the Skolem symbol before the returned proof
+enters live Qed checking.

@@ -399,14 +399,18 @@ The current intended shape is a single direct branch source
 `vampire_exists_prop (fun x => body)`, where `symbol` is the Skolem symbol
 introduced for `x`, `predicate` is the emitted lambda, and `body` is the
 lambda body still open over `replaced_var`. Megalodon parses standalone
-`LAMV`/`VLAMV` predicates as real lambda terms and validates these records
-only when `MEGALODON_CERT_ENABLE_BRANCH_CHOICE_CONTRACTS=1` is set. In that
-mode it checks that the choice symbol belongs to the branch-introduced witness
-set and that the predicate is the lambda over the emitted body after
-abstracting over `replaced_var`. The flag is intentional while branch choices
-remain diagnostic metadata rather than a checked proof rule: the default
-reconstruction path must not change behavior from certificate fields that are
-not yet consumed as proof objects.
+`LAMV`/`VLAMV` predicates as real lambda terms and validates these records by
+default. The checker verifies that the choice symbol belongs to the
+branch-introduced witness set and that the emitted predicate/body/witness data
+are mutually consistent after alias rewriting.
+
+This metadata is still not enough for a qualifying Skolem proof by itself.  A
+qualifying branch-choice step must also include, or deterministically elaborate,
+an explicit witness-transport proof object for the local equation
+`sK := Eps predicate`.  The returned Megalodon proof must not rely on a
+certificate-local global delta entry for that conversion.  Until that transport
+object exists, branch-choice records are validation and selection data, not a
+license for broad search over local choice terms.
 
 ## Deferred from the Clausal Kernel: AVATAR
 
@@ -530,8 +534,8 @@ to enable a bounded number of such attempts.
 
 This prototype is intentionally fail-closed:
 
-- branch-choice records are parsed only under
-  `MEGALODON_CERT_ENABLE_BRANCH_CHOICE_CONTRACTS=1`;
+- branch-choice records are parsed and validated by default, but they do not
+  by themselves count as a proof of the Skolem transformation;
 - local choice-term candidates are considered only for a single staged branch
   witness whose symbol is named by a parsed branch-choice contract;
 - candidate definitions are installed into the delta tables only while the
@@ -549,5 +553,13 @@ for `183:4` shows that `u30` stages 20 contract-backed local branch-choice
 replacement candidates, but the transformed proof is rejected because the
 proof-local `vampire_exists_prop_choice` term and the proposition containing
 `sK1` are not convertible under the current closed branch witness definition.
-The next design step is a real small-kernel branch-choice proof object rather
-than broader default search over local choice terms.
+Current evidence on 2026-07-20 supersedes the older `183:4` note.  In the
+original-source `and3I` prefix, Vampire emits the needed branch-choice records
+for `sK0` and `sK1`, and Megalodon selects them.  The live checker still
+rejects the proof because the returned proof depends on the certificate-local
+Skolem-to-epsilon conversion at the wrong scoped proposition.  A global
+`MEGALODON_CERT_FAIL_FAST_SKOLEM_CPS=1` diagnostic is too coarse: it regresses
+the focused prefix from three reconstructed commands to one.  The next design
+step is therefore a real small-kernel witness-transport proof object, not
+broader default search over local choice terms and not a blanket fail-fast
+toggle.
