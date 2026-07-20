@@ -14210,6 +14210,10 @@ let _ =
       includingsigfile := false;
       if !vampireabytargetstop && !vampireabytarget = None then
         raise (Failure("-vampireabytargetstop requires -vampireabytarget <lineno> <charno>"));
+      if !vampireabyqualifying && !allowincompleteqed then
+        raise (Failure("-vampireabyqualifying cannot be combined with -allowincompleteqed"));
+      if !vampireabyqualifying && !vampireabytargetstop then
+        raise (Failure("-vampireabyqualifying cannot be combined with -vampireabytargetstop"));
       if !vampireabyqualifying
          && Sys.getenv_opt "MEGALODON_CERT_ALLOW_TRANSITIONAL_PREPROCESS_KNOWN" = Some "1" then
         raise

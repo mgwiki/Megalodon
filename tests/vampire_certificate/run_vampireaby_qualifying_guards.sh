@@ -31,4 +31,39 @@ if ! rg -q -- '-vampireabyqualifying cannot be combined with MEGALODON_CERT_ALLO
   exit 1
 fi
 
+if bin/megalodon \
+    -allowincompleteqed \
+    -vampireabyqualifying \
+    examples/egal/PfgENov2021Preambles.mg \
+    >"$WORK_DIR/allow_incomplete_allowed.out" \
+    2>"$WORK_DIR/allow_incomplete_allowed.err"; then
+  echo "qualifying mode accepted -allowincompleteqed" >&2
+  exit 1
+fi
+
+if ! rg -q -- '-vampireabyqualifying cannot be combined with -allowincompleteqed' \
+    "$WORK_DIR/allow_incomplete_allowed.err"; then
+  echo "qualifying mode failed for the wrong reason with -allowincompleteqed" >&2
+  cat "$WORK_DIR/allow_incomplete_allowed.err" >&2
+  exit 1
+fi
+
+if bin/megalodon \
+    -vampireabyqualifying \
+    -vampireabytarget 1 0 \
+    -vampireabytargetstop \
+    examples/egal/PfgENov2021Preambles.mg \
+    >"$WORK_DIR/target_stop_allowed.out" \
+    2>"$WORK_DIR/target_stop_allowed.err"; then
+  echo "qualifying mode accepted -vampireabytargetstop" >&2
+  exit 1
+fi
+
+if ! rg -q -- '-vampireabyqualifying cannot be combined with -vampireabytargetstop' \
+    "$WORK_DIR/target_stop_allowed.err"; then
+  echo "qualifying mode failed for the wrong reason with -vampireabytargetstop" >&2
+  cat "$WORK_DIR/target_stop_allowed.err" >&2
+  exit 1
+fi
+
 echo "vampireaby qualifying guard checks passed"
