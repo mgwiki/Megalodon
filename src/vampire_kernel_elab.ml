@@ -124,6 +124,22 @@ let open_step_theorem_body_in_result_context
     (if shift_parent_proof then pftmshift 0 result_variable_count proof else proof)
     parent_step_variables
 
+let skolem_choice_witness_proof
+    ~choice_theorem
+    ~eps_symbol
+    ~witness_type
+    ~predicate
+    exists_proof =
+  match predicate with
+  | Lam (predicate_type, _) when predicate_type = witness_type ->
+      let epsilon_witness = Ap (TmH eps_symbol, predicate) in
+      epsilon_witness,
+      PPfAp (PTmAp (Known choice_theorem, predicate), exists_proof)
+  | Lam _ ->
+      error "Skolem choice predicate has the wrong witness type"
+  | _ ->
+      error "Skolem choice predicate is not a lambda"
+
 let replace_exact_terms_in_proof ~normalize replacements proof =
   let rec replace_top_opt depth tm =
     match

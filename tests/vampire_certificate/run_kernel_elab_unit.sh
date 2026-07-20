@@ -34,8 +34,37 @@ let expect_error label f =
     exit 1
   with
   | Vampire_kernel_check.Error _ -> ()
+  | Vampire_kernel_elab.Error _ -> ()
 
 let () =
+  let choice_witness, choice_proof =
+    Vampire_kernel_elab.skolem_choice_witness_proof
+      ~choice_theorem:"choice_prop"
+      ~eps_symbol:"eps"
+      ~witness_type:Prop
+      ~predicate:(Lam (Prop, Ap (DB 0, TmH "a")))
+      (Hyp 0)
+  in
+  expect_equal
+    "skolem_choice_witness_proof should build the epsilon witness"
+    (Ap (TmH "eps", Lam (Prop, Ap (DB 0, TmH "a"))))
+    choice_witness;
+  expect_equal
+    "skolem_choice_witness_proof should apply the choice theorem to an exists proof"
+    (PPfAp
+       (PTmAp (Known "choice_prop", Lam (Prop, Ap (DB 0, TmH "a"))),
+        Hyp 0))
+    choice_proof;
+  expect_error
+    "skolem_choice_witness_proof should reject predicate type mismatches"
+    (fun () ->
+       ignore
+         (Vampire_kernel_elab.skolem_choice_witness_proof
+            ~choice_theorem:"choice_prop"
+            ~eps_symbol:"eps"
+            ~witness_type:Set
+            ~predicate:(Lam (Prop, DB 0))
+            (Hyp 0)));
   let inner_choice = Ap (TmH "eps", TmH "inner") in
   let outer_after_inner = Ap (TmH "eps", TmH "s0") in
   let outer_before_inner = Ap (TmH "eps", inner_choice) in

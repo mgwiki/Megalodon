@@ -955,3 +955,39 @@ The next proof-producing step remains the same: use the already validated
 Vampire-emitted `choice_witness_substitution`/`witnessed_body` data to build a
 small, explicit Skolem/choice transport proof term, rather than broadening
 fallback search in the importer.
+
+## Choice Proof Constructor Extraction, 2026-07-20
+
+The next small cleanup extracts the generic proof-term constructor for applying
+Megalodon's classical choice theorem to an existential proof:
+
+```text
+exists P  ->  P (Eps P)
+```
+
+`vampire_kernel_elab.ml` now exposes `skolem_choice_witness_proof`, which
+returns both the epsilon witness term and the proof obtained by applying the
+typed choice theorem to the emitted predicate and the source existential
+proof.  The helper rejects non-lambda predicates and wrong witness types.  The
+direct Skolem formula replay and formula-orientation paths now use this helper
+instead of constructing the proof term locally in `vampire_cert_v1.ml`.
+
+This is not a proof-frontier increase.  It is another extraction step toward
+the audit-requested small Skolem/choice elaborator: the primitive choice proof
+operation now lives at the deterministic elaborator boundary, with unit
+coverage, and the monolithic importer only supplies the theorem name, epsilon
+symbol, predicate and source proof.
+
+Focused validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+WORK_DIR=/project/tmp/and_prefix_choice_extracted.1784563974 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+WORK_DIR=/project/tmp/prefix4_choice_extracted.1784563974 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+```
+
+The current source-bound frontier remains unchanged: three qualifying proofs
+pass, and `and3I` still fails closed pending an explicit scoped
+Skolem/choice transport proof.

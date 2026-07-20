@@ -14677,8 +14677,14 @@ let native_core_formula_orientation_proof
                 error
                   (id ^ ": native preprocess proof-term formula orientation has no choice theorem for nested existential");
               let predicate = Lam (tp, native_core_formula_prop body) in
-              let epsilon_witness = Ap (TmH (native_core_eps_symbol tp), predicate) in
-              let choice_proof = PPfAp (PTmAp (Known choice, predicate), proof) in
+              let epsilon_witness, choice_proof =
+                Vampire_kernel_elab.skolem_choice_witness_proof
+                  ~choice_theorem:choice
+                  ~eps_symbol:(native_core_eps_symbol tp)
+                  ~witness_type:tp
+                  ~predicate
+                  proof
+              in
               convert
                 local_depth
                 `Forward
@@ -15421,8 +15427,14 @@ let rec native_core_direct_skolem_formula_proof
           | Some predicate -> predicate
           | None -> predicate_for_body body
         in
-        let epsilon_witness = Ap (TmH (native_core_eps_symbol tp), predicate) in
-        let choice_proof = PPfAp (PTmAp (Known choice, predicate), proof) in
+        let epsilon_witness, choice_proof =
+          Vampire_kernel_elab.skolem_choice_witness_proof
+            ~choice_theorem:choice
+            ~eps_symbol:(native_core_eps_symbol tp)
+            ~witness_type:tp
+            ~predicate
+            proof
+        in
         let instantiated_body = tmsubst body 0 epsilon_witness in
         choose_basic
           local_depth
@@ -15607,8 +15619,14 @@ let rec native_core_direct_skolem_formula_proof
                   | Some predicate -> predicate
                   | None -> Lam (tp, checked_formula_prop (local_depth + 1) body)
                 in
-                let epsilon_witness = Ap (TmH (native_core_eps_symbol tp), predicate) in
-                let choice_proof = PPfAp (PTmAp (Known choice, predicate), proof) in
+                let epsilon_witness, choice_proof =
+                  Vampire_kernel_elab.skolem_choice_witness_proof
+                    ~choice_theorem:choice
+                    ~eps_symbol:(native_core_eps_symbol tp)
+                    ~witness_type:tp
+                    ~predicate
+                    proof
+                in
                 let target_body = tmsubst body 0 epsilon_witness in
                 choose_with_helpers
                   local_depth

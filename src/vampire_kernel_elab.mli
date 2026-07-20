@@ -75,6 +75,14 @@ val open_step_theorem_body_in_result_context :
   Syntax.pf ->
   Syntax.pf
 
+val skolem_choice_witness_proof :
+  choice_theorem:string ->
+  eps_symbol:string ->
+  witness_type:Syntax.tp ->
+  predicate:Syntax.tm ->
+  Syntax.pf ->
+  Syntax.tm * Syntax.pf
+
 val replace_exact_terms_in_proof :
   normalize:(Syntax.tm -> Syntax.tm) ->
   (Syntax.tm * Syntax.tm) list ->
