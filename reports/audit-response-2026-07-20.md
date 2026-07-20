@@ -1813,3 +1813,33 @@ WORK_DIR=/project/tmp/prefix4_extracteddiff_1784576251 TMPDIR=/project/tmp VAMPI
 
 The counted frontier remains unchanged: `FalseE`, `andEL`, and `andER` pass
 under `-vampireabyqualifying`; `and3I` still fails closed.
+
+## Live-Safe Delta Storage Correction, 2026-07-20
+
+While investigating the same mismatch, I found a representation inconsistency
+in the live-safe certificate delta filter.  The filter used the source-expanded
+body to decide whether a certificate-local definition was safe, but then stored
+the original certificate body in the filtered live delta.  That meant later
+unfolding could see a different representation from the one the safety check
+had accepted.
+
+The filtered live delta now stores the expanded body.  This is a consistency
+fix, not an `and3I` breakthrough: a single debug rerun still reports the same
+first live-expanded mismatch,
+
+```text
+DB index 18 <> 14
+```
+
+so the remaining failure is still in contextual branch-choice/source-goal
+transport rather than in missing live-safe delta expansion.
+
+Validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+WORK_DIR=/project/tmp/prefix4_expanded_live_delta_1784576403 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+WORK_DIR=/project/tmp/prefix4_expanded_live_delta_debug_1784576419 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire MEGALODON_CERT_DEBUG=1 MEGALODON_CERT_DEBUG_SUPPLIED=1 MEGALODON_CERT_DEBUG_SOURCE_APPLY=1 tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+```
