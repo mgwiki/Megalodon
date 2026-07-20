@@ -633,7 +633,24 @@ let () =
                Ap (Ap (TmH "eps", Lam (Prop, Ap (DB 0, TmH "a"))), TmH "a");
              skolem_transport_to_body = Ap (TmH "#s0", TmH "a");
            })
-        transport_terms.Vampire_kernel_elab.skolem_transport_obligation
+        transport_terms.Vampire_kernel_elab.skolem_transport_obligation;
+      let no_obligation_terms =
+        Vampire_kernel_elab.skolem_choice_transport_terms
+          ~normalize:(fun tm -> tm)
+          ~eps_symbol:"eps"
+          {
+            instantiation with
+            Vampire_kernel_elab.skolem_choice_witnessed_body =
+              Some
+                (Ap
+                   (Ap (TmH "eps", Lam (Prop, Ap (DB 0, TmH "a"))),
+                    TmH "a"));
+          }
+      in
+      expect_equal
+        "skolem_choice_transport_terms should not create a vacuous obligation"
+        None
+        no_obligation_terms.Vampire_kernel_elab.skolem_transport_obligation
   | None ->
       prerr_endline
         "kernel_elab unit failure: skolem_branch_choice_instantiation should keep emitted predicate and body aligned";
