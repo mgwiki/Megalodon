@@ -4159,18 +4159,6 @@ let vampire_constructive_goal_search
       result
 
 let vampire_reconstruct_current_goal_from_refutation ?source_map ?extra_delta ?extra_symbols claimtm cxtm cxpf proof proposition =
-  let direct_goal =
-    vampire_constructive_goal_search
-      ?source_map
-      ?extra_delta
-      ?extra_symbols
-      claimtm
-      cxtm
-      cxpf
-  in
-  match direct_goal with
-  | Some _ as result -> result
-  | None ->
   let native_false_goal =
     if vampire_false_like proposition then
       match Hashtbl.find_opt sigknh "FalseE" with
@@ -4275,7 +4263,16 @@ let vampire_reconstruct_current_goal_from_refutation ?source_map ?extra_delta ?e
         end
         end
   in
-  try_proof 8 proof proposition
+  match try_proof 8 proof proposition with
+  | Some _ as result -> result
+  | None ->
+      vampire_constructive_goal_search
+        ?source_map
+        ?extra_delta
+        ?extra_symbols
+        claimtm
+        cxtm
+        cxpf
 
 let vampire_reconstruct_goal_from_supplied_refutation
     ?source_map
@@ -5935,7 +5932,7 @@ let check_vampire_aby_native_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) ?(proof_
             match claimtm with
             | None -> None
             | Some claimtm ->
-                if proof_command_label = "vampire" then
+                if proof_command_label = "vampire" || !vampireabynativestrict then
                   replay_from_certificate claimtm
                 else
                   begin match constructive_fallback claimtm with
