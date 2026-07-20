@@ -42,6 +42,7 @@ let vampirecertv1coreclosed : bool ref = ref false;;
 let vampirecertv1corepfcheck : bool ref = ref false;;
 let vampirecertv1preprocesspfcheck : bool ref = ref false;;
 let vampirecertv1emit : string option ref = ref None;;
+let vampirechecklivepropchoice : bool ref = ref false;;
 let bushy = ref false;;
 let bushykdeps : (string,unit) Hashtbl.t = Hashtbl.create 10;;
 let bushyhdeps : (int,unit) Hashtbl.t = Hashtbl.create 10;;
@@ -892,12 +893,10 @@ let vampire_source_map_expander cxtm source_map =
   in
   List.iter
     (fun entry ->
-       add_alias
-         entry.Vampire_cert_v1.source_map_tptp_name
-         entry.Vampire_cert_v1.source_map_source_name;
-       add_alias
-         entry.Vampire_cert_v1.source_map_source_name
-         entry.Vampire_cert_v1.source_map_source_name)
+       List.iter
+         (fun alias ->
+            add_alias alias entry.Vampire_cert_v1.source_map_source_name)
+         (vampire_source_map_entry_aliases entry))
     source_map;
   let rec expand_tm depth = function
     | TmH ("vampire_false" | "f__false") -> TmH (!fal)
@@ -1895,6 +1894,35 @@ let vampire_live_has_checked_prop_choice () =
   | Some _ -> true
   | None -> false
 
+let check_vampire_live_prop_choice_if_requested () =
+  if !vampirechecklivepropchoice then
+    begin
+      vampire_live_exists_prop_choice_checked_cache := None;
+      let proposition = vampire_live_exists_prop_choice_prop () in
+      match vampire_live_exists_prop_choice_checked_proof () with
+      | Some _ ->
+          Printf.printf
+            "Vampire native live prop-choice proof checked for proposition: %s\n"
+            (tm_to_str proposition);
+          flush stdout
+      | None ->
+          let required_knowns =
+            ["xm"; "FalseE"; "prop_ext_2"; "prop_ext"; "iffI"]
+          in
+          List.iter
+            (fun name ->
+               Printf.printf
+                 "Vampire native live prop-choice dependency %s: %s\n"
+                 name
+                 (if Hashtbl.mem sigknh name then "present" else "missing"))
+            required_knowns;
+          Printf.printf
+            "Vampire native live prop-choice proof failed for proposition: %s\n"
+            (tm_to_str proposition);
+          flush stdout;
+          raise (Failure "Vampire native live prop-choice proof did not check")
+    end
+
 let rec vampire_live_basis_tm_expander = function
   | Ap (TmH "Eps_prop", predicate)
       when vampire_live_has_checked_prop_choice () ->
@@ -2739,7 +2767,7 @@ let vampire_actual_prop_of_proof ?source_map ?extra_delta ?extra_symbols cxtm cx
     | proof_for_check :: rest ->
         try
           let actual, _ = extr_propofpf proof_delta symbol_table cx hyps proof_for_check [] in
-          Some actual
+          Some (vampire_expand_returned_tm ?extra_delta cxtm source_map actual)
         with
         | Failure _ -> try_variants rest
         | _ -> try_variants rest
@@ -5285,28 +5313,44 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
       source_proofs_for_core
       native_core.Vampire_cert_v1.core_native_source_assumption_bindings
   in
+  let expand_returned_tm =
+    vampire_expand_returned_tm
+      ~extra_delta:reconstruction_delta
+      cxtm
+      (Some source_map)
+  in
+  let core_proposition =
+    match
+      vampire_actual_prop_of_proof
+        ~source_map
+        ~extra_delta:native_core.Vampire_cert_v1.core_native_delta_table
+        ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
+        cxtm
+        cxpf
+        native_core.Vampire_cert_v1.core_native_proof
+    with
+    | Some actual -> actual
+    | None -> expand_returned_tm native_core.Vampire_cert_v1.core_native_proposition
+  in
+  let remaining_bindings =
+    List.map
+      (fun binding ->
+         {
+           binding with
+           Vampire_cert_v1.core_native_source_proposition =
+             expand_returned_tm
+               binding.Vampire_cert_v1.core_native_source_proposition;
+         })
+      remaining_bindings
+  in
   if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
     begin
       Printf.printf
         "Vampire native core proposition after source composition: %s\n"
-        (tm_to_str native_core.Vampire_cert_v1.core_native_proposition);
-      begin match
-        vampire_actual_prop_of_proof
-          ~source_map
-          ~extra_delta:native_core.Vampire_cert_v1.core_native_delta_table
-          ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
-          cxtm
-          cxpf
-          native_core.Vampire_cert_v1.core_native_proof
-      with
-      | Some actual ->
-          Printf.printf
-            "Vampire native core actual proof proposition: %s\n"
-            (tm_to_str actual)
-      | None ->
-          Printf.printf
-            "Vampire native core actual proof proposition could not be extracted.\n"
-      end;
+        (tm_to_str core_proposition);
+      Printf.printf
+        "Vampire native core actual proof proposition: %s\n"
+        (tm_to_str core_proposition);
       flush stdout
     end;
   List.iter
@@ -5324,7 +5368,7 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
           !lineno
           !charno
           (List.length remaining_bindings)
-          (tm_to_str native_core.Vampire_cert_v1.core_native_proposition);
+          (tm_to_str core_proposition);
         List.iteri
           (fun index (name, (tp, definition)) ->
              Printf.printf
@@ -5377,7 +5421,7 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
             cxtm
             cxpf
             native_core.Vampire_cert_v1.core_native_proof
-            native_core.Vampire_cert_v1.core_native_proposition
+            core_proposition
             binding
       | _ -> None
     in
@@ -5533,7 +5577,7 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
          ~candidate_props:[claimtm]
          cxtm
          native_core.Vampire_cert_v1.core_native_proof
-         native_core.Vampire_cert_v1.core_native_proposition
+         core_proposition
          remaining_bindings)
   in
   match reconstruct_from_refutation () with
@@ -13169,6 +13213,8 @@ let _ =
 	    else
 	      raise (Failure("Expected -vampirecertv1emit <out.mg>"))
           end
+        else if Sys.argv.(!j) = "-vampirechecklivepropchoice" then
+          vampirechecklivepropchoice := true
         else if Sys.argv.(!j) = "-fofallsubgoals" then
           begin
 	    if !j < i-2 then
@@ -13742,6 +13788,13 @@ let _ =
       if !vampirecertv1sourcecontext || !vampirecertv1sourcecontextstrict then
         begin
           check_main_file ();
+          check_vampire_live_prop_choice_if_requested ();
+          check_vampirecertv1_if_requested ()
+        end
+      else if !vampirechecklivepropchoice then
+        begin
+          check_main_file ();
+          check_vampire_live_prop_choice_if_requested ();
           check_vampirecertv1_if_requested ()
         end
       else
