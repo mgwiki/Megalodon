@@ -2088,3 +2088,49 @@ fails later on the pre-existing direct Skolem fixture:
 ```text
 u1: native preprocess proof-term formula orientation supports only equality symmetry, true equality introduction, and matching logical structure
 ```
+
+## Live-Expanded Proof Boundary Diagnostic, 2026-07-20
+
+The next adjustment was deliberately narrow and audit-aligned: the
+proof-of-proposition checker now has an explicit `already_live` boundary for
+proofs that the supplied-refutation path has already expanded into the live
+Megalodon source context.  Raw certificate proofs still go through the normal
+returned-proof expansion path; pre-expanded live proofs are only passed through
+the live-basis normalizer before checking.  The native-refutation, CPS, and
+double-negation eliminators thread this flag from the qualifying
+supplied-refutation path.
+
+This does **not** solve `or3E`, and it is not counted as new E1 progress.  It
+does remove one ambiguity from the debugging surface: the remaining `DB index
+12 <> 15` mismatch is not merely caused by double-expanding the same returned
+proof in the proof checker.  A focused live-safe-delta trace shows the relevant
+frontier symbols:
+
+```text
+sP0
+sF3
+#sK1
+```
+
+These are introduced by the predicate-definition and Skolem/choice phase, then
+used by later paramodulation/equality steps in the saved `or3E` certificate.
+The saved certificate still checks as a standalone native preprocess proof
+term, while the live source theorem still fails closed when the proof is
+transported back to the original theorem context.
+
+The next implementation target therefore remains the audit-recommended one:
+build deterministic Skolem/choice source-goal transport from the emitted
+certificate contracts, ideally by extracting the relevant code out of
+`megalodon.ml` into the small-kernel elaboration modules.  We should not add
+another source-binding search or relax qualifying mode.
+
+Validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+WORK_DIR=/project/tmp/prefix9_already_live_1784580153 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire MEGALODON_CERT_DEBUG=1 MEGALODON_CERT_DEBUG_GUIDED=1 MEGALODON_CERT_DEBUG_SUPPLIED=1 MEGALODON_CERT_DEBUG_SOURCE_APPLY=1 tests/vampire_reconstruction/run_live_hammer_prefix9_failclosed_qualifying.sh
+WORK_DIR=/project/tmp/prefix9_livesafe_delta_1784580264 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire MEGALODON_CERT_DEBUG=1 MEGALODON_CERT_DEBUG_GUIDED=1 MEGALODON_CERT_DEBUG_SUPPLIED=1 MEGALODON_CERT_DEBUG_SOURCE_APPLY=1 MEGALODON_CERT_DEBUG_LIVE_SAFE_DELTA=1 tests/vampire_reconstruction/run_live_hammer_prefix9_failclosed_qualifying.sh
+WORK_DIR=/project/tmp/prefix9_already_live_verify_1784580439 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix9_failclosed_qualifying.sh
+```

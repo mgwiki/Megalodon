@@ -3025,7 +3025,7 @@ let vampire_check_current_goal_proof ?source_map ?extra_delta ?extra_symbols cla
   in
   try_variants (vampire_prop_ext_variants ~delta:proof_delta proof)
 
-let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxpf expected proof =
+let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols ?(already_live=false) cxtm cxpf expected proof =
   let cx =
     List.filter_map
       (fun (_, (tp, definition)) ->
@@ -3100,16 +3100,21 @@ let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxp
     | None, _ -> None
   in
   let proof_expander =
-    vampire_expand_returned_proof ?extra_delta:live_extra_delta cxtm source_map
+    if already_live then vampire_live_basis_expander
+    else vampire_expand_returned_proof ?extra_delta:live_extra_delta cxtm source_map
   in
   let live_expected =
-    vampire_live_basis_tm_expander
-      (vampire_expand_returned_tm ?extra_delta:live_extra_delta cxtm source_map expected)
+    if already_live then vampire_live_basis_tm_expander expected
+    else
+      vampire_live_basis_tm_expander
+        (vampire_expand_returned_tm ?extra_delta:live_extra_delta cxtm source_map expected)
   in
   let live_hyps =
-    List.map
-      (vampire_expand_returned_tm ?extra_delta:live_extra_delta cxtm source_map)
-      hyps
+    if already_live then List.map vampire_live_basis_tm_expander hyps
+    else
+      List.map
+        (vampire_expand_returned_tm ?extra_delta:live_extra_delta cxtm source_map)
+        hyps
   in
   let live_check expanded =
     match extra_symbols with
@@ -3417,10 +3422,10 @@ let vampire_actual_prop_of_proof ?source_map ?extra_delta ?extra_symbols cxtm cx
   in
   try_variants (vampire_prop_ext_variants ~delta:proof_delta proof)
 
-let vampire_xm_double_negation_elim_to ?source_map ?extra_delta ?extra_symbols target cxtm cxpf dnotnot =
+let vampire_xm_double_negation_elim_to ?source_map ?extra_delta ?extra_symbols ?(already_live=false) target cxtm cxpf dnotnot =
   let debug = Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" in
   let check candidate =
-    vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxpf target candidate
+    vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols ~already_live cxtm cxpf target candidate
   in
   let false_elim proof target =
     match vampire_available_known "FalseE" with
@@ -3585,7 +3590,7 @@ let vampire_cps_target = function
         end
   | _ -> None
 
-let vampire_xm_cps_elim_to ?source_map ?extra_delta ?extra_symbols target cxtm cxpf proof proposition =
+let vampire_xm_cps_elim_to ?source_map ?extra_delta ?extra_symbols ?(already_live=false) target cxtm cxpf proof proposition =
   let proof_delta =
     match source_map with
     | None -> vampire_source_context_delta_with_locals cxtm
@@ -3611,6 +3616,7 @@ let vampire_xm_cps_elim_to ?source_map ?extra_delta ?extra_symbols target cxtm c
               ?source_map
               ?extra_delta
               ?extra_symbols
+              ~already_live
               cxtm
               cxpf
               target
@@ -3633,6 +3639,7 @@ let vampire_xm_native_refutation_elim_to
     ?source_map
     ?extra_delta
     ?extra_symbols
+    ?(already_live=false)
     target
     cxtm
     cxpf
@@ -3640,7 +3647,7 @@ let vampire_xm_native_refutation_elim_to
     proposition =
   let debug = Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" in
   let check candidate =
-    vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxpf target candidate
+    vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols ~already_live cxtm cxpf target candidate
   in
   let false_elim proof target =
     match vampire_available_known "FalseE" with
@@ -5149,6 +5156,7 @@ let vampire_reconstruct_goal_from_supplied_refutation
             end
         | _ -> (proof, proposition)
       in
+      let proof_already_live = !vampireabyqualifying in
       let rec try_proposition depth preferred_prop_terms proof proposition =
         let debug_timing =
           Sys.getenv_opt "MEGALODON_CERT_DEBUG_TIMING" = Some "1"
@@ -5186,6 +5194,7 @@ let vampire_reconstruct_goal_from_supplied_refutation
             ?source_map
             ?extra_delta
             ?extra_symbols
+            ~already_live:proof_already_live
             source_target
             cxtm
             cxpf
@@ -5203,6 +5212,7 @@ let vampire_reconstruct_goal_from_supplied_refutation
                 ?source_map
                 ?extra_delta
                 ?extra_symbols
+                ~already_live:proof_already_live
                 source_target
                 cxtm
                 cxpf
@@ -5311,6 +5321,7 @@ let vampire_reconstruct_goal_from_supplied_refutation
                             ?source_map
                             ?extra_delta
                             ?extra_symbols
+                            ~already_live:proof_already_live
                             target
                             cxtm
                             cxpf
