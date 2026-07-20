@@ -11,6 +11,8 @@ val complementary :
 
 val remove_at : int -> 'a list -> string -> 'a list
 
+val replace_at : int -> 'a -> 'a list -> string -> 'a list
+
 val nth : int -> 'a list -> string -> 'a
 
 val same_clause_multiset :
@@ -36,6 +38,38 @@ val subst_clause :
 val unique_clause :
   Vampire_kernel_syntax.clause ->
   Vampire_kernel_syntax.clause
+
+val tm_at_position :
+  Syntax.tm ->
+  int list ->
+  string ->
+  Syntax.tm
+
+val replace_tm_at_position :
+  Syntax.tm ->
+  int list ->
+  Syntax.tm ->
+  string ->
+  Syntax.tm
+
+val try_tm_at_position :
+  Syntax.tm ->
+  int list ->
+  Syntax.tm option
+
+val replace_literal_atom :
+  Vampire_kernel_syntax.literal ->
+  Syntax.tm ->
+  Vampire_kernel_syntax.literal
+
+type definition_rewrite = {
+  definition_parent : string;
+  definition_literal : int;
+  target_literal : int;
+  rewrite_position : int list;
+  rewrite_from : Syntax.tm;
+  rewrite_to : Syntax.tm;
+}
 
 val check_substitute :
   id:string ->
@@ -65,5 +99,14 @@ val check_resolution :
   right:Vampire_kernel_syntax.clause ->
   left_index:int ->
   right_index:int ->
+  result:Vampire_kernel_syntax.clause ->
+  unit
+
+val check_definition_rewrite_chain :
+  id:string ->
+  equality_sides:(Syntax.tm -> (Syntax.tm * Syntax.tm) option) ->
+  source:Vampire_kernel_syntax.clause ->
+  definition_parent:(string -> Vampire_kernel_syntax.clause) ->
+  rewrites:definition_rewrite list ->
   result:Vampire_kernel_syntax.clause ->
   unit

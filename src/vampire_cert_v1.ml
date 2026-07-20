@@ -2769,47 +2769,27 @@ let check_definition_input id clause =
   | _ -> error (id ^ ": definition_input must be a singleton equality clause")
 
 let check_definition_rewrite_chain checked id source_id rewrites result =
-  if rewrites = [] then error (id ^ ": definition_rewrite_chain needs at least one rewrite");
   let source_clause = lookup_clause checked source_id in
-  let check_definition rewrite =
-    let definition_clause = lookup_clause checked rewrite.definition_parent in
-    let definition_literal =
-      nth rewrite.definition_literal definition_clause (id ^ " definition literal")
-    in
-    match definition_literal with
-    | Pos atom ->
-        begin match equality_sides atom with
-        | Some (left, right)
-            when (left = rewrite.rewrite_from && right = rewrite.rewrite_to)
-              || (right = rewrite.rewrite_from && left = rewrite.rewrite_to) -> ()
-        | Some _ -> error (id ^ ": definition rewrite from/to terms do not match definition parent")
-        | None -> error (id ^ ": definition rewrite parent literal is not an equality")
-        end
-    | Neg _ -> error (id ^ ": definition rewrite parent literal must be positive")
-  in
-  let current =
-    List.fold_left
-      (fun current rewrite ->
-         check_definition rewrite;
-         let target_literal =
-           nth rewrite.target_literal current (id ^ " definition rewrite target literal")
-         in
-         let target_atom = literal_atom target_literal in
-         begin match try_tm_at_position target_atom rewrite.rewrite_position with
-         | Some found when found = rewrite.rewrite_from -> ()
-         | Some _ -> error (id ^ ": definition rewrite position does not contain from term")
-         | None -> error (id ^ ": definition rewrite position is invalid")
-         end;
-         let rewritten_atom =
-           replace_tm_at_position target_atom rewrite.rewrite_position rewrite.rewrite_to id
-         in
-         let rewritten_literal = replace_literal_atom target_literal rewritten_atom in
-         replace_at rewrite.target_literal rewritten_literal current (id ^ " definition rewrite target literal"))
-      source_clause
+  let rewrites =
+    List.map
+      (fun rewrite ->
+         { Vampire_kernel_check.definition_parent = rewrite.definition_parent;
+           definition_literal = rewrite.definition_literal;
+           target_literal = rewrite.target_literal;
+           rewrite_position = rewrite.rewrite_position;
+           rewrite_from = rewrite.rewrite_from;
+           rewrite_to = rewrite.rewrite_to; })
       rewrites
   in
-  if not (same_clause_multiset current result) then
-    error (id ^ ": definition_rewrite_chain result does not match explicit rewrite sequence")
+  try
+    Vampire_kernel_check.check_definition_rewrite_chain
+      ~id
+      ~equality_sides
+      ~source:source_clause
+      ~definition_parent:(fun parent_id -> lookup_clause checked parent_id)
+      ~rewrites
+      ~result
+  with Vampire_kernel_check.Error msg -> error msg
 
 let string_starts_with prefix value =
   let prefix_len = String.length prefix in

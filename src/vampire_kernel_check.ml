@@ -26,6 +26,15 @@ let remove_at index items what =
   in
   aux 0 items
 
+let replace_at index replacement items what =
+  if index < 0 then error (what ^ " index must be non-negative");
+  let rec aux i = function
+    | [] -> error (what ^ " index is out of bounds")
+    | _ :: rest when i = index -> replacement :: rest
+    | item :: rest -> item :: aux (i + 1) rest
+  in
+  aux 0 items
+
 let nth index items what =
   if index < 0 then error (what ^ " index must be non-negative");
   try List.nth items index with Failure _ -> error (what ^ " index is out of bounds")
@@ -83,6 +92,57 @@ let unique_clause clause =
   in
   add_unique [] clause
 
+let rec tm_at_position tm position what =
+  match position with
+  | [] -> tm
+  | index :: rest ->
+      let child =
+        match tm, index with
+        | TpAp (body, _), 0 -> body
+        | Ap (TmH "vLAM", body), 0 -> body
+        | Ap (left, _), 0 -> left
+        | Ap (_, right), 1 -> right
+        | Lam (_, body), 0 -> body
+        | Imp (left, _), 0 -> left
+        | Imp (_, right), 1 -> right
+        | All (_, body), 0 -> body
+        | _ -> error (what ^ " position is out of bounds")
+      in
+      tm_at_position child rest what
+
+let rec replace_tm_at_position tm position replacement what =
+  match position with
+  | [] -> replacement
+  | index :: rest ->
+      match tm, index with
+      | TpAp (body, tp), 0 -> TpAp (replace_tm_at_position body rest replacement what, tp)
+      | Ap (TmH "vLAM", body), 0 ->
+          Ap (TmH "vLAM", replace_tm_at_position body rest replacement what)
+      | Ap (left, right), 0 -> Ap (replace_tm_at_position left rest replacement what, right)
+      | Ap (left, right), 1 -> Ap (left, replace_tm_at_position right rest replacement what)
+      | Lam (tp, body), 0 -> Lam (tp, replace_tm_at_position body rest replacement what)
+      | Imp (left, right), 0 -> Imp (replace_tm_at_position left rest replacement what, right)
+      | Imp (left, right), 1 -> Imp (left, replace_tm_at_position right rest replacement what)
+      | All (tp, body), 0 -> All (tp, replace_tm_at_position body rest replacement what)
+      | _ -> error (what ^ " position is out of bounds")
+
+let try_tm_at_position tm position =
+  try Some (tm_at_position tm position "term") with Error _ -> None
+
+let replace_literal_atom literal atom =
+  match literal with
+  | Pos _ -> Pos atom
+  | Neg _ -> Neg atom
+
+type definition_rewrite = {
+  definition_parent : string;
+  definition_literal : int;
+  target_literal : int;
+  rewrite_position : int list;
+  rewrite_from : tm;
+  rewrite_to : tm;
+}
+
 let check_substitute ~id ~parent ~subst ~result =
   let expected = subst_clause subst parent in
   if not (same_clause_multiset expected result) then
@@ -117,3 +177,55 @@ let check_resolution ~id ~left ~right ~left_index ~right_index ~result =
   let expected = left_rest @ right_rest in
   if not (same_clause_multiset expected result) then
     error (id ^ ": resolution result does not match parent clauses after pivot removal")
+
+let check_definition_rewrite_chain
+    ~id
+    ~equality_sides
+    ~source
+    ~definition_parent
+    ~rewrites
+    ~result =
+  if rewrites = [] then error (id ^ ": definition_rewrite_chain needs at least one rewrite");
+  let check_definition rewrite =
+    let definition_clause = definition_parent rewrite.definition_parent in
+    let definition_literal =
+      nth rewrite.definition_literal definition_clause (id ^ " definition literal")
+    in
+    match definition_literal with
+    | Pos atom ->
+        begin match equality_sides atom with
+        | Some (left, right)
+            when (left = rewrite.rewrite_from && right = rewrite.rewrite_to)
+              || (right = rewrite.rewrite_from && left = rewrite.rewrite_to) -> ()
+        | Some _ -> error (id ^ ": definition rewrite from/to terms do not match definition parent")
+        | None -> error (id ^ ": definition rewrite parent literal is not an equality")
+        end
+    | Neg _ -> error (id ^ ": definition rewrite parent literal must be positive")
+  in
+  let current =
+    List.fold_left
+      (fun current rewrite ->
+         check_definition rewrite;
+         let target_literal =
+           nth rewrite.target_literal current (id ^ " definition rewrite target literal")
+         in
+         let target_atom = literal_atom target_literal in
+         begin match try_tm_at_position target_atom rewrite.rewrite_position with
+         | Some found when found = rewrite.rewrite_from -> ()
+         | Some _ -> error (id ^ ": definition rewrite position does not contain from term")
+         | None -> error (id ^ ": definition rewrite position is invalid")
+         end;
+         let rewritten_atom =
+           replace_tm_at_position target_atom rewrite.rewrite_position rewrite.rewrite_to id
+         in
+         let rewritten_literal = replace_literal_atom target_literal rewritten_atom in
+         replace_at
+           rewrite.target_literal
+           rewritten_literal
+           current
+           (id ^ " definition rewrite target literal"))
+      source
+      rewrites
+  in
+  if not (same_clause_multiset current result) then
+    error (id ^ ": definition_rewrite_chain result does not match explicit rewrite sequence")
