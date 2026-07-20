@@ -1144,6 +1144,29 @@ let vampire_live_safe_extra_delta ?(body_expander=(fun tm -> tm)) live_symbols e
 let vampire_qed_registered_delta : string list ref = ref []
 let vampire_qed_registered_symbols : string list ref = ref []
 
+type vampire_qed_reconstruction_state = {
+  vampire_qed_state_delta : string list;
+  vampire_qed_state_symbols : string list;
+}
+
+let vampire_qed_reconstruction_state_snapshot () =
+  {
+    vampire_qed_state_delta = !vampire_qed_registered_delta;
+    vampire_qed_state_symbols = !vampire_qed_registered_symbols;
+  }
+
+let vampire_restore_reconstruction_delta_for_qed before =
+  let keep_delta name = List.mem name before.vampire_qed_state_delta in
+  let keep_symbol name = List.mem name before.vampire_qed_state_symbols in
+  List.iter
+    (fun name -> if not (keep_delta name) then Hashtbl.remove sigdelta name)
+    !vampire_qed_registered_delta;
+  List.iter
+    (fun name -> if not (keep_symbol name) then Hashtbl.remove sigtmof name)
+    !vampire_qed_registered_symbols;
+  vampire_qed_registered_delta := before.vampire_qed_state_delta;
+  vampire_qed_registered_symbols := before.vampire_qed_state_symbols
+
 type vampire_signature_snapshot = {
   vampire_snapshot_delta : (string * string) list;
   vampire_snapshot_symbols : (string * string) list;
@@ -1244,7 +1267,7 @@ let vampire_register_reconstruction_delta_for_qed extra_symbols extra_delta =
 
 let vampire_clear_reconstruction_delta_for_qed () =
   if !vampireabyqualifying
-     || (Sys.getenv_opt "MEGALODON_CERT_KEEP_QED_DELTA" <> Some "1" && not !pfgout) then
+     || Sys.getenv_opt "MEGALODON_CERT_KEEP_QED_DELTA" <> Some "1" then
     begin
       List.iter (Hashtbl.remove sigdelta) !vampire_qed_registered_delta;
       List.iter (Hashtbl.remove sigtmof) !vampire_qed_registered_symbols;
@@ -4560,6 +4583,17 @@ let vampire_reconstruct_goal_from_supplied_refutation
                 | Some extra_delta, None -> Some extra_delta
                 | None, _ -> None
               in
+              let compact_qed_state_before =
+                vampire_qed_reconstruction_state_snapshot ()
+              in
+              let compact_qed_registered = ref false in
+              let rollback_compact_qed_state () =
+                if !compact_qed_registered then
+                  vampire_restore_reconstruction_delta_for_qed
+                    compact_qed_state_before
+              in
+              begin
+              try
               unchecked_timing "expand_returned:start";
               let compact_delta =
                 Sys.getenv_opt "MEGALODON_CERT_COMPACT_QED_DELTA" <> Some "0"
@@ -4572,7 +4606,8 @@ let vampire_reconstruct_goal_from_supplied_refutation
                     | Some live_extra_delta, Some extra_symbols ->
                         vampire_register_reconstruction_delta_for_qed
                           extra_symbols
-                          live_extra_delta
+                          live_extra_delta;
+                        compact_qed_registered := true
                     | _ -> ()
                     end;
                     vampire_expand_returned_proof cxtm source_map target_proof
@@ -4638,6 +4673,7 @@ let vampire_reconstruct_goal_from_supplied_refutation
                         detail;
                       flush stdout
                     end;
+                  rollback_compact_qed_state ();
                   None
               | None ->
                   unchecked_timing "local_check:start";
@@ -4670,6 +4706,7 @@ let vampire_reconstruct_goal_from_supplied_refutation
                                 !charno;
                               flush stdout
                             end;
+                          rollback_compact_qed_state ();
                           None
                     with exn ->
                       unchecked_timing "local_check:failure";
@@ -4682,8 +4719,13 @@ let vampire_reconstruct_goal_from_supplied_refutation
                             (Printexc.to_string exn);
                           flush stdout
                         end;
+                      rollback_compact_qed_state ();
                       None
                   end
+              end
+              with exn ->
+                rollback_compact_qed_state ();
+                raise exn
               end
           | None ->
               unchecked_timing "conv:none";
@@ -11366,6 +11408,12 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
               flush stdout
             end
         in
+        let qed_cleanup_vampire_state where =
+          qed_timing ("vampire_qed_cleanup:" ^ where ^ ":start");
+          vampire_clear_reconstruction_delta_for_qed ();
+          vampire_assert_no_qed_reconstruction_state ("Qed cleanup " ^ where);
+          qed_timing ("vampire_qed_cleanup:" ^ where ^ ":done")
+        in
         qed_timing "start";
         currthm := "";
 	if !pfstate = [] then
@@ -11479,12 +11527,10 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
 			| None -> ()
 		      end
 		  end;
-                  qed_timing "vampire_qed_cleanup:start";
-                  vampire_clear_reconstruction_delta_for_qed ();
-                  vampire_assert_no_qed_reconstruction_state "Qed cleanup";
-                  qed_timing "vampire_qed_cleanup:done";
+                  qed_cleanup_vampire_state "success";
 	          megawiki_target := Some(!qed_is_complete);
 	    with AdmittedPf ->
+              qed_cleanup_vampire_state "admitted";
               if !sexprinfo then Printf.printf "(QEDWITHADMITS)\n";
               megawiki_target := Some false;
 	      if (!verbosity > 9) then (Printf.printf "Theorem %s admitted\n" thmname; flush stdout);
@@ -11502,6 +11548,9 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
 	      end;
 	      treasure := None;
               if not !allowincompleteqed then failwith "Qed is not allowed for a proof with admits, use Admitted instead."
+            | exn ->
+              qed_cleanup_vampire_state "exception";
+              raise exn
 	  end
 	else
 	  raise (Failure("Proof of " ^ thmname ^ " is incomplete"))
