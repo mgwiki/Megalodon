@@ -16187,7 +16187,7 @@ let native_core_pf_term_symbol_detail names proof =
   in
   pf_detail "root" proof
 
-let native_core_choice_witness_symbols =
+let native_core_choice_witness_base_symbols =
   [
     "Eps_i";
     "Eps_prop";
@@ -16195,6 +16195,11 @@ let native_core_choice_witness_symbols =
     "Eps_set_set";
     "Eps_set_set_prop";
   ]
+
+let native_core_choice_witness_symbols =
+  native_core_choice_witness_base_symbols
+  |> List.concat_map native_core_symbol_name_aliases
+  |> List.sort_uniq String.compare
 
 let native_core_pf_contains_choice_witness proof =
   native_core_pf_contains_term_symbol native_core_choice_witness_symbols proof
