@@ -924,3 +924,34 @@ WORK_DIR=/project/tmp/and_prefix_choice_transport.1784561549 TMPDIR=/project/tmp
 The rebuilt Vampire binary also emitted `choice_witness_substitution` and
 `witnessed_body` fields on a real THF Skolem branch-choice probe at
 `/project/tmp/choice_transport_emit.1784561523`.
+
+## Branch-Choice Selection Extraction, 2026-07-20
+
+The latest audit-driven cleanup moves branch witness/choice selection out of
+`vampire_cert_v1.ml` and into `vampire_kernel_elab.ml`.  The extracted helper
+selects a branch choice from typed `skolem_branch_contract` records using the
+certificate's introduced witness list and the shared generated/native alias
+relation.  The importer now calls that helper from CPS Skolem replay instead
+of carrying a local copy of the matching logic.
+
+This is intentionally not a theorem-counting change.  It reduces the
+monolithic importer and adds unit coverage at the deterministic elaborator
+boundary.  Focused validation still reports the honest frontier:
+`FalseE`, `andEL`, and `andER` pass in qualifying mode, while `and3I` fails
+closed at the expected guard.
+
+Focused validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_v1_metadata_audit.sh
+WORK_DIR=/project/tmp/and_prefix_elab_extract.1784563483 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+WORK_DIR=/project/tmp/prefix4_elab_extract.1784563483 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+```
+
+The next proof-producing step remains the same: use the already validated
+Vampire-emitted `choice_witness_substitution`/`witnessed_body` data to build a
+small, explicit Skolem/choice transport proof term, rather than broadening
+fallback search in the importer.

@@ -16434,10 +16434,7 @@ let native_core_skolem_refutation_cps_proof
     | None -> []
   in
   let branch_witness_symbols branch =
-    branch.Vampire_kernel_syntax.skolem_branch_introduced_witnesses
-    |> List.map
-         (fun witness ->
-            witness.Vampire_kernel_syntax.skolem_witness_symbol)
+    Vampire_kernel_elab.skolem_branch_witness_symbols branch
   in
   let witness_set symbols =
     List.sort_uniq String.compare symbols
@@ -16559,33 +16556,10 @@ let native_core_skolem_refutation_cps_proof
     | _ -> None
   in
   let branch_choice_for_witness witness =
-    let witness_names =
-      native_core_symbol_name_aliases witness
-    in
-    skolem_branch_contracts
-    |> List.find_map
-         (fun branch ->
-            let branch_witness_match =
-              branch_witness_symbols branch
-              |> List.concat_map native_core_symbol_name_aliases
-              |> List.exists (fun name -> List.mem name witness_names)
-            in
-            if not branch_witness_match then
-              None
-            else
-              branch.Vampire_kernel_syntax.skolem_branch_choices
-              |> List.find_map
-                   (fun choice ->
-                      let choice_names =
-                        native_core_symbol_name_aliases
-                          choice.Vampire_kernel_syntax.skolem_branch_choice_symbol
-                      in
-                      if List.exists
-                           (fun name -> List.mem name choice_names)
-                           witness_names then
-                        Some (branch, choice)
-                      else
-                        None))
+    Vampire_kernel_elab.skolem_branch_choice_for_witness
+      ~alias_names:native_core_symbol_name_aliases
+      skolem_branch_contracts
+      witness
   in
   let debug_skolem_branch_candidates label term_depth proof_depth source result witnesses =
     if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1"

@@ -178,6 +178,17 @@ val skolem_branch_choice_matches_witness :
   Vampire_kernel_syntax.skolem_branch_choice ->
   bool
 
+val skolem_branch_witness_symbols :
+  Vampire_kernel_syntax.skolem_branch_contract ->
+  string list
+
+val skolem_branch_choice_for_witness :
+  alias_names:(string -> string list) ->
+  Vampire_kernel_syntax.skolem_branch_contract list ->
+  string ->
+  (Vampire_kernel_syntax.skolem_branch_contract
+   * Vampire_kernel_syntax.skolem_branch_choice) option
+
 type skolem_branch_choice_instantiation = {
   skolem_choice_body : Syntax.tm;
   skolem_choice_predicate : Syntax.tm;

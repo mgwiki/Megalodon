@@ -527,6 +527,39 @@ let skolem_branch_choice_matches_witness
       List.exists (fun name -> List.mem name choice_names) target_names
   | _ -> false
 
+let skolem_branch_witness_symbols branch =
+  branch.skolem_branch_introduced_witnesses
+  |> List.map (fun witness -> witness.skolem_witness_symbol)
+
+let skolem_branch_choice_for_witness
+    ~alias_names
+    branches
+    witness =
+  let witness_names = alias_names witness in
+  branches
+  |> List.find_map
+       (fun branch ->
+          let branch_matches =
+            skolem_branch_witness_symbols branch
+            |> List.concat_map alias_names
+            |> List.exists (fun name -> List.mem name witness_names)
+          in
+          if not branch_matches then
+            None
+          else
+            branch.skolem_branch_choices
+            |> List.find_map
+                 (fun choice ->
+                    let choice_names =
+                      alias_names choice.skolem_branch_choice_symbol
+                    in
+                    if List.exists
+                         (fun name -> List.mem name choice_names)
+                         witness_names then
+                      Some (branch, choice)
+                    else
+                      None))
+
 type skolem_branch_choice_instantiation = {
   skolem_choice_body : tm;
   skolem_choice_predicate : tm;

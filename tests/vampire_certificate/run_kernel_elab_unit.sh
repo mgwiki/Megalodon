@@ -247,6 +247,39 @@ let () =
        (Ap (TmH "#s0", TmH "arg"))
        { branch_choice with
          Vampire_kernel_syntax.skolem_branch_choice_witness_term = None });
+  let branch_contract =
+    {
+      Vampire_kernel_syntax.skolem_branch_index = 7;
+      skolem_branch_parent_index = Some 2;
+      skolem_branch_unit = Some "u7";
+      skolem_branch_binder_count = Some 0;
+      skolem_branch_source_formula = Some (TmH "src");
+      skolem_branch_target_formula = Some (TmH "dst");
+      skolem_branch_parent_step_variables = [];
+      skolem_branch_parent_instantiations = [];
+      skolem_branch_introduced_witnesses =
+        [
+          {
+            Vampire_kernel_syntax.skolem_witness_symbol = "s0";
+            skolem_witness_replaced_var = "X";
+            skolem_witness_term = Some (TmH "#s0");
+          };
+        ];
+      skolem_branch_propositions = [];
+      skolem_branch_choices = [branch_choice];
+    }
+  in
+  expect_equal
+    "skolem_branch_witness_symbols should expose introduced witness names"
+    ["s0"]
+    (Vampire_kernel_elab.skolem_branch_witness_symbols branch_contract);
+  expect_equal
+    "skolem_branch_choice_for_witness should select branch choices through aliases"
+    (Some (branch_contract, branch_choice))
+    (Vampire_kernel_elab.skolem_branch_choice_for_witness
+       ~alias_names:aliases
+       [branch_contract]
+       "#s0");
   expect_equal
     "skolem_branch_choice_body should select, rewrite aliases, and bind the replaced variable"
     (Some (Ap (DB 0, TmH "a")))
