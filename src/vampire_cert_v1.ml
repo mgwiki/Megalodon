@@ -13409,6 +13409,13 @@ let native_core_avatar_refutation_sat_resolution_proof
     | [] ->
         error
           (id ^ ": native preprocess proof-term avatar_refutation SAT RUP step has no parents")
+    | [(clause, proof)] ->
+        let factored_clause, factored_proof = factor_duplicates clause proof in
+        if same_clause_multiset factored_clause result_clause then
+          factored_proof
+        else
+          error
+            (id ^ ": native preprocess proof-term avatar_refutation SAT unary RUP step is not duplicate factoring")
     | first :: rest ->
         begin match derive_sequence first rest with
         | Some proof -> proof
@@ -13526,8 +13533,16 @@ let native_core_avatar_refutation_proof id parent_ids sat_clauses sat_proof resu
       begin try
         native_core_avatar_refutation_sat_resolution_proof
           id parent_ids sat_clauses proof clause_table
-      with Error _ ->
-        native_core_avatar_refutation_direct_proof id parent_ids clause_table
+      with Error msg as exn ->
+        if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+          prerr_endline
+            (id
+             ^ ": native preprocess proof-term avatar_refutation SAT proof replay failed: "
+             ^ msg);
+        if List.length parent_ids = 2 then
+          native_core_avatar_refutation_direct_proof id parent_ids clause_table
+        else
+          raise exn
       end
   | None ->
       native_core_avatar_refutation_direct_proof id parent_ids clause_table
@@ -15412,6 +15427,15 @@ let native_core_skolem_parent_helper_formulas cert id =
   let wrap_quantifiers tps body =
     List.fold_right (fun tp acc -> All (tp, acc)) tps body
   in
+  let wrap_named_quantifiers binders body =
+    List.fold_right
+      (fun binder acc ->
+         let name = binder.native_kernel_variable_name in
+         let tp = binder.native_kernel_variable_type in
+         All (tp, subst_named_tm name acc))
+      binders
+      body
+  in
 	  let explicit_macro_edges =
 	    native_core_skolem_macro_edges cert id
 	    |> List.filter_map
@@ -15442,8 +15466,10 @@ let native_core_skolem_parent_helper_formulas cert id =
 	              edge.native_skolem_macro_edge_formula,
 	              edge_source,
 	              edge_target
-	            with
+            with
             | Some formula, Some source, Some target ->
+                let binders = edge.native_skolem_macro_edge_binders in
+                let helper_body = Imp (source, target) in
                 let tps =
                   match edge.native_skolem_macro_edge_binders with
                   | [] ->
@@ -15456,8 +15482,12 @@ let native_core_skolem_parent_helper_formulas cert id =
                         (fun binder -> binder.native_kernel_variable_type)
                         binders
                 in
-                Some (wrap_quantifiers tps (Imp (source, target)))
-            | _, Some source, Some target -> Some (Imp (source, target))
+                if binders = [] then
+                  Some (wrap_quantifiers tps helper_body)
+                else
+                  Some (wrap_named_quantifiers binders helper_body)
+            | _, Some source, Some target ->
+                Some (Imp (source, target))
             | _ -> None)
   in
   if explicit_macro_edges <> [] then explicit_macro_edges
