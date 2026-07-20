@@ -1761,3 +1761,17 @@ proof, rather than the earlier direct "`left proposition is not implication:
 not (...)`" node.  The raw certificate-delta variant still prints the old
 failure, and `and3I` still fails closed.  The counted frontier remains three
 qualifying original-source proofs.
+
+Follow-up tightening: the live-not repair now checks the right-hand proof term
+against `A` before rewriting `Hyp i : not A` applied to that proof.  This keeps
+the pass deterministic and avoids turning every `not A` hypothesis application
+into a not-elimination proof when the argument is not actually a proof of `A`.
+The guarded version passed:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+WORK_DIR=/project/tmp/and_prefix_livenotguarded_1784575665 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+WORK_DIR=/project/tmp/prefix4_livenotguarded_1784575665 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+```

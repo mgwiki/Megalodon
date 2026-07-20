@@ -2659,7 +2659,7 @@ let vampire_debug_proof_variants prefix proof_delta symbol_table cx hyps expecte
         end)
     variants
 
-let vampire_live_repair_direct_not_applications _proof_delta _symbol_table cx hyps proof =
+let vampire_live_repair_direct_not_applications proof_delta symbol_table cx hyps proof =
   let target_of_live_not prop =
     match Hashtbl.find_opt sigtmh "not" with
     | Some not_hash ->
@@ -2678,7 +2678,18 @@ let vampire_live_repair_direct_not_applications _proof_delta _symbol_table cx hy
             begin match List.nth_opt cxpf index with
             | Some left_prop ->
                 begin match target_of_live_not left_prop with
-                | Some target -> vampire_live_not_elim target left right
+                | Some target ->
+                    begin
+                      try
+                        let right_prop, dl =
+                          extr_propofpf proof_delta symbol_table cxtm cxpf right []
+                        in
+                        begin match conv right_prop target proof_delta dl with
+                        | Some _ -> vampire_live_not_elim target left right
+                        | None -> PPfAp (left, right)
+                        end
+                      with _ -> PPfAp (left, right)
+                    end
                 | None -> PPfAp (left, right)
                 end
             | None -> PPfAp (left, right)
