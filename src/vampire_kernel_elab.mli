@@ -390,11 +390,36 @@ type skolem_choice_transport_terms = {
   skolem_transport_obligation : skolem_choice_transport_obligation option;
 }
 
+type skolem_choice_replay_step = {
+  skolem_replay_body : Syntax.tm;
+  skolem_replay_predicate : Syntax.tm;
+  skolem_replay_choice_witness : Syntax.tm;
+  skolem_replay_registered_witness : Syntax.tm;
+  skolem_replay_choice_proof : Syntax.pf;
+  skolem_replay_instantiated_body : Syntax.tm;
+  skolem_replay_replacements : (Syntax.tm * Syntax.tm) list;
+  skolem_replay_transport_obligation :
+    skolem_choice_transport_obligation option;
+}
+
 val skolem_choice_transport_terms :
   normalize:(Syntax.tm -> Syntax.tm) ->
   eps_symbol:string ->
   skolem_branch_choice_instantiation ->
   skolem_choice_transport_terms
+
+val skolem_choice_replay_step :
+  ?registered_witness:Syntax.tm ->
+  ?record_replacement:bool ->
+  normalize:(Syntax.tm -> Syntax.tm) ->
+  choice_theorem:string ->
+  eps_symbol:string ->
+  witness_type:Syntax.tp ->
+  target_witness:Syntax.tm ->
+  proof:Syntax.pf ->
+  replacements:(Syntax.tm * Syntax.tm) list ->
+  skolem_branch_choice_instantiation ->
+  skolem_choice_replay_step
 
 val lift_skolem_branch_choice_instantiation :
   ambient_shift:int ->

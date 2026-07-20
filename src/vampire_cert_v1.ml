@@ -15276,31 +15276,22 @@ let rec native_core_direct_skolem_formula_proof
               error
                 (id ^ ": emitted Skolem branch choice predicate is not a lambda")
         in
-        let transport_terms =
-          Vampire_kernel_elab.skolem_choice_transport_terms
-            ~normalize:(fun tm ->
-              tm
-              |> native_core_normalize_bool_constants
-              |> tm_beta_eta_norm)
-            ~eps_symbol:(native_core_eps_symbol tp)
-            {
-              Vampire_kernel_elab.skolem_choice_body = body;
-              skolem_choice_predicate = predicate;
-              skolem_choice_witnessed_body =
-                Option.map
-                  (fun witnessed_body ->
-                     if closing_variables = [] then witnessed_body
-                     else
-                       native_core_close_tm
-                         ~depth:local_depth
-                         closing_variables
-                         witnessed_body)
-                  instantiation.Vampire_kernel_elab.skolem_choice_witnessed_body;
-            }
+        let instantiation =
+          {
+            Vampire_kernel_elab.skolem_choice_body = body;
+            skolem_choice_predicate = predicate;
+            skolem_choice_witnessed_body =
+              Option.map
+                (fun witnessed_body ->
+                   if closing_variables = [] then witnessed_body
+                   else
+                     native_core_close_tm
+                       ~depth:local_depth
+                       closing_variables
+                       witnessed_body)
+                instantiation.Vampire_kernel_elab.skolem_choice_witnessed_body;
+          }
         in
-        register_witness_replacement
-          target_witness
-          transport_terms.Vampire_kernel_elab.skolem_transport_epsilon_witness;
         if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
           begin
             prerr_endline
@@ -15311,22 +15302,8 @@ let rec native_core_direct_skolem_formula_proof
                ^ string_of_int local_depth
                ^ " ambient_shift="
                ^ string_of_int ambient_shift);
-            begin match
-              transport_terms
-                .Vampire_kernel_elab.skolem_transport_obligation
-            with
-            | Some _ ->
-                prerr_endline
-                  (id
-                   ^ ": native core skolem emitted branch choice carries an explicit epsilon-to-witness body transport obligation")
-            | None -> ()
-            end
           end;
-        Some
-          (body, predicate,
-           (target_witness,
-            transport_terms.Vampire_kernel_elab.skolem_transport_epsilon_witness)
-           :: replacements)
+        Some instantiation
   in
   let helper_records =
     Vampire_kernel_elab.skolem_helper_records helper_formulas
@@ -15385,60 +15362,71 @@ let rec native_core_direct_skolem_formula_proof
           | Some name -> contains_named name body
           | None -> false
         in
-        let body, emitted_predicate, replacements =
+        let choice_instantiation, registered_witness_override, record_replacement =
           match
             emitted_branch_choice_instantiation
               local_depth replacements substitution_name target_witness tp
           with
-          | Some (body, predicate, replacements) -> body, Some predicate, replacements
+          | Some instantiation -> instantiation, None, true
           | None ->
-          match substitution_name with
-          | Some name when compact_named_body ->
-              let abstract_body = subst_named_tm name body in
-              let epsilon_witness =
-                Ap (TmH (native_core_eps_symbol tp), predicate_for_body abstract_body)
+              let registered_witness_override =
+                match substitution_name with
+                | Some name when compact_named_body ->
+                    let abstract_body = subst_named_tm name body in
+                    Some
+                      (Ap
+                         (TmH (native_core_eps_symbol tp),
+                          predicate_for_body abstract_body))
+                | _ -> None
               in
-              register_witness_replacement target_witness epsilon_witness;
-              subst_tm [(name, target_witness)] body, None, replacements
-          | Some name ->
-              let body = subst_named_tm name body in
-              let epsilon_witness =
-                Ap (TmH (native_core_eps_symbol tp), predicate_for_body body)
+              let body =
+                match substitution_name with
+                | Some name when compact_named_body ->
+                    subst_tm [(name, target_witness)] body
+                | Some name -> subst_named_tm name body
+                | None -> body
               in
-              register_witness_replacement target_witness epsilon_witness;
-              body,
-              None,
-              (target_witness, epsilon_witness) :: replacements
-          | None ->
-              let epsilon_witness =
-                Ap (TmH (native_core_eps_symbol tp), predicate_for_body body)
-              in
-              register_witness_replacement target_witness epsilon_witness;
-              body,
-              None,
-              (target_witness, epsilon_witness) :: replacements
+              {
+                Vampire_kernel_elab.skolem_choice_body = body;
+                skolem_choice_predicate = predicate_for_body body;
+                skolem_choice_witnessed_body = None;
+              },
+              registered_witness_override,
+              not compact_named_body
         in
-        let predicate =
-          match emitted_predicate with
-          | Some predicate -> predicate
-          | None -> predicate_for_body body
-        in
-        let epsilon_witness, choice_proof =
-          Vampire_kernel_elab.skolem_choice_witness_proof
+        let replay_step =
+          Vampire_kernel_elab.skolem_choice_replay_step
+            ?registered_witness:registered_witness_override
+            ~record_replacement
+            ~normalize:(fun tm ->
+              tm
+              |> native_core_normalize_bool_constants
+              |> tm_beta_eta_norm)
             ~choice_theorem:choice
             ~eps_symbol:(native_core_eps_symbol tp)
             ~witness_type:tp
-            ~predicate
-            proof
+            ~target_witness
+            ~proof
+            ~replacements
+            choice_instantiation
         in
-        let instantiated_body = tmsubst body 0 epsilon_witness in
+        register_witness_replacement
+          target_witness
+          replay_step.Vampire_kernel_elab.skolem_replay_registered_witness;
+        begin match replay_step.Vampire_kernel_elab.skolem_replay_transport_obligation with
+        | Some _ when Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" ->
+            prerr_endline
+              (id
+               ^ ": native core skolem emitted branch choice carries an explicit epsilon-to-witness body transport obligation")
+        | _ -> ()
+        end;
         choose_basic
           local_depth
           current_target
           remaining_substitution
-          instantiated_body
-          choice_proof
-          replacements
+          replay_step.Vampire_kernel_elab.skolem_replay_instantiated_body
+          replay_step.Vampire_kernel_elab.skolem_replay_choice_proof
+          replay_step.Vampire_kernel_elab.skolem_replay_replacements
           true
     | _ -> source, proof, replacements, used_choice, remaining_substitution
   in
@@ -15571,67 +15559,94 @@ let rec native_core_direct_skolem_formula_proof
                   | Some name -> contains_named name body
                   | None -> false
                 in
-                let body, emitted_predicate, replacements =
+                let choice_instantiation, registered_witness_override, record_replacement =
                   match
                     emitted_branch_choice_instantiation
                       local_depth replacements substitution_name target_witness tp
                   with
-                  | Some (body, predicate, replacements) -> body, Some predicate, replacements
+                  | Some instantiation -> instantiation, None, true
                   | None ->
+                  let registered_witness_override =
+                    match substitution_name with
+                    | Some name when compact_named_body ->
+                        let abstract_body = subst_named_tm name body in
+                        Some
+                          (Ap
+                             (TmH (native_core_eps_symbol tp),
+                              Lam
+                                (tp,
+                                 checked_formula_prop
+                                   (local_depth + 1)
+                                   abstract_body)))
+                    | _ -> None
+                  in
                   match substitution_name with
                   | Some name when compact_named_body ->
-                      let abstract_body = subst_named_tm name body in
-                      let epsilon_witness =
-                        Ap
-                          (TmH (native_core_eps_symbol tp),
-                           Lam (tp, checked_formula_prop (local_depth + 1) abstract_body))
-                      in
-                      register_witness_replacement target_witness epsilon_witness;
-                      subst_tm [(name, target_witness)] body, None, replacements
+                      let body = subst_tm [(name, target_witness)] body in
+                      {
+                        Vampire_kernel_elab.skolem_choice_body = body;
+                        skolem_choice_predicate =
+                          Lam (tp, checked_formula_prop (local_depth + 1) body);
+                        skolem_choice_witnessed_body = None;
+                      },
+                      registered_witness_override,
+                      false
                   | Some name ->
                       let body = subst_named_tm name body in
-                      let epsilon_witness =
-                        Ap
-                          (TmH (native_core_eps_symbol tp),
-                           Lam (tp, checked_formula_prop (local_depth + 1) body))
-                      in
-                      register_witness_replacement target_witness epsilon_witness;
-                      body,
-                      None,
-                      (target_witness, epsilon_witness) :: replacements
+                      {
+                        Vampire_kernel_elab.skolem_choice_body = body;
+                        skolem_choice_predicate =
+                          Lam (tp, checked_formula_prop (local_depth + 1) body);
+                        skolem_choice_witnessed_body = None;
+                      },
+                      registered_witness_override,
+                      true
                   | None ->
-                      let epsilon_witness =
-                        Ap
-                          (TmH (native_core_eps_symbol tp),
-                           Lam (tp, checked_formula_prop (local_depth + 1) body))
-                      in
-                      register_witness_replacement target_witness epsilon_witness;
-                      body,
-                      None,
-                      (target_witness, epsilon_witness) :: replacements
+                      {
+                        Vampire_kernel_elab.skolem_choice_body = body;
+                        skolem_choice_predicate =
+                          Lam (tp, checked_formula_prop (local_depth + 1) body);
+                        skolem_choice_witnessed_body = None;
+                      },
+                      registered_witness_override,
+                      true
                 in
-                let predicate =
-                  match emitted_predicate with
-                  | Some predicate -> predicate
-                  | None -> Lam (tp, checked_formula_prop (local_depth + 1) body)
-                in
-                let epsilon_witness, choice_proof =
-                  Vampire_kernel_elab.skolem_choice_witness_proof
+                let replay_step =
+                  Vampire_kernel_elab.skolem_choice_replay_step
+                    ?registered_witness:registered_witness_override
+                    ~record_replacement
+                    ~normalize:(fun tm ->
+                      tm
+                      |> native_core_normalize_bool_constants
+                      |> tm_beta_eta_norm)
                     ~choice_theorem:choice
                     ~eps_symbol:(native_core_eps_symbol tp)
                     ~witness_type:tp
-                    ~predicate
-                    proof
+                    ~target_witness
+                    ~proof
+                    ~replacements
+                    choice_instantiation
                 in
-                let target_body = tmsubst body 0 epsilon_witness in
+                register_witness_replacement
+                  target_witness
+                  replay_step.Vampire_kernel_elab.skolem_replay_registered_witness;
+                begin match
+                  replay_step.Vampire_kernel_elab.skolem_replay_transport_obligation
+                with
+                | Some _ when Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" ->
+                    prerr_endline
+                      (id
+                       ^ ": native core skolem emitted branch choice carries an explicit epsilon-to-witness body transport obligation")
+                | _ -> ()
+                end;
                 choose_with_helpers
                   local_depth
                   helpers
                   remaining_substitution
-                  target_body
+                  replay_step.Vampire_kernel_elab.skolem_replay_instantiated_body
                   target
-                  choice_proof
-                  replacements
+                  replay_step.Vampire_kernel_elab.skolem_replay_choice_proof
+                  replay_step.Vampire_kernel_elab.skolem_replay_replacements
                   true
             end
         | All (source_tp, source_body) ->

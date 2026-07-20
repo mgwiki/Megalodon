@@ -1657,3 +1657,39 @@ WORK_DIR=/project/tmp/prefix4_livebasis_1784574765 TMPDIR=/project/tmp VAMPIRE=/
 The honest frontier remains unchanged: `FalseE`, `andEL`, and `andER` pass
 under `-vampireabyqualifying`; `and3I` still fails closed.  This is a diagnostic
 and guardrail commit, not counted reconstruction progress.
+
+## Extracted Choice Replay Step, 2026-07-20
+
+The next change moved one more proof-producing operation out of
+`vampire_cert_v1.ml` and into the extracted small-kernel elaborator.  The new
+`Vampire_kernel_elab.skolem_choice_replay_step` takes a checked branch-choice
+instantiation and produces, in one deterministic record:
+
+- the choice witness used in the Megalodon proof term;
+- the proof produced by applying the choice theorem;
+- the body instantiated with that witness;
+- the witness replacement registered for later cleanup;
+- the explicit `epsilon_body -> witnessed_body` transport obligation, when
+  Vampire emitted one.
+
+`native_core_direct_skolem_formula_proof` now uses this extracted replay step
+at both existential-choice sites.  The old compact-named fallback behavior was
+preserved explicitly: it may register the abstract epsilon witness while not
+adding a local replacement entry.  This avoids silently changing the current
+frontier while still removing duplicated importer-side choice construction.
+
+Validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+WORK_DIR=/project/tmp/and_prefix_replay_step_1784575108 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+WORK_DIR=/project/tmp/prefix4_replay_step_1784575108 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+```
+
+Again, this is architectural progress rather than new counted coverage.  The
+frontier remains three qualifying original-source proofs and a fail-closed
+`and3I`.  The next proof-producing step should consume the extracted transport
+obligation to justify replacing the epsilon body by Vampire's witnessed body in
+the contextual Skolem replay.

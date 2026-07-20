@@ -774,6 +774,43 @@ let () =
         "skolem_choice_transport_terms should not create a vacuous obligation"
         None
         no_obligation_terms.Vampire_kernel_elab.skolem_transport_obligation
+      ;
+      let replay_step =
+        Vampire_kernel_elab.skolem_choice_replay_step
+          ~normalize:(fun tm -> tm)
+          ~choice_theorem:"choice_prop"
+          ~eps_symbol:"eps"
+          ~witness_type:Prop
+          ~target_witness:(TmH "#s0")
+          ~proof:(Hyp 0)
+          ~replacements:[TmH "old", TmH "old_eps"]
+          instantiation
+      in
+      expect_equal
+        "skolem_choice_replay_step should preserve the chosen body"
+        (Ap (DB 0, TmH "a"))
+        replay_step.Vampire_kernel_elab.skolem_replay_body;
+      expect_equal
+        "skolem_choice_replay_step should build the choice proof"
+        (PPfAp
+           (PTmAp (Known "choice_prop", Lam (Prop, Ap (DB 0, TmH "a"))),
+            Hyp 0))
+        replay_step.Vampire_kernel_elab.skolem_replay_choice_proof;
+      expect_equal
+        "skolem_choice_replay_step should instantiate the body with the choice witness"
+        (Ap (Ap (TmH "eps", Lam (Prop, Ap (DB 0, TmH "a"))), TmH "a"))
+        replay_step.Vampire_kernel_elab.skolem_replay_instantiated_body;
+      expect_equal
+        "skolem_choice_replay_step should prepend the target witness replacement"
+        [
+          TmH "#s0", Ap (TmH "eps", Lam (Prop, Ap (DB 0, TmH "a")));
+          TmH "old", TmH "old_eps";
+        ]
+        replay_step.Vampire_kernel_elab.skolem_replay_replacements;
+      expect_equal
+        "skolem_choice_replay_step should expose the transport obligation"
+        transport_terms.Vampire_kernel_elab.skolem_transport_obligation
+        replay_step.Vampire_kernel_elab.skolem_replay_transport_obligation
   | None ->
       prerr_endline
         "kernel_elab unit failure: skolem_branch_choice_instantiation should keep emitted predicate and body aligned";

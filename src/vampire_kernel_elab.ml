@@ -1168,6 +1168,17 @@ type skolem_choice_transport_terms = {
   skolem_transport_obligation : skolem_choice_transport_obligation option;
 }
 
+type skolem_choice_replay_step = {
+  skolem_replay_body : tm;
+  skolem_replay_predicate : tm;
+  skolem_replay_choice_witness : tm;
+  skolem_replay_registered_witness : tm;
+  skolem_replay_choice_proof : pf;
+  skolem_replay_instantiated_body : tm;
+  skolem_replay_replacements : (tm * tm) list;
+  skolem_replay_transport_obligation : skolem_choice_transport_obligation option;
+}
+
 let skolem_choice_transport_terms
     ~normalize
     ~eps_symbol
@@ -1206,6 +1217,53 @@ let skolem_choice_transport_terms
       }
   | _ ->
       error "Skolem choice transport predicate is not a lambda"
+
+let skolem_choice_replay_step
+    ?registered_witness
+    ?(record_replacement=true)
+    ~normalize
+    ~choice_theorem
+    ~eps_symbol
+    ~witness_type
+    ~target_witness
+    ~proof
+    ~replacements
+    instantiation =
+  let transport_terms =
+    skolem_choice_transport_terms
+      ~normalize
+      ~eps_symbol
+      instantiation
+  in
+  let choice_witness, choice_proof =
+    skolem_choice_witness_proof
+      ~choice_theorem
+      ~eps_symbol
+      ~witness_type
+      ~predicate:instantiation.skolem_choice_predicate
+      proof
+  in
+  let registered_witness =
+    match registered_witness with
+    | Some witness -> witness
+    | None -> transport_terms.skolem_transport_epsilon_witness
+  in
+  {
+    skolem_replay_body = instantiation.skolem_choice_body;
+    skolem_replay_predicate = instantiation.skolem_choice_predicate;
+    skolem_replay_choice_witness = choice_witness;
+    skolem_replay_registered_witness = registered_witness;
+    skolem_replay_choice_proof = choice_proof;
+    skolem_replay_instantiated_body =
+      tmsubst instantiation.skolem_choice_body 0 choice_witness;
+    skolem_replay_replacements =
+      if record_replacement then
+        (target_witness, registered_witness) :: replacements
+      else
+        replacements;
+    skolem_replay_transport_obligation =
+      transport_terms.skolem_transport_obligation;
+  }
 
 let lift_skolem_branch_choice_instantiation ~ambient_shift instantiation =
   if ambient_shift = 0 then instantiation
