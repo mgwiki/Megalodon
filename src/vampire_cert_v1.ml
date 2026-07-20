@@ -9620,8 +9620,14 @@ let native_core_debug_skolem_proof_object id = function
 let native_core_symbol_table cert =
   let symbols = Hashtbl.create 257 in
   let add name arity typ = Hashtbl.replace symbols name (arity, typ) in
-  let add_simple name typ = add name 0 (native_sort_of_simple_sort typ) in
-  add megalodon_eq_poly_hash 1 (Ar (TpVar 0, Ar (TpVar 0, Prop)));
+  let add_with_aliases name arity typ =
+    native_core_symbol_name_aliases name
+    |> List.iter (fun alias -> add alias arity typ)
+  in
+  let add_simple name typ =
+    add_with_aliases name 0 (native_sort_of_simple_sort typ)
+  in
+  add_with_aliases megalodon_eq_poly_hash 1 (Ar (TpVar 0, Ar (TpVar 0, Prop)));
   List.iter
     (fun (name, typ) -> add_simple name typ)
     [
@@ -11253,21 +11259,25 @@ let native_core_skolem_definition_body cert id source =
 
 let native_core_approved_sgdelta () =
   let sgdelta = Hashtbl.create 2 in
-  Hashtbl.add sgdelta native_core_prop_ext_hash (0, native_core_prop_ext_prop);
-  Hashtbl.add sgdelta native_core_dneg_hash (0, native_core_dneg_prop);
+  let add_approved name prop =
+    native_core_symbol_name_aliases name
+    |> List.iter
+         (fun alias ->
+            Hashtbl.replace sgdelta alias (0, prop))
+  in
+  add_approved native_core_prop_ext_hash native_core_prop_ext_prop;
+  add_approved native_core_dneg_hash native_core_dneg_prop;
   List.iter
     (fun tp ->
-       Hashtbl.add
-         sgdelta
+       add_approved
          (native_core_not_forall_exists_hash tp)
-         (0, native_core_not_forall_exists_prop tp))
+         (native_core_not_forall_exists_prop tp))
     [Set; Prop; Ar (Set, Prop); Ar (Set, Set); Ar (Set, Ar (Set, Prop))];
   List.iter
     (fun tp ->
-       Hashtbl.add
-         sgdelta
+       add_approved
          (native_core_exists_choice_hash tp)
-         (0, native_core_exists_choice_prop tp))
+         (native_core_exists_choice_prop tp))
     [Set; Prop; Ar (Set, Prop); Ar (Set, Set); Ar (Set, Ar (Set, Prop))];
   sgdelta
 
@@ -19510,7 +19520,7 @@ let native_core_has_prefix prefix text =
   String.length text >= prefix_len
   && String.sub text 0 prefix_len = prefix
 
-let native_core_fixed_logical_known h =
+let native_core_fixed_logical_known_base h =
   match h with
   | "vampire_exists_set_choice"
   | "vampire_exists_prop_choice"
@@ -19523,6 +19533,10 @@ let native_core_fixed_logical_known h =
   | "vampire_not_forall_exists_set_set"
   | "vampire_not_forall_exists_set_set_prop" -> true
   | _ -> false
+
+let native_core_fixed_logical_known h =
+  native_core_symbol_name_aliases h
+  |> List.exists native_core_fixed_logical_known_base
 
 let native_core_reject_certificate_knowns mode step_id proof =
   if not (native_core_allow_transitional_known ()) then begin
@@ -20764,8 +20778,8 @@ let elaborate_preprocess_refutation_native
       in
       find "root" left right
     in
-    let find_bad_application proof =
-      let rec find path cxtm cxpf proof =
+	    let find_bad_application proof =
+	      let rec find path cxtm cxpf proof =
         match proof with
         | PPfAp (left, right) ->
             begin match find (path ^ ".left") cxtm cxpf left with
@@ -20829,17 +20843,24 @@ let elaborate_preprocess_refutation_native
                              ^ "; right proof "
                              ^ short_pf right)
                         else None
-                      with exn ->
-                        Some
-                          (path
-                           ^ ": could not extract right proposition: "
-                           ^ Printexc.to_string exn)
-                    end
-                | prop ->
-                    Some (path ^ ": left proposition is not implication: " ^ short_tm prop)
-              with exn ->
-                Some (path ^ ": could not extract left proposition: " ^ Printexc.to_string exn)
-            end
+	                      with exn ->
+	                        Some
+	                          (path
+	                           ^ ": could not extract right proposition: "
+	                           ^ Printexc.to_string exn
+	                           ^ "; right proof "
+	                           ^ short_pf right)
+	                    end
+	                | prop ->
+	                    Some (path ^ ": left proposition is not implication: " ^ short_tm prop)
+	              with exn ->
+	                Some
+	                  (path
+	                   ^ ": could not extract left proposition: "
+	                   ^ Printexc.to_string exn
+	                   ^ "; left proof "
+	                   ^ short_pf left)
+	            end
                 end
             end
         | PTpAp (body, _) -> find (path ^ ".tp") cxtm cxpf body
@@ -20850,23 +20871,23 @@ let elaborate_preprocess_refutation_native
             let cxpf = List.map (fun prop -> tmshift 0 1 prop) cxpf in
             find (path ^ ".tlam") cxtm cxpf body
         | Hyp _ | Known _ -> None
-      in
-      find "root" variable_types closed_source_context proof
-    in
-    let debug_failure msg =
-      if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
-        prerr_endline ("native preprocess final refutation proof debug: " ^ msg);
+	      in
+	      find "root" variable_types closed_source_context proof
+	    in
+	    let debug_failure msg =
+	      if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
+	        prerr_endline ("native preprocess final refutation proof debug: " ^ msg);
         prerr_endline
           ("native preprocess final refutation proof nodes: "
            ^ string_of_int (proof_node_count proof));
         begin match find_bad_application proof with
-        | Some detail ->
-            prerr_endline
-              ("native preprocess final refutation first bad application: " ^ detail)
-        | None -> ()
-        end
-      end
-    in
+	        | Some detail ->
+	            prerr_endline
+	              ("native preprocess final refutation first bad application: " ^ detail)
+	        | None -> ()
+	        end
+	      end
+	    in
     try
       match check_propofpf proof_delta symbol_table variable_types closed_source_context proof native_core_false [] with
       | Some _ ->
@@ -22490,9 +22511,9 @@ let elaborate_preprocess_refutation_native
       in
       find tm
     in
-    let first_missing_symbol_in_pf proof =
-      let rec find_pf = function
-        | PTpAp (body, _) -> find_pf body
+	    let first_missing_symbol_in_pf proof =
+	      let rec find_pf = function
+	        | PTpAp (body, _) -> find_pf body
         | PTmAp (body, tm) ->
             begin match find_pf body with
             | Some _ as found -> found
@@ -22510,12 +22531,12 @@ let elaborate_preprocess_refutation_native
             end
         | TLam (_, body) -> find_pf body
         | Hyp _ | Known _ -> None
-      in
-      find_pf proof
-    in
-    let debug_failure msg =
-      if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
-        prerr_endline ("native preprocess " ^ label ^ " proof debug: " ^ msg);
+	      in
+	      find_pf proof
+	    in
+	    let debug_failure msg =
+	      if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
+	        prerr_endline ("native preprocess " ^ label ^ " proof debug: " ^ msg);
         prerr_endline ("native preprocess " ^ label ^ " expected: " ^ short_tm prop);
         begin match first_missing_symbol_in_tm prop with
         | Some name ->
@@ -22527,11 +22548,11 @@ let elaborate_preprocess_refutation_native
         | Some name ->
             prerr_endline
               ("native preprocess " ^ label ^ " proof first missing term symbol: " ^ name)
-        | None -> ()
-        end;
-        begin
-          try
-            let actual, _ =
+	        | None -> ()
+	        end;
+	        begin
+	          try
+	            let actual, _ =
               extr_propofpf proof_delta symbol_table variable_types closed_source_context proof []
             in
             prerr_endline ("native preprocess " ^ label ^ " actual: " ^ short_tm actual)
@@ -23364,7 +23385,9 @@ let elaborate_preprocess_refutation_native
 	             let with_temporary_branch_choice_delta replacements f =
                let names =
                  replacements
-                 |> List.map (fun (name, _, _, _) -> name)
+                 |> List.concat_map
+                      (fun (name, _, _, _) ->
+                         native_core_symbol_name_aliases name)
                  |> List.sort_uniq String.compare
                in
                let saved =
@@ -23380,10 +23403,13 @@ let elaborate_preprocess_refutation_native
                     if native_core_tm_scoped_under
                          (List.length variables)
                          definition then begin
-                      if not (Hashtbl.mem proof_delta name) then
-                        Hashtbl.replace proof_delta name (0, definition);
-                      if not (Hashtbl.mem definition_delta name) then
-                        Hashtbl.replace definition_delta name (0, definition)
+                      native_core_symbol_name_aliases name
+                      |> List.iter
+                           (fun alias ->
+                              if not (Hashtbl.mem proof_delta alias) then
+                                Hashtbl.replace proof_delta alias (0, definition);
+                              if not (Hashtbl.mem definition_delta alias) then
+                                Hashtbl.replace definition_delta alias (0, definition))
                     end)
                  replacements;
                let result = f () in

@@ -1072,3 +1072,39 @@ TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.s
 WORK_DIR=/project/tmp/and_prefix_exists_extract.1784564519 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
 WORK_DIR=/project/tmp/prefix4_exists_extract.1784564520 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
 ```
+
+## Fixed-Basis Alias Normalization, 2026-07-20
+
+The latest `and3I` diagnostic narrowed one more class of false failures before
+the real scoped transport mismatch.  Native replay can see both hashed and
+unhashed names for fixed logical basis objects and branch witnesses, for
+example `vampire_exists_prop_choice`/`#vampire_exists_prop_choice`,
+`Eps_prop`/`#Eps_prop`, and `sK0`/`#sK0`.  The checker previously treated
+some of these aliases consistently for source symbols but not for fixed
+logical `Known`s, term symbol types, or temporary branch-choice delta entries.
+
+The branch now installs the approved native proof delta, native term-symbol
+table, fixed logical `Known` guard, and temporary branch-choice delta under the
+same alias policy.  The temporary branch-choice delta remains transactional:
+all aliases are saved before checking and restored if the candidate is
+rejected.  This is not a theorem-specific repair and does not add any broad
+fallback route.
+
+The focused `and3I` diagnostic now gets past the earlier missing
+`#vampire_exists_prop_choice`/`#Eps_prop` extraction failure.  The remaining
+failure is more precise: the candidate is choice-free and has no unbacked
+introduced symbols, but a scoped branch proof still supplies a proposition at
+`#sK0` where the choice theorem application expects the corresponding
+epsilon-instantiated body.  That is the explicit scoped Skolem/choice
+transport proof that still needs to be implemented, preferably in
+`vampire_kernel_elab.ml` rather than by adding another importer search path.
+
+Focused validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+WORK_DIR=/project/tmp/and_prefix_temp_alias.1784565717 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+WORK_DIR=/project/tmp/prefix4_temp_alias.1784565717 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+```
