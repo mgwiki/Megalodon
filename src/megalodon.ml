@@ -2215,7 +2215,7 @@ let check_vampire_live_prop_choice_if_requested () =
     end
 
 let rec vampire_live_basis_tm_expander = function
-  | Ap (TmH "Eps_prop", predicate)
+  | Ap (TmH ("Eps_prop" | "#Eps_prop"), predicate)
       when vampire_live_has_checked_prop_choice () ->
       vampire_live_prop_choice_witness
         (vampire_live_basis_tm_expander predicate)
@@ -2867,6 +2867,10 @@ let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxp
   let proof_expander =
     vampire_expand_returned_proof ?extra_delta:live_extra_delta cxtm source_map
   in
+  let live_expected =
+    vampire_live_basis_tm_expander
+      (vampire_expand_returned_tm ?extra_delta cxtm source_map expected)
+  in
   let live_hyps =
     List.map
       (vampire_expand_returned_tm ?extra_delta:live_extra_delta cxtm source_map)
@@ -2897,9 +2901,9 @@ let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxp
               with
               | Some _ -> None
               | None ->
-                  begin match conv actual expected live_delta dl with
+                  begin match conv actual live_expected live_delta dl with
                   | Some _ ->
-                      begin match check_propofpf live_delta live_symbol_table cx live_hyps expanded expected [] with
+                      begin match check_propofpf live_delta live_symbol_table cx live_hyps expanded live_expected [] with
                       | Some _ -> Some expanded
                       | None -> None
                       end
@@ -2910,6 +2914,63 @@ let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxp
         end
   in
   let debug = Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" in
+  let live_variant_result proof_for_check =
+    let expanded_variants =
+      vampire_expanded_prop_ext_variants ~delta:live_delta proof_expander proof_for_check
+    in
+    match List.find_map live_check expanded_variants with
+    | Some _ as result -> result
+    | None ->
+        let expanded =
+          match expanded_variants with
+          | first :: _ -> first
+          | [] -> proof_expander proof_for_check
+        in
+        if debug then
+          begin
+            Printf.printf
+              "Vampire native proof-of-prop candidate checked only with certificate delta at line %d char %d; rejecting live proof.\n"
+              !lineno
+              !charno;
+            vampire_debug_proof_variants
+              "Vampire native proof-of-prop live-expanded"
+              live_delta
+              live_symbol_table
+              cx
+              live_hyps
+              live_expected
+              expanded_variants;
+            begin match extra_symbols with
+            | Some extra_symbols ->
+                begin match
+                  vampire_debug_certificate_only_symbol_in_proof
+                    live_symbol_table
+                    certificate_delta
+                    extra_symbols
+                    expanded
+                with
+                | Some detail ->
+                    Printf.printf
+                      "Vampire native proof-of-prop live rejection certificate-only proof detail: %s\n"
+                      detail
+                | None -> ()
+                end
+            | None -> ()
+            end;
+            begin match
+              vampire_debug_bad_proof_application
+                live_delta live_symbol_table cx live_hyps expanded
+            with
+            | Some detail ->
+                Printf.printf
+                  "Vampire native proof-of-prop live bad application: %s\n"
+                  detail
+            | None -> ()
+            end;
+            flush stdout
+          end;
+        None
+  in
   let rec try_variants = function
     | [] -> None
     | proof_for_check :: rest ->
@@ -2917,61 +2978,9 @@ let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxp
           let (actual,dl) = extr_propofpf proof_delta symbol_table cx certificate_hyps proof_for_check [] in
           match conv actual expected proof_delta dl with
           | Some _ ->
-              let expanded_variants =
-                vampire_expanded_prop_ext_variants ~delta:live_delta proof_expander proof_for_check
-              in
-              begin match List.find_map live_check expanded_variants with
+              begin match live_variant_result proof_for_check with
               | Some _ as result -> result
-              | None ->
-                  let expanded =
-                    match expanded_variants with
-                    | first :: _ -> first
-                    | [] -> proof_expander proof_for_check
-                  in
-                  if debug then
-                    begin
-                      Printf.printf
-                        "Vampire native proof-of-prop candidate checked only with certificate delta at line %d char %d; rejecting live proof.\n"
-                        !lineno
-                        !charno;
-                      vampire_debug_proof_variants
-                        "Vampire native proof-of-prop live-expanded"
-                        live_delta
-                        live_symbol_table
-                        cx
-                        live_hyps
-                        expected
-                        expanded_variants;
-                      begin match extra_symbols with
-                      | Some extra_symbols ->
-                          begin match
-                            vampire_debug_certificate_only_symbol_in_proof
-                              live_symbol_table
-                              certificate_delta
-                              extra_symbols
-                              expanded
-                          with
-                          | Some detail ->
-                              Printf.printf
-                                "Vampire native proof-of-prop live rejection certificate-only proof detail: %s\n"
-                                detail
-                          | None -> ()
-                          end
-                      | None -> ()
-                      end;
-                      begin match
-                        vampire_debug_bad_proof_application
-                          live_delta live_symbol_table cx live_hyps expanded
-                      with
-                      | Some detail ->
-                          Printf.printf
-                            "Vampire native proof-of-prop live bad application: %s\n"
-                            detail
-                      | None -> ()
-                      end;
-                      flush stdout
-                    end;
-                  try_variants rest
+              | None -> try_variants rest
               end
           | None ->
               if debug then
@@ -2987,6 +2996,9 @@ let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxp
               try_variants rest
         with
         | Failure msg ->
+            begin match live_variant_result proof_for_check with
+            | Some _ as result -> result
+            | None ->
             if debug then
               begin
                 Printf.printf
@@ -3007,6 +3019,7 @@ let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxp
                 flush stdout
               end;
             try_variants rest
+            end
         | _ -> try_variants rest
   in
   try_variants (vampire_prop_ext_variants ~delta:proof_delta proof)
