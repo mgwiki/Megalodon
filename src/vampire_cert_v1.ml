@@ -2370,8 +2370,9 @@ let check_cnf_literal checked id parent_id result =
     | CheckedSatClauseRecord ->
         error (parent_id ^ " is an AVATAR SAT clause record, but a formula or clause parent was expected")
   in
-  if not (same_clause_multiset parent_clause result) then
-    error (id ^ ": cnf_literal result does not match source literal")
+  try
+    Vampire_kernel_check.check_cnf_literal ~id ~parent_clause ~result
+  with Vampire_kernel_check.Error msg -> error msg
 
 let check_formula_term_copy checked id parent_id result =
   let parent_formula = lookup_formula checked parent_id in
@@ -2637,12 +2638,25 @@ let check_cnf_formula_clause checked id parent_id index count result =
 let check_formula_copy checked id parent_id result =
   match (try List.assoc parent_id checked with Not_found -> error ("unknown certificate parent " ^ parent_id)) with
   | CheckedClause parent_clause ->
-      if not (same_clause_multiset parent_clause [result]) then
-        error (id ^ ": formula_copy result does not match parent")
+      begin
+        try
+          Vampire_kernel_check.check_formula_copy
+            ~id
+            ~literal_of_formula:literal_of_formula_tm
+            ~parent:(`Clause parent_clause)
+            ~result
+        with Vampire_kernel_check.Error msg -> error msg
+      end
   | CheckedFormula parent_formula ->
-      let expected = literal_of_formula_tm parent_formula in
-      if expected <> result then
-        error (id ^ ": formula_copy result does not match formula parent")
+      begin
+        try
+          Vampire_kernel_check.check_formula_copy
+            ~id
+            ~literal_of_formula:literal_of_formula_tm
+            ~parent:(`Formula parent_formula)
+            ~result
+        with Vampire_kernel_check.Error msg -> error msg
+      end
   | CheckedSatClauseRecord ->
       error (parent_id ^ " is an AVATAR SAT clause record, but a formula or clause parent was expected")
 
@@ -2654,14 +2668,14 @@ let check_fool_bool checked id parent_id result =
     | CheckedSatClauseRecord ->
         error (parent_id ^ " is an AVATAR SAT clause record, but a formula or clause parent was expected")
   in
-  let expected =
-    match parent_clause with
-    | [Pos atom] -> [Pos (equality_to_true atom); Pos (typed_prop_equality_to_true atom)]
-    | [Neg atom] -> [Neg (equality_to_true atom); Neg (typed_prop_equality_to_true atom)]
-    | _ -> error (id ^ ": fool_bool parent is not a singleton formula")
-  in
-  if not (List.exists (fun candidate -> same_clause_multiset [candidate] [result]) expected) then
-    error (id ^ ": fool_bool result is not the Boolean-term equality to true")
+  try
+    Vampire_kernel_check.check_fool_bool
+      ~id
+      ~equality_to_true
+      ~typed_prop_equality_to_true
+      ~parent_clause
+      ~result
+  with Vampire_kernel_check.Error msg -> error msg
 
 let check_resolution checked id left_id right_id left_index right_index result =
   let left_clause = lookup_clause checked left_id in

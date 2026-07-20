@@ -272,6 +272,35 @@ let check_unit_resulting_resolution
   if not (clause_matches final_remaining result) then
     error (id ^ ": URR result does not match final trace remaining clause")
 
+let check_cnf_literal ~id ~parent_clause ~result =
+  if not (same_clause_multiset parent_clause result) then
+    error (id ^ ": cnf_literal result does not match source literal")
+
+let check_formula_copy ~id ~literal_of_formula ~parent ~result =
+  match parent with
+  | `Clause parent_clause ->
+      if not (same_clause_multiset parent_clause [result]) then
+        error (id ^ ": formula_copy result does not match parent")
+  | `Formula parent_formula ->
+      let expected = literal_of_formula parent_formula in
+      if expected <> result then
+        error (id ^ ": formula_copy result does not match formula parent")
+
+let check_fool_bool
+    ~id
+    ~equality_to_true
+    ~typed_prop_equality_to_true
+    ~parent_clause
+    ~result =
+  let expected =
+    match parent_clause with
+    | [Pos atom] -> [Pos (equality_to_true atom); Pos (typed_prop_equality_to_true atom)]
+    | [Neg atom] -> [Neg (equality_to_true atom); Neg (typed_prop_equality_to_true atom)]
+    | _ -> error (id ^ ": fool_bool parent is not a singleton formula")
+  in
+  if not (List.exists (fun candidate -> same_clause_multiset [candidate] [result]) expected) then
+    error (id ^ ": fool_bool result is not the Boolean-term equality to true")
+
 let check_equality_resolution ~id ~equality_sides ~parent ~literal_index ~result =
   let literal = nth literal_index parent (id ^ " equality-resolution literal") in
   begin

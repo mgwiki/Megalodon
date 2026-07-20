@@ -139,6 +139,30 @@ val check_unit_resulting_resolution :
   result:Vampire_kernel_syntax.clause ->
   unit
 
+val check_cnf_literal :
+  id:string ->
+  parent_clause:Vampire_kernel_syntax.clause ->
+  result:Vampire_kernel_syntax.clause ->
+  unit
+
+val check_formula_copy :
+  id:string ->
+  literal_of_formula:(Syntax.tm -> Vampire_kernel_syntax.literal) ->
+  parent:[
+    | `Formula of Syntax.tm
+    | `Clause of Vampire_kernel_syntax.clause
+  ] ->
+  result:Vampire_kernel_syntax.literal ->
+  unit
+
+val check_fool_bool :
+  id:string ->
+  equality_to_true:(Syntax.tm -> Syntax.tm) ->
+  typed_prop_equality_to_true:(Syntax.tm -> Syntax.tm) ->
+  parent_clause:Vampire_kernel_syntax.clause ->
+  result:Vampire_kernel_syntax.literal ->
+  unit
+
 val check_equality_resolution :
   id:string ->
   equality_sides:(Syntax.tm -> (Syntax.tm * Syntax.tm) option) ->
