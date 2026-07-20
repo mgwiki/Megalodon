@@ -9,6 +9,21 @@ WORK_DIR="${WORK_DIR:-$(mktemp -d "$BASE_TMPDIR/native_cert_v1.XXXXXX")}"
 mkdir -p "$WORK_DIR"
 ln -sfn "$WORK_DIR" "$BASE_TMPDIR/latest_native_cert_v1"
 
+RUN_KERNEL_VOCABULARY_SYNC=${RUN_KERNEL_VOCABULARY_SYNC:-auto}
+VAMPIRE_ROOT=${VAMPIRE_ROOT:-/project/vampire-leancheck}
+
+if [[ "$RUN_KERNEL_VOCABULARY_SYNC" != "0" ]]; then
+  if [[ -f "$VAMPIRE_ROOT/Shell/MegalodonChecker/MegalodonKernelSyntax.cpp" ]]; then
+    VAMPIRE_ROOT="$VAMPIRE_ROOT" \
+      tests/vampire_certificate/run_kernel_vocabulary_sync.sh \
+      >"$WORK_DIR/kernel_vocabulary_sync.out" \
+      2>"$WORK_DIR/kernel_vocabulary_sync.err"
+  elif [[ "$RUN_KERNEL_VOCABULARY_SYNC" != "auto" ]]; then
+    echo "kernel vocabulary sync requested, but Vampire checkout is missing: $VAMPIRE_ROOT" >&2
+    exit 2
+  fi
+fi
+
 if [ ! -x bin/megalodon ]; then
   ./makeopt
 fi
