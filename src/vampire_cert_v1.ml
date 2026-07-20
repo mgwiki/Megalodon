@@ -22999,6 +22999,25 @@ let elaborate_preprocess_refutation_native
                    id result_checked_prop result
                with (Error _ | Failure _) -> None
            in
+           let shadow_result_to_target =
+             match shadow_result_to_target with
+             | Some body when native_core_pf_contains_choice_witness body ->
+                 if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+                   prerr_endline
+                     (id
+                      ^ ": native preprocess Skolem CPS rejected shadow replay continuation with certificate-local choice witness");
+                 None
+             | Some body
+                 when native_core_pf_contains_term_symbol
+                        introduced_witness_symbols
+                        body ->
+                 if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+                   prerr_endline
+                     (id
+                      ^ ": native preprocess Skolem CPS rejected shadow replay continuation with introduced witness symbol");
+                 None
+             | other -> other
+           in
            begin match shadow_result_to_target with
            | Some _ when Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" ->
                prerr_endline
