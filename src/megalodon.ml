@@ -1242,6 +1242,13 @@ let vampire_assert_signature_unchanged where before =
               where
               (vampire_format_signature_diff removed_delta added_delta)
               (vampire_format_signature_diff removed_symbols added_symbols)))
+    else if Sys.getenv_opt "MEGALODON_CERT_DEBUG_TIMING" = Some "1" then
+      begin
+        Printf.printf
+          "Qualifying Vampire reconstruction kept global signature unchanged after %s.\n"
+          where;
+        flush stdout
+      end
 
 let vampire_register_reconstruction_delta_for_qed extra_symbols extra_delta =
   if !vampireabyqualifying then
@@ -6552,6 +6559,7 @@ let run_vampire_aby_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) ?(proof_command_l
            flush stdout;
            reconstructed
          with exn ->
+           vampire_assert_no_qed_reconstruction_state "failed Vampire certificate reconstruction";
            assert_signature_unchanged "failed Vampire certificate reconstruction";
            raise exn
        end

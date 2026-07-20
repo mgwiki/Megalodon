@@ -101,6 +101,19 @@ if [[ "$actual_reconstructed" != "$expected_successes_before_frontier" ]]; then
   echo "expected $expected_successes_before_frontier reconstructed vampire commands before frontier, got $actual_reconstructed" >&2
   exit 1
 fi
+signature_invariant_count=$(
+  rg -c 'Qualifying Vampire reconstruction kept global signature unchanged after ' \
+    "$WORK_DIR/run.out" || true
+)
+if (( signature_invariant_count < actual_reconstructed + 1 )); then
+  echo "expected qualifying signature invariant checks for the reconstructed prefix and failing frontier, got $signature_invariant_count" >&2
+  exit 1
+fi
+if rg -q 'Qualifying Vampire reconstruction (changed global signature|leaked certificate-local Qed state)' \
+    "$WORK_DIR/run.out" "$WORK_DIR/run.err"; then
+  echo "qualifying prefix4 leaked certificate reconstruction state" >&2
+  exit 1
+fi
 if ! rg -q 'candidate_refutation_fallback:disabled_by_qualifying_mode' \
     "$WORK_DIR/run.out" "$WORK_DIR/run.err"; then
   echo "qualifying prefix4 did not stop at the candidate-refutation fail-closed guard" >&2

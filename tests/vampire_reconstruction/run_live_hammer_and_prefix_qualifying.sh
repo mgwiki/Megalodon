@@ -75,6 +75,7 @@ if awk '$0 !~ /^\/\// && ($0 ~ /(^|[^[:alnum:]_])(admit|aby)([^[:alnum:]_]|$)/ |
 fi
 
 set +e
+MEGALODON_CERT_DEBUG_TIMING=1 \
 timeout "$WALL_SECONDS" "$MEGALODON" \
   -v 4 \
   -trustdeclaredaxioms \
@@ -100,6 +101,19 @@ actual_reconstructed=$(
 )
 if [[ "$actual_reconstructed" != "$expected_reconstructed" ]]; then
   echo "expected $expected_reconstructed reconstructed vampire proof commands, got $actual_reconstructed" >&2
+  exit 1
+fi
+signature_invariant_count=$(
+  rg -c 'Qualifying Vampire reconstruction kept global signature unchanged after Vampire certificate reconstruction' \
+    "$WORK_DIR/run.out" || true
+)
+if [[ "$signature_invariant_count" != "$expected_reconstructed" ]]; then
+  echo "expected $expected_reconstructed qualifying signature invariant checks, got $signature_invariant_count" >&2
+  exit 1
+fi
+if rg -q 'Qualifying Vampire reconstruction (changed global signature|leaked certificate-local Qed state)' \
+    "$WORK_DIR/run.out" "$WORK_DIR/run.err"; then
+  echo "hammer and-prefix qualifying leaked certificate reconstruction state" >&2
   exit 1
 fi
 if ! rg -q 'Everything looks good' "$WORK_DIR/run.out"; then
