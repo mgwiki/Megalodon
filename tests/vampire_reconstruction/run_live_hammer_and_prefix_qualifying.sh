@@ -116,6 +116,11 @@ if rg -q 'Qualifying Vampire reconstruction (changed global signature|leaked cer
   echo "hammer and-prefix qualifying leaked certificate reconstruction state" >&2
   exit 1
 fi
+if rg -q 'checked only with certificate delta|candidate checked only with certificate delta' \
+    "$WORK_DIR/run.out" "$WORK_DIR/run.err"; then
+  echo "hammer and-prefix qualifying relied on certificate-delta-only proof checking" >&2
+  exit 1
+fi
 if ! rg -q 'Everything looks good' "$WORK_DIR/run.out"; then
   echo "hammer and-prefix qualifying fixture did not close" >&2
   exit 1

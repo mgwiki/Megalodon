@@ -1443,3 +1443,18 @@ TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.s
 WORK_DIR=/project/tmp/and_prefix_no_temp_delta_commit_1784571173 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
 WORK_DIR=/project/tmp/prefix4_no_temp_delta_commit_1784571173 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
 ```
+
+## Certificate-Delta-Only Success Guard, 2026-07-20
+
+The focused success harness for the current three original-source qualifying
+proofs now rejects any log that says a proof candidate checked only with the
+certificate delta.  This is separate from the prefix4 fail-closed diagnostic,
+where `and3I` is still expected to expose exactly that scoped Skolem/choice
+transport problem before qualifying mode refuses to count it.
+
+The guard passed on the current frontier:
+
+```text
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+WORK_DIR=/project/tmp/and_prefix_delta_only_guard_1784571317 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+```
