@@ -429,3 +429,21 @@ This is deliberately a negative-space change: it does not make any new theorem
 pass and it does not add a fallback.  It makes the qualifying path less like a
 Megalodon-side search engine and closer to the deterministic replay discipline
 requested by the audit.
+
+## Skolem Witness-Rewrite Extraction, 2026-07-20
+
+A focused `and3I` debug run confirmed that Vampire's emitted branch-choice
+contracts are selected for both introduced proposition witnesses (`sK0` and
+`sK1`).  The next issue is therefore in proof-term replay and replacement, not
+in missing Vampire metadata.
+
+As a small cleanup in the audit's requested direction, the direct Skolem replay
+path no longer carries its own binder-aware witness-term rewriter.  It now
+uses the extracted `Vampire_kernel_elab.replace_exact_terms_in_term`
+operation.  That keeps another deterministic Skolem/choice operation in the
+small-kernel elaboration module and leaves `vampire_cert_v1.ml` as the
+native-core adapter.
+
+This is not new proof coverage.  The `and3I` frontier remains a fail-closed
+case until the remaining proof-term orientation/replacement mismatch is solved
+through the extracted Skolem/choice transformation path.

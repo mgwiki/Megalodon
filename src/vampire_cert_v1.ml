@@ -15299,29 +15299,8 @@ let rec native_core_direct_skolem_formula_proof
     | Lam (_, body) | All (_, body) -> contains_named name body
     | DB _ | Prim _ -> false
   in
-  let rec rewrite_witnesses replacements depth tm =
-    match
-      List.find_opt
-        (fun (target_witness, _) -> tm = tmshift 0 depth target_witness)
-        replacements
-    with
-    | Some (_, epsilon_witness) -> tmshift 0 depth epsilon_witness
-    | None ->
-        match tm with
-        | TpAp (m, a) -> TpAp (rewrite_witnesses replacements depth m, a)
-        | Ap (m, n) ->
-            Ap
-              (rewrite_witnesses replacements depth m,
-               rewrite_witnesses replacements depth n)
-        | Lam (a, body) ->
-            Lam (a, rewrite_witnesses replacements (depth + 1) body)
-        | Imp (left, right) ->
-            Imp
-              (rewrite_witnesses replacements depth left,
-               rewrite_witnesses replacements depth right)
-        | All (a, body) ->
-            All (a, rewrite_witnesses replacements (depth + 1) body)
-        | DB _ | TmH _ | Prim _ -> tm
+  let rewrite_witnesses =
+    Vampire_kernel_elab.replace_exact_terms_in_term
   in
   let pick_substitution_for_target body target remaining =
     let inferred_witness =
@@ -15513,8 +15492,8 @@ let rec native_core_direct_skolem_formula_proof
     | _ -> source, proof, replacements, used_choice, remaining_substitution
   in
   let helper_implication_proof_with_replacements local_depth replacements remaining_substitution tps helper_source helper_target =
-    let active_source = rewrite_witnesses replacements 0 helper_source in
-    let active_target = rewrite_witnesses replacements 0 helper_target in
+    let active_source = rewrite_witnesses replacements helper_source in
+    let active_target = rewrite_witnesses replacements helper_target in
     let orientation_source, body_proof, helper_replacements, helper_used_choice, remaining_substitution =
       choose_basic
         (local_depth + List.length tps)
@@ -15527,7 +15506,7 @@ let rec native_core_direct_skolem_formula_proof
     in
     if not helper_used_choice then
       error (id ^ ": native core skolem helper implication did not eliminate an existential");
-    let proved_target = rewrite_witnesses helper_replacements 0 active_target in
+    let proved_target = rewrite_witnesses helper_replacements active_target in
     let body_proof =
       native_core_formula_orientation_proof
         ~normalize_formula_for_match:(fun count tm ->
@@ -15832,7 +15811,7 @@ let rec native_core_direct_skolem_formula_proof
     error
       (id ^ ": native core proof-term skolemization supports only existential sources");
   let orientation_target =
-    if helper_records = [] then rewrite_witnesses replacements 0 target
+    if helper_records = [] then rewrite_witnesses replacements target
     else target
   in
   let proof =
