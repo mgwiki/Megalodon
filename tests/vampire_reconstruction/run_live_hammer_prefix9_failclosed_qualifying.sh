@@ -9,10 +9,10 @@ MEGALODON=${MEGALODON:-"$ROOT/bin/megalodon"}
 SOURCE_FILE=${SOURCE_FILE:-"$ROOT/examples/hammer/100thms_12_h.mg"}
 MEGALODON_VAMPIRE_TIMEOUT=${MEGALODON_VAMPIRE_TIMEOUT:-10}
 WALL_SECONDS=${WALL_SECONDS:-120}
-WORK_DIR=${WORK_DIR:-"$(mktemp -d "$TMPDIR/live_hammer_prefix5_failclosed_qualifying.XXXXXX")"}
+WORK_DIR=${WORK_DIR:-"$(mktemp -d "$TMPDIR/live_hammer_prefix9_failclosed_qualifying.XXXXXX")"}
 
 mkdir -p "$WORK_DIR/out"
-ln -sfn "$WORK_DIR" "$TMPDIR/latest_live_hammer_prefix5_failclosed_qualifying"
+ln -sfn "$WORK_DIR" "$TMPDIR/latest_live_hammer_prefix9_failclosed_qualifying"
 
 if [[ ! -x "$MEGALODON" ]]; then
   (cd "$ROOT" && TMPDIR="$TMPDIR" ./makeopt)
@@ -57,20 +57,20 @@ exec "$VAMPIRE" --avatar off "\$@"
 EOF
 chmod +x "$vampire_wrapper"
 
-prefix_file="$WORK_DIR/hammer_prefix5_failclosed_qualifying.mg"
-awk 'NR<=188 {print}' "$SOURCE_FILE" |
+prefix_file="$WORK_DIR/hammer_prefix9_failclosed_qualifying.mg"
+awk 'NR<=204 {print}' "$SOURCE_FILE" |
   sed -E 's/^aby(.*)\.$/vampire\1./' >"$prefix_file"
 
-expected_successes_before_frontier=4
+expected_successes_before_frontier=8
 actual_vampire_commands=$(rg -c '^vampire( .*)?\.$' "$prefix_file" || true)
-if [[ "$actual_vampire_commands" != "5" ]]; then
-  echo "expected 5 generated vampire commands, got $actual_vampire_commands" >&2
+if [[ "$actual_vampire_commands" != "9" ]]; then
+  echo "expected 9 generated vampire commands, got $actual_vampire_commands" >&2
   exit 1
 fi
 if awk '$0 !~ /^\/\// && ($0 ~ /(^|[^[:alnum:]_])(admit|aby)([^[:alnum:]_]|$)/ || $0 ~ /-allowincompleteqed/) {print FNR ":" $0}' \
     "$prefix_file" |
     rg . >&2; then
-  echo "prefix5 fail-closed fixture contains an admission-shaped token" >&2
+  echo "prefix9 fail-closed fixture contains an admission-shaped token" >&2
   exit 1
 fi
 
@@ -90,7 +90,7 @@ timeout "$WALL_SECONDS" "$MEGALODON" \
 rc=$?
 set -e
 if (( rc == 0 )); then
-  echo "prefix5 unexpectedly passed; update this guard only after and3E has a small-kernel reconstruction" >&2
+  echo "prefix9 unexpectedly passed; update this guard only after or3E has a small-kernel reconstruction" >&2
   exit 1
 fi
 
@@ -111,35 +111,35 @@ if (( signature_invariant_count < actual_reconstructed + 1 )); then
 fi
 if rg -q 'Qualifying Vampire reconstruction (changed global signature|leaked certificate-local Qed state)' \
     "$WORK_DIR/run.out" "$WORK_DIR/run.err"; then
-  echo "qualifying prefix5 leaked certificate reconstruction state" >&2
+  echo "qualifying prefix9 leaked certificate reconstruction state" >&2
   exit 1
 fi
 if ! rg -q \
-    'candidate_refutation_fallback:disabled_by_qualifying_mode|native core proof-term equality-factoring supports only shared-left equality literals' \
+    'candidate_refutation_fallback:disabled_by_qualifying_mode|native preprocess proof-term predicate fold does not support this formula context' \
     "$WORK_DIR/run.out" "$WORK_DIR/run.err"; then
-  echo "qualifying prefix5 did not stop at a known deterministic fail-closed guard" >&2
+  echo "qualifying prefix9 did not stop at a known deterministic fail-closed guard" >&2
   tail -100 "$WORK_DIR/run.out" >&2 || true
   tail -100 "$WORK_DIR/run.err" >&2 || true
   exit 1
 fi
 if rg -q 'candidate_refutation_fallback:start' "$WORK_DIR/run.out" "$WORK_DIR/run.err"; then
-  echo "qualifying prefix5 entered candidate-refutation fallback search" >&2
+  echo "qualifying prefix9 entered candidate-refutation fallback search" >&2
   exit 1
 fi
 if rg -q 'Vampire native supplied-refutation timing .* depth=([2-9]|[1-9][0-9]+)' \
     "$WORK_DIR/run.out" "$WORK_DIR/run.err"; then
-  echo "qualifying prefix5 used supplied-refutation search deeper than depth 1" >&2
+  echo "qualifying prefix9 used supplied-refutation search deeper than depth 1" >&2
   exit 1
 fi
 if ! rg -q 'Vampire native certificate did not reconstruct current proof goal' \
     "$WORK_DIR/run.out" "$WORK_DIR/run.err"; then
-  echo "qualifying prefix5 failed for an unexpected reason" >&2
+  echo "qualifying prefix9 failed for an unexpected reason" >&2
   tail -100 "$WORK_DIR/run.out" >&2 || true
   tail -100 "$WORK_DIR/run.err" >&2 || true
   exit 1
 fi
 
-echo "LIVE_HAMMER_PREFIX5_FAILCLOSED_QUALIFYING_PASS"
-echo "live hammer prefix5 fail-closed qualifying artifacts: $WORK_DIR"
-echo "live hammer prefix5 fail-closed qualifying latest link: $TMPDIR/latest_live_hammer_prefix5_failclosed_qualifying"
-echo "live hammer prefix5 fail-closed qualifying vampire: $VAMPIRE"
+echo "LIVE_HAMMER_PREFIX9_FAILCLOSED_QUALIFYING_PASS"
+echo "live hammer prefix9 fail-closed qualifying artifacts: $WORK_DIR"
+echo "live hammer prefix9 fail-closed qualifying latest link: $TMPDIR/latest_live_hammer_prefix9_failclosed_qualifying"
+echo "live hammer prefix9 fail-closed qualifying vampire: $VAMPIRE"

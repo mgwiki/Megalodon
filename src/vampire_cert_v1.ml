@@ -18714,7 +18714,20 @@ let native_core_equality_factoring_other_proof
       error
         (id ^ ": native core proof-term equality-factoring supports only shared-left equality factoring")
 
-let native_core_equality_factoring id parent_clause parent_proof selected_index other_index result =
+let native_core_positive_eq_proof_orient id atom proof left right =
+  match megalodon_eq_poly_sides atom with
+  | Some (_, atom_left, atom_right) when atom_left = left && atom_right = right ->
+      proof
+  | Some (_, atom_left, atom_right) when atom_left = right && atom_right = left ->
+      native_core_eq_symmetry_proof id (Pos atom) proof
+  | Some _ ->
+      error
+        (id ^ ": native core proof-term equality-factoring explicit side metadata does not match equality literal")
+  | None ->
+      error
+        (id ^ ": native core proof-term equality-factoring requires typed Megalodon equality literals")
+
+let native_core_equality_factoring id parent_clause parent_proof selected_index other_index explicit_sides result =
   if selected_index = other_index then
     error (id ^ ": native core proof-term equality-factoring literal indices must be distinct");
   let selected = nth selected_index parent_clause (id ^ " native equality-factoring selected literal") in
@@ -18731,24 +18744,75 @@ let native_core_equality_factoring id parent_clause parent_proof selected_index 
     | Neg _ ->
         error (id ^ ": native core proof-term equality-factoring other literal is negative")
   in
-  let introduced_atom =
-    match megalodon_eq_poly_sides selected_atom, megalodon_eq_poly_sides other_atom with
-    | Some (selected_tp, selected_left, selected_right),
+  let selected_tp, selected_shared, selected_other, other_shared, other_other =
+    match explicit_sides, megalodon_eq_poly_sides selected_atom, megalodon_eq_poly_sides other_atom with
+    | None,
+      Some (selected_tp, selected_left, selected_right),
       Some (other_tp, other_left, other_right)
         when selected_tp = other_tp && selected_left = other_left ->
-        native_core_eq_atom selected_tp selected_right other_right
-    | Some _, Some _ ->
+        selected_tp, selected_left, selected_right, other_left, other_right
+    | None, Some _, Some _ ->
         error
-          (id ^ ": native core proof-term equality-factoring supports only shared-left equality literals")
+          (id ^ ": native core proof-term equality-factoring supports only shared-left equality literals without explicit side metadata")
+    | Some (selected_lhs, other_rhs),
+      Some (selected_tp, selected_left, selected_right),
+      Some (other_tp, other_left, other_right)
+        when selected_tp = other_tp ->
+        let selected_shared, selected_other =
+          if selected_lhs = selected_left then selected_left, selected_right
+          else if selected_lhs = selected_right then selected_right, selected_left
+          else
+            error
+              (id ^ ": native core proof-term equality-factoring selected_lhs does not name a selected equality side")
+        in
+        let other_other, other_shared =
+          if other_rhs = other_left then other_left, other_right
+          else if other_rhs = other_right then other_right, other_left
+          else
+            error
+              (id ^ ": native core proof-term equality-factoring other_rhs does not name an other equality side")
+        in
+        if selected_shared <> other_shared then
+          error
+            (id ^ ": native core proof-term equality-factoring explicit sides do not identify matching unified sides");
+        selected_tp, selected_shared, selected_other, other_shared, other_other
+    | Some _, Some _, Some _ ->
+        error
+          (id ^ ": native core proof-term equality-factoring selected and other equality literals have different types")
     | _ ->
         error
           (id ^ ": native core proof-term equality-factoring requires typed Megalodon equality literals")
   in
+  if selected_shared <> other_shared then
+    error
+      (id ^ ": native core proof-term equality-factoring explicit sides do not identify matching unified sides");
+  let introduced_atom = native_core_eq_atom selected_tp selected_other other_other in
   let introduced_negative = Neg introduced_atom in
-  let expected =
-    remove_at selected_index parent_clause (id ^ " native equality-factoring selected literal")
-    @ [introduced_negative]
+  let literal_or_swapped_in_result literal =
+    if List.exists ((=) literal) result then literal
+    else
+      match native_core_swapped_eq_literal literal with
+      | Some swapped when List.exists ((=) swapped) result -> swapped
+      | _ -> literal
   in
+  let kept_other = literal_or_swapped_in_result other in
+  let introduced_negative = literal_or_swapped_in_result introduced_negative in
+  let replace_one_literal old_literal new_literal clause =
+    let rec aux prefix = function
+      | [] -> List.rev prefix
+      | literal :: rest when literal = old_literal ->
+          List.rev_append prefix (new_literal :: rest)
+      | literal :: rest -> aux (literal :: prefix) rest
+    in
+    aux [] clause
+  in
+  let expected_parent =
+    replace_one_literal
+      other
+      kept_other
+      (remove_at selected_index parent_clause (id ^ " native equality-factoring selected literal"))
+  in
+  let expected = expected_parent @ [introduced_negative] in
   if not (same_clause_multiset expected result) then
     error
       (id ^ ": native core proof-term equality-factoring result does not match the shared-left factoring clause");
@@ -18758,32 +18822,101 @@ let native_core_equality_factoring id parent_clause parent_proof selected_index 
     let left_branch =
       PLam
         (introduced_prop,
-         let other_proof =
-           native_core_equality_factoring_other_proof
-             id selected_atom (pfshift 0 1 selected_proof) other_atom introduced_atom (Hyp 0)
+         let selected_oriented_atom =
+           native_core_eq_atom selected_tp selected_shared selected_other
          in
-         native_core_prove_literal_to_clause id result other other_proof)
+         let selected_oriented_proof =
+           native_core_positive_eq_proof_orient
+             id
+             selected_atom
+             (pfshift 0 1 selected_proof)
+             selected_shared
+             selected_other
+         in
+         let direct_other_atom =
+           native_core_eq_atom selected_tp selected_shared other_other
+         in
+         let direct_other_proof =
+           native_core_equality_factoring_other_proof
+             id
+             selected_oriented_atom
+             selected_oriented_proof
+             direct_other_atom
+             introduced_atom
+             (Hyp 0)
+         in
+         let other_proof =
+           match kept_other with
+           | Pos kept_other_atom ->
+               native_core_positive_eq_proof_orient
+                 id
+                 direct_other_atom
+                 direct_other_proof
+                 (match megalodon_eq_poly_sides kept_other_atom with
+                  | Some (_, left, _) -> left
+                  | None -> assert false)
+                 (match megalodon_eq_poly_sides kept_other_atom with
+                  | Some (_, _, right) -> right
+                  | None -> assert false)
+           | Neg _ ->
+               error
+                 (id ^ ": native core proof-term equality-factoring kept other literal is negative")
+         in
+         native_core_prove_literal_to_clause id result kept_other other_proof)
     in
     let right_branch =
       PLam
         (Imp (introduced_prop, native_core_false),
-         native_core_prove_literal_to_clause id result introduced_negative (Hyp 0))
+         let introduced_negative_proof =
+           match introduced_negative with
+           | Neg atom when atom = introduced_atom -> Hyp 0
+           | Neg _ -> native_core_eq_symmetry_proof id (Neg introduced_atom) (Hyp 0)
+           | Pos _ ->
+               error
+                 (id ^ ": native core proof-term equality-factoring introduced constraint is positive")
+         in
+         native_core_prove_literal_to_clause
+           id result introduced_negative introduced_negative_proof)
     in
     PPfAp
       (PPfAp (PTmAp (native_core_xm_proof introduced_prop, target_prop), left_branch),
-       right_branch)
+	       right_branch)
   in
-  let rec consume selected_index clause proof =
-    match clause, selected_index with
-    | [], _ ->
+  let other_branch other_proof =
+    let other_proof =
+      match kept_other with
+      | Pos kept_other_atom ->
+          native_core_positive_eq_proof_orient
+            id
+            other_atom
+            other_proof
+            (match megalodon_eq_poly_sides kept_other_atom with
+             | Some (_, left, _) -> left
+             | None -> assert false)
+            (match megalodon_eq_poly_sides kept_other_atom with
+             | Some (_, _, right) -> right
+             | None -> assert false)
+      | Neg _ ->
+          error
+            (id ^ ": native core proof-term equality-factoring kept other literal is negative")
+    in
+    native_core_prove_literal_to_clause id result kept_other other_proof
+  in
+  let rec consume selected_index other_index clause proof =
+    match clause, selected_index, other_index with
+    | [], _, _ ->
         error (id ^ ": native core proof-term equality-factoring selected index is out of bounds")
-    | [literal], Some 0 when literal = selected ->
+    | [literal], Some 0, _ when literal = selected ->
         selected_branch proof
-    | [literal], Some _ ->
+    | [literal], _, Some 0 when literal = other ->
+        other_branch proof
+    | [literal], Some _, _ ->
         error (id ^ ": native core proof-term equality-factoring selected index is out of bounds")
-    | [literal], None ->
+    | [literal], _, Some _ ->
+        error (id ^ ": native core proof-term equality-factoring other index is out of bounds")
+    | [literal], None, None ->
         native_core_prove_literal_to_clause id result literal proof
-    | literal :: rest, selected_index ->
+    | literal :: rest, selected_index, other_index ->
         let literal_prop = native_core_literal_prop literal in
         let rest_prop = native_core_clause_prop id rest in
         let head_branch =
@@ -18794,7 +18927,12 @@ let native_core_equality_factoring id parent_clause parent_proof selected_index 
              | Some 0 ->
                  error (id ^ ": native core proof-term equality-factoring selected literal mismatch")
              | _ ->
-                 native_core_prove_literal_to_clause id result literal (Hyp 0))
+                 match other_index with
+                 | Some 0 when literal = other -> other_branch (Hyp 0)
+                 | Some 0 ->
+                     error (id ^ ": native core proof-term equality-factoring other literal mismatch")
+                 | _ ->
+                     native_core_prove_literal_to_clause id result literal (Hyp 0))
         in
         let tail_selected =
           match selected_index with
@@ -18802,17 +18940,23 @@ let native_core_equality_factoring id parent_clause parent_proof selected_index 
           | Some n -> Some (n - 1)
           | None -> None
         in
+        let tail_other =
+          match other_index with
+          | Some 0 -> None
+          | Some n -> Some (n - 1)
+          | None -> None
+        in
         let tail_branch =
           PLam
             (rest_prop,
-             consume tail_selected rest (Hyp 0))
+             consume tail_selected tail_other rest (Hyp 0))
         in
         PPfAp (PPfAp (PTmAp (proof, target_prop), head_branch), tail_branch)
   in
-  consume (Some selected_index) parent_clause parent_proof
+  consume (Some selected_index) (Some other_index) parent_clause parent_proof
 
 let native_core_equality_factoring_in_result_context
-    cert id variables parent_id parent_clause parent_proof selected_index other_index subst result =
+    cert id variables parent_id parent_clause parent_proof selected_index other_index explicit_sides subst result =
   let result_step_variables = native_core_step_variables cert id in
   let close_tm tm = native_core_close_tm (variables @ result_step_variables) tm in
   let close_literal = function
@@ -18823,6 +18967,13 @@ let native_core_equality_factoring_in_result_context
     subst_clause subst parent_clause
     |> List.map close_literal
   in
+  let explicit_sides =
+    Option.map
+      (fun (selected_lhs, other_rhs) ->
+         close_tm (subst_tm subst selected_lhs),
+         close_tm (subst_tm subst other_rhs))
+      explicit_sides
+  in
   let result = List.map close_literal result in
   let parent_proof =
     native_core_open_step_theorem_body_in_result_context
@@ -18830,7 +18981,7 @@ let native_core_equality_factoring_in_result_context
   in
   let body_proof =
     native_core_equality_factoring
-      id parent_clause parent_proof selected_index other_index result
+      id parent_clause parent_proof selected_index other_index explicit_sides result
   in
   native_core_bind_result_step_variables variables result_step_variables body_proof
 
@@ -20381,12 +20532,12 @@ let elaborate_core_resolution_refutation_native
               cert id variables parent_id parent_clause parent_proof literal_index result
           in
           store id result proof
-      | EqualityFactoring (id, parent_id, selected_index, other_index, _, subst, result) ->
+      | EqualityFactoring (id, parent_id, selected_index, other_index, explicit_sides, subst, result) ->
           let parent_clause, parent_proof = lookup parent_id in
           let proof =
             native_core_equality_factoring_in_result_context
               cert id variables parent_id parent_clause parent_proof
-              selected_index other_index subst result
+              selected_index other_index explicit_sides subst result
           in
           store id result proof
       | EqualityFactoringConstraints (id, parent_id, selected_index, other_index, _, subst, constraints, result) ->
@@ -22198,7 +22349,7 @@ let elaborate_preprocess_refutation_native
             store_clause id result
               (native_core_equality_symmetry_in_result_context
                  cert id variables parent_id parent_clause parent_proof literal_index result)
-      | EqualityFactoring (id, parent_id, selected_index, other_index, _, subst, result) ->
+      | EqualityFactoring (id, parent_id, selected_index, other_index, explicit_sides, subst, result) ->
           let parent_clause, parent_proof = lookup_clause parent_id in
           if Hashtbl.mem transitional_primitive_clause_steps parent_id then begin
             let substituted_parent_clause = subst_clause subst parent_clause in
@@ -22208,12 +22359,20 @@ let elaborate_preprocess_refutation_native
               | Pos atom -> Pos (close_tm atom)
               | Neg atom -> Neg (close_tm atom)
             in
+            let explicit_sides =
+              Option.map
+                (fun (selected_lhs, other_rhs) ->
+                   close_tm (subst_tm subst selected_lhs),
+                   close_tm (subst_tm subst other_rhs))
+                explicit_sides
+            in
             native_core_equality_factoring
               id
               (List.map close_literal substituted_parent_clause)
               (Hyp 0)
               selected_index
               other_index
+              explicit_sides
               (List.map close_literal result)
             |> ignore;
             let parent_prop =
@@ -22231,7 +22390,7 @@ let elaborate_preprocess_refutation_native
             store_clause id result
               (native_core_equality_factoring_in_result_context
                  cert id variables parent_id parent_clause parent_proof
-                 selected_index other_index subst result)
+                 selected_index other_index explicit_sides subst result)
       | EqualityFactoringConstraints (id, parent_id, selected_index, other_index, _, subst, constraints, result) ->
           let parent_clause, parent_proof = lookup_clause parent_id in
           if Hashtbl.mem transitional_primitive_clause_steps parent_id then

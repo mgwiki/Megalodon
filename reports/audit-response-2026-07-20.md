@@ -1947,3 +1947,76 @@ TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
 WORK_DIR=/project/tmp/and_prefix4_pass_1784577660 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
 WORK_DIR=/project/tmp/prefix5_failclosed_eqfact_1784577689 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix5_failclosed_qualifying.sh
 ```
+
+## Explicit Equality-Factoring Side Replay, 2026-07-20
+
+The `and3E` blocker was a real gap between the strict kernel checker and the
+native proof-term elaborator.  Vampire already emits the equality-factoring
+side contract:
+
+```text
+selected_lhs = P1
+other_rhs = f__true
+```
+
+The strict checker used those fields to identify which sides had been unified,
+but the proof-term generator still handled only the old shared-left shape.  It
+therefore rejected a valid Vampire step where the parent after substitution was
+
+```text
+(P1 = true) | (true = X0) | (true = P1)
+```
+
+and the result kept Vampire's printed orientation:
+
+```text
+(true != true) | (true = X0) | (P1 = true)
+```
+
+The native proof-term elaborator now consumes `selected_lhs` and `other_rhs`
+directly, orients the selected and other equality proofs with equality
+symmetry when the result clause prints the swapped equality, and checks the
+result against the emitted clause multiset.  This follows the audit direction:
+the change is deterministic replay of Vampire-emitted proof data, not a Python
+or Megalodon-side search heuristic.
+
+A focused crossed-orientation equality-factoring fixture was added to the
+native certificate smoke suite.  The live source frontier moved from four
+proofs to eight:
+
+```text
+FalseE
+andEL
+andER
+and3I
+and3E
+or3I1
+or3I2
+or3I3
+```
+
+The next theorem, `or3E`, now fails closed at the next missing deterministic
+primitive:
+
+```text
+u29: native preprocess proof-term predicate fold does not support this formula context.
+```
+
+The passing prefix guard now checks through line 200 of
+`examples/hammer/100thms_12_h.mg` and requires eight qualifying
+reconstructions.  The fail-closed guard has moved to a prefix ending at line
+204 and requires the ninth theorem to stop at `predicate_fold`, with candidate
+fallback still disabled.
+
+Validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+TMPDIR=/project/tmp ./bin/megalodon -vampirecertv1corepfcheck -vampirecertv1 tests/vampire_certificate/native_cert_v1_equality_factoring_core_pf_valid.sexp -vampirecertv1source tests/vampire_certificate/native_cert_v1_equality_factoring_core_pf_valid.th0.p /project/tmp/native_cert_dummy_1784578648.mg
+TMPDIR=/project/tmp ./bin/megalodon -vampirecertv1corepfcheck -vampirecertv1 tests/vampire_certificate/native_cert_v1_equality_factoring_explicit_cross_core_pf_valid.sexp -vampirecertv1source tests/vampire_certificate/native_cert_v1_equality_factoring_explicit_cross_core_pf_valid.th0.p /project/tmp/native_cert_dummy_cross_1784578648.mg
+TMPDIR=/project/tmp MEGALODON_CERT_DEBUG=1 ./bin/megalodon -vampirecertv1corepfcheck -vampirecertv1 /project/tmp/and3e_187_native_1784578648.sexp -vampirecertv1source /project/tmp/prefix5_failclosed_eqfact_1784577689/out/vampire.187.8.5a49b01e747c25bf.thf.p /project/tmp/and3e_dummy_1784578648.mg
+WORK_DIR=/project/tmp/passprefix8_after_eqfact_1784578793 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+WORK_DIR=/project/tmp/prefix9_frontier_1784578793 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix9_failclosed_qualifying.sh
+```

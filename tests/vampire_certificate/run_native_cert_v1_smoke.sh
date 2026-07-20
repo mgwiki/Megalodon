@@ -2192,6 +2192,18 @@ if ! rg -q 'Vampire certificate v1 native core proof term checked 6 steps' \
   exit 1
 fi
 
+bin/megalodon \
+  -vampirecertv1corepfcheck \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_equality_factoring_explicit_cross_core_pf_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_equality_factoring_explicit_cross_core_pf_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_equality_factoring_explicit_cross_core_pf_valid.log"
+
+if ! rg -q 'Vampire certificate v1 native core proof term checked 6 steps' \
+    "$WORK_DIR/native_cert_v1_equality_factoring_explicit_cross_core_pf_valid.log"; then
+  echo "native core proof-term checker did not accept explicit crossed equality_factoring" >&2
+  exit 1
+fi
+
 MIN_EQUALITY_FACTORING=1 \
 WORK_DIR="$WORK_DIR/equality_factoring_primitive_audit_valid" \
 run_focused_primitive_audit \
