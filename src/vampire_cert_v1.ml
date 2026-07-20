@@ -15286,6 +15286,7 @@ let native_core_reorder_skolem_substitution_by_source cert id subst =
 
 let rec native_core_direct_skolem_formula_proof
     ?(helper_formulas=[])
+    ?(skolem_branch_choices=[])
     ?(normalize_formula_for_match=(fun _ tm -> tm))
     ?(register_witness_replacement=(fun _ _ -> ()))
     ?(ambient_shift=0)
@@ -15364,6 +15365,105 @@ let rec native_core_direct_skolem_formula_proof
     native_core_normalize_bool_constants tm
     |> tm_beta_eta_norm
   in
+  let rec witness_head = function
+    | Ap (head, _) | TpAp (head, _) -> witness_head head
+    | head -> head
+  in
+  let witness_matches_branch_choice target_witness choice =
+    let term_matches =
+      match
+        choice.Vampire_kernel_syntax.skolem_branch_choice_witness_term
+      with
+      | Some witness_term ->
+          tm_beta_eta_norm witness_term = tm_beta_eta_norm target_witness
+      | None -> false
+    in
+    term_matches
+    ||
+    match witness_head target_witness with
+    | TmH target_head ->
+        let target_names = native_core_symbol_name_aliases target_head in
+        let choice_names =
+          native_core_symbol_name_aliases
+            choice.Vampire_kernel_syntax.skolem_branch_choice_symbol
+        in
+        List.exists (fun name -> List.mem name choice_names) target_names
+    | _ -> false
+  in
+  let rec rewrite_witness_symbols_by_alias replacements depth tm =
+    let replacement_for_name name =
+      let names = native_core_symbol_name_aliases name in
+      replacements
+      |> List.find_map
+           (fun (target_witness, epsilon_witness) ->
+              match witness_head target_witness with
+              | TmH target_name ->
+                  let target_names =
+                    native_core_symbol_name_aliases target_name
+                  in
+                  if List.exists (fun name -> List.mem name target_names) names then
+                    Some epsilon_witness
+                  else
+                    None
+              | _ -> None)
+    in
+    match tm with
+    | TmH name ->
+        begin match replacement_for_name name with
+        | Some replacement -> tmshift 0 depth replacement
+        | None -> tm
+        end
+    | TpAp (m, a) -> TpAp (rewrite_witness_symbols_by_alias replacements depth m, a)
+    | Ap (m, n) ->
+        Ap
+          (rewrite_witness_symbols_by_alias replacements depth m,
+           rewrite_witness_symbols_by_alias replacements depth n)
+    | Lam (a, body) ->
+        Lam (a, rewrite_witness_symbols_by_alias replacements (depth + 1) body)
+    | Imp (left, right) ->
+        Imp
+          (rewrite_witness_symbols_by_alias replacements depth left,
+           rewrite_witness_symbols_by_alias replacements depth right)
+    | All (a, body) ->
+        All (a, rewrite_witness_symbols_by_alias replacements (depth + 1) body)
+    | DB _ | Prim _ -> tm
+  in
+  let emitted_branch_choice_body
+      local_depth replacements substitution_name target_witness tp =
+    skolem_branch_choices
+    |> List.find_map
+         (fun choice ->
+            let variable =
+              choice.Vampire_kernel_syntax.skolem_branch_choice_replaced_variable
+            in
+            let variable_matches =
+              match substitution_name with
+              | Some name -> name = variable
+              | None -> true
+            in
+            if variable_matches
+               && choice.Vampire_kernel_syntax.skolem_branch_choice_type = tp
+               && witness_matches_branch_choice target_witness choice then
+              let body =
+                choice.Vampire_kernel_syntax.skolem_branch_choice_body
+                |> rewrite_witness_symbols_by_alias replacements 0
+                |> subst_named_tm variable
+              in
+              let epsilon_witness =
+                Ap
+                  (TmH (native_core_eps_symbol tp),
+                   Lam (tp, checked_formula_prop (local_depth + 1) body))
+              in
+              register_witness_replacement target_witness epsilon_witness;
+              if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+                prerr_endline
+                  (id
+                   ^ ": native core skolem used emitted branch choice for "
+                   ^ tm_to_str target_witness);
+              Some (body, (target_witness, epsilon_witness) :: replacements)
+            else
+              None)
+  in
   let rec formula_contains_exists = function
     | Ap (TmH "vampire_exists_prop", Lam _) -> true
     | TpAp (tm, _) -> formula_contains_exists tm
@@ -15435,6 +15535,47 @@ let rec native_core_direct_skolem_formula_proof
     rewrite_witnesses replacements local_depth tm
     |> normalized_formula_for_helper local_depth
   in
+  let replace_exact_terms_in_proof replacements proof =
+    let normalize tm =
+      tm
+      |> native_core_normalize_bool_constants
+      |> tm_beta_eta_norm
+    in
+    let rec replace_tm depth tm =
+      match
+        replacements
+        |> List.find_opt
+             (fun (needle, _) ->
+                normalize tm = (tmshift 0 depth needle |> normalize))
+      with
+      | Some (_, replacement) -> tmshift 0 depth replacement
+      | None ->
+          match tm with
+          | TmH _ | DB _ | Prim _ -> tm
+          | TpAp (body, tp) -> TpAp (replace_tm depth body, tp)
+          | Ap (left, right) ->
+              Ap (replace_tm depth left, replace_tm depth right)
+          | Lam (tp, body) ->
+              Lam (tp, replace_tm (depth + 1) body)
+          | Imp (left, right) ->
+              Imp (replace_tm depth left, replace_tm depth right)
+          | All (tp, body) ->
+              All (tp, replace_tm (depth + 1) body)
+    in
+    let rec replace_pf depth proof =
+      match proof with
+      | PTpAp (body, tp) -> PTpAp (replace_pf depth body, tp)
+      | PTmAp (body, tm) ->
+          PTmAp (replace_pf depth body, replace_tm depth tm)
+      | PPfAp (left, right) ->
+          PPfAp (replace_pf depth left, replace_pf depth right)
+      | PLam (prop, body) ->
+          PLam (replace_tm depth prop, replace_pf depth body)
+      | TLam (tp, body) -> TLam (tp, replace_pf (depth + 1) body)
+      | Hyp _ | Known _ -> proof
+    in
+    replace_pf 0 proof
+  in
   let helper_target_matches_current local_depth replacements helper_target target =
     let helper_target = rewrite_witnesses replacements local_depth helper_target in
     let target = rewrite_witnesses replacements local_depth target in
@@ -15481,6 +15622,12 @@ let rec native_core_direct_skolem_formula_proof
           | None -> false
         in
         let body, replacements =
+          match
+            emitted_branch_choice_body
+              local_depth replacements substitution_name target_witness tp
+          with
+          | Some result -> result
+          | None ->
           match substitution_name with
           | Some name when compact_named_body ->
               let abstract_body = subst_named_tm name body in
@@ -15624,6 +15771,12 @@ let rec native_core_direct_skolem_formula_proof
                   | None -> false
                 in
                 let body, replacements =
+                  match
+                    emitted_branch_choice_body
+                      local_depth replacements substitution_name target_witness tp
+                  with
+                  | Some result -> result
+                  | None ->
                   match substitution_name with
                   | Some name when compact_named_body ->
                       let abstract_body = subst_named_tm name body in
@@ -15811,13 +15964,23 @@ let rec native_core_direct_skolem_formula_proof
     if helper_records = [] then rewrite_witnesses replacements 0 target
     else target
   in
-  native_core_formula_orientation_proof
-    ~normalize_formula_for_match:(fun count tm ->
-      normalize_formula_for_match (ambient_shift + count) tm)
-    id [] [] [] orientation_source orientation_target choice_proof
+  let proof =
+    native_core_formula_orientation_proof
+      ~normalize_formula_for_match:(fun count tm ->
+        normalize_formula_for_match (ambient_shift + count) tm)
+      id [] [] [] orientation_source orientation_target choice_proof
+  in
+  if skolem_branch_choices = [] then
+    proof
+  else
+    replacements
+    |> List.map (fun (target_witness, epsilon_witness) -> epsilon_witness, target_witness)
+    |> replace_exact_terms_in_proof
+    |> fun replace -> replace proof
 
 let native_core_skolem_formula_proof
     ?(helper_formulas=[])
+    ?(skolem_branch_choices=[])
     ?(normalize_formula_for_match=(fun _ tm -> tm))
     ?(register_witness_replacement=(fun _ _ -> ()))
     ?(parent_instantiations=[])
@@ -15949,6 +16112,7 @@ let native_core_skolem_formula_proof
           in
           native_core_direct_skolem_formula_proof
             ~helper_formulas
+            ~skolem_branch_choices
             ~normalize_formula_for_match
             ~register_witness_replacement
             ~ambient_shift:result_variable_count
@@ -18980,6 +19144,90 @@ let native_core_equality_factoring_in_result_context
   in
   native_core_bind_result_step_variables variables result_step_variables body_proof
 
+let native_core_equality_factoring_constraints_in_result_context
+    cert id variables parent_id parent_clause parent_proof selected_index other_index subst constraints result =
+  let result_step_variables = native_core_step_variables cert id in
+  let close_tm tm = native_core_close_tm (variables @ result_step_variables) tm in
+  let close_literal = function
+    | Pos atom -> Pos (close_tm atom)
+    | Neg atom -> Neg (close_tm atom)
+  in
+  let parent_clause =
+    subst_clause subst parent_clause
+    |> List.map close_literal
+  in
+  let constraints = List.map close_literal constraints in
+  let result = List.map close_literal result in
+  let parent_proof =
+    native_core_open_step_theorem_body_in_result_context
+      cert id variables parent_id subst parent_proof
+  in
+  let selected = nth selected_index parent_clause (id ^ " native equality-factoring selected literal") in
+  let other = nth other_index parent_clause (id ^ " native equality-factoring other literal") in
+  let selected_atom =
+    match selected with
+    | Pos atom -> atom
+    | Neg _ ->
+        error (id ^ ": native core proof-term equality-factoring constraints selected literal is negative")
+  in
+  let other_atom =
+    match other with
+    | Pos atom -> atom
+    | Neg _ ->
+        error (id ^ ": native core proof-term equality-factoring constraints other literal is negative")
+  in
+  let expected =
+    remove_at selected_index parent_clause (id ^ " native equality-factoring constraints selected literal")
+    @ constraints
+  in
+  if selected_atom <> other_atom
+     || not (same_clause_multiset expected result) then
+    error
+      (id ^ ": native core proof-term equality-factoring constraints supports only duplicate selected/other equality with emitted constraints")
+  else
+    let target_prop = native_core_clause_prop id result in
+    let selected_branch selected_proof =
+      native_core_prove_literal_to_clause id result other selected_proof
+    in
+    let rec consume selected_index clause proof =
+      match clause, selected_index with
+      | [], _ ->
+          error (id ^ ": native core proof-term equality-factoring constraints selected index is out of bounds")
+      | [literal], Some 0 when literal = selected ->
+          selected_branch proof
+      | [literal], Some _ ->
+          error (id ^ ": native core proof-term equality-factoring constraints selected index is out of bounds")
+      | [literal], None ->
+          native_core_prove_literal_to_clause id result literal proof
+      | literal :: rest, selected_index ->
+          let literal_prop = native_core_literal_prop literal in
+          let rest_prop = native_core_clause_prop id rest in
+          let head_branch =
+            PLam
+              (literal_prop,
+               match selected_index with
+               | Some 0 when literal = selected -> selected_branch (Hyp 0)
+               | Some 0 ->
+                   error (id ^ ": native core proof-term equality-factoring constraints selected literal mismatch")
+               | _ ->
+                   native_core_prove_literal_to_clause id result literal (Hyp 0))
+          in
+          let tail_selected =
+            match selected_index with
+            | Some 0 -> None
+            | Some n -> Some (n - 1)
+            | None -> None
+          in
+          let tail_branch =
+            PLam
+              (rest_prop,
+               consume tail_selected rest (Hyp 0))
+          in
+          PPfAp (PPfAp (PTmAp (proof, target_prop), head_branch), tail_branch)
+    in
+    consume (Some selected_index) parent_clause parent_proof
+    |> native_core_bind_result_step_variables variables result_step_variables
+
 let native_core_literal_index id rule selected clause =
   let rec find index = function
     | [] -> error (id ^ ": native core proof-term " ^ rule ^ " selected literal is not in the main parent")
@@ -20227,6 +20475,15 @@ let elaborate_core_resolution_refutation_native
                  proof_object.Vampire_kernel_syntax.skolem_proof_contract)
               skolem_proof_object
           in
+          let skolem_branch_choices =
+            match skolem_proof_object with
+            | Some proof_object ->
+                proof_object.Vampire_kernel_syntax.skolem_proof_branches
+                |> List.concat_map
+                     (fun branch ->
+                        branch.Vampire_kernel_syntax.skolem_branch_choices)
+            | None -> []
+          in
           let introduced_names_from_step =
             introductions
             |> List.filter_map
@@ -20295,6 +20552,7 @@ let elaborate_core_resolution_refutation_native
               native_core_skolem_formula_proof
                 ~normalize_formula_for_match:normalize_generated_skolems
                 ~register_witness_replacement
+                ~skolem_branch_choices
                 ?parent_instantiations:
                   (Option.map
                      (fun contract ->
@@ -20309,6 +20567,7 @@ let elaborate_core_resolution_refutation_native
                   ~helper_formulas
                   ~normalize_formula_for_match:normalize_generated_skolems
                   ~register_witness_replacement
+                  ~skolem_branch_choices
                   ?parent_instantiations:
                     (Option.map
                        (fun contract ->
@@ -20431,6 +20690,14 @@ let elaborate_core_resolution_refutation_native
             native_core_equality_factoring_in_result_context
               cert id variables parent_id parent_clause parent_proof
               selected_index other_index subst result
+          in
+          store id result proof
+      | EqualityFactoringConstraints (id, parent_id, selected_index, other_index, _, subst, constraints, result) ->
+          let parent_clause, parent_proof = lookup parent_id in
+          let proof =
+            native_core_equality_factoring_constraints_in_result_context
+              cert id variables parent_id parent_clause parent_proof
+              selected_index other_index subst constraints result
           in
           store id result proof
 	      | TruthConflict (id, parent_id, literal_index, result) ->
@@ -21779,10 +22046,20 @@ let elaborate_preprocess_refutation_native
             | _ -> ()
           in
           let build_skolem_formula_proof result_step_variables =
+            let skolem_branch_choices =
+              match skolem_proof_object with
+              | Some proof_object ->
+                  proof_object.Vampire_kernel_syntax.skolem_proof_branches
+                  |> List.concat_map
+                       (fun branch ->
+                          branch.Vampire_kernel_syntax.skolem_branch_choices)
+              | None -> []
+            in
             try
               native_core_skolem_formula_proof
                 ~normalize_formula_for_match:normalize_generated_skolems
                 ~register_witness_replacement
+                ~skolem_branch_choices
                 ?parent_instantiations:
                   (Option.map
                      (fun contract ->
@@ -21797,6 +22074,7 @@ let elaborate_preprocess_refutation_native
                   ~helper_formulas
                   ~normalize_formula_for_match:normalize_generated_skolems
                   ~register_witness_replacement
+                  ~skolem_branch_choices
                   ?parent_instantiations:
                     (Option.map
                        (fun contract ->
@@ -22167,6 +22445,50 @@ let elaborate_preprocess_refutation_native
             store_clause id result
               (native_core_equality_symmetry_in_result_context
                  cert id variables parent_id parent_clause parent_proof literal_index result)
+      | EqualityFactoring (id, parent_id, selected_index, other_index, _, subst, result) ->
+          let parent_clause, parent_proof = lookup_clause parent_id in
+          if Hashtbl.mem transitional_primitive_clause_steps parent_id then begin
+            let substituted_parent_clause = subst_clause subst parent_clause in
+            let result_step_variables = native_core_step_variables cert id in
+            let close_tm tm = native_core_close_tm (variables @ result_step_variables) tm in
+            let close_literal = function
+              | Pos atom -> Pos (close_tm atom)
+              | Neg atom -> Neg (close_tm atom)
+            in
+            native_core_equality_factoring
+              id
+              (List.map close_literal substituted_parent_clause)
+              (Hyp 0)
+              selected_index
+              other_index
+              (List.map close_literal result)
+            |> ignore;
+            let parent_prop =
+              native_core_step_clause_prop cert variables parent_id parent_clause
+            in
+            let result_prop =
+              native_core_step_clause_prop cert variables id result
+            in
+            let primitive = "vampire_equality_factoring_" ^ id in
+            let primitive_prop = Imp (parent_prop, result_prop) in
+            install_transitional_known id primitive primitive_prop;
+            Hashtbl.replace transitional_primitive_clause_steps id true;
+            store_clause id result (PPfAp (Known primitive, parent_proof))
+          end else
+            store_clause id result
+              (native_core_equality_factoring_in_result_context
+                 cert id variables parent_id parent_clause parent_proof
+                 selected_index other_index subst result)
+      | EqualityFactoringConstraints (id, parent_id, selected_index, other_index, _, subst, constraints, result) ->
+          let parent_clause, parent_proof = lookup_clause parent_id in
+          if Hashtbl.mem transitional_primitive_clause_steps parent_id then
+            error
+              (id ^ ": native preprocess proof-term equality_factoring_constraints after transitional primitive parent is not supported")
+          else
+            store_clause id result
+              (native_core_equality_factoring_constraints_in_result_context
+                 cert id variables parent_id parent_clause parent_proof
+                 selected_index other_index subst constraints result)
 	      | TruthConflict (id, parent_id, literal_index, result) ->
 	          let parent_clause, parent_proof = lookup_clause parent_id in
 	          store_clause id result
