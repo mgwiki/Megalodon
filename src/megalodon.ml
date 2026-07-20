@@ -2198,6 +2198,26 @@ let vampire_live_exists_prop_choice_checked_proof () =
       vampire_live_exists_prop_choice_checked_cache := Some result;
       result
 
+let vampire_check_shifted_live_basis_proof label proof proposition =
+  let check_depth depth =
+    let cx = List.init depth (fun _ -> Prop) in
+    let proof = pftmshift 0 depth proof in
+    let proposition = tmshift 0 depth proposition in
+    match check_propofpf sigdelta sigtmof cx [] proof proposition [] with
+    | Some _ -> ()
+    | None ->
+        Printf.printf
+          "Vampire native live %s proof failed under term depth %d: %s\n"
+          label
+          depth
+          (tm_to_str proposition);
+        flush stdout;
+        raise
+          (Failure
+             ("Vampire native live " ^ label ^ " shifted proof did not check"))
+  in
+  List.iter check_depth [0; 1; 2; 3; 4]
+
 let vampire_live_has_checked_prop_choice () =
   match vampire_live_exists_prop_choice_checked_proof () with
   | Some _ -> true
@@ -2209,7 +2229,11 @@ let check_vampire_live_prop_choice_if_requested () =
       vampire_live_exists_prop_choice_checked_cache := None;
       let proposition = vampire_live_exists_prop_choice_prop () in
       match vampire_live_exists_prop_choice_checked_proof () with
-      | Some _ ->
+      | Some proof ->
+          vampire_check_shifted_live_basis_proof
+            "prop-choice"
+            proof
+            proposition;
           Printf.printf
             "Vampire native live prop-choice proof checked for proposition: %s\n"
             (tm_to_str proposition);
@@ -2263,6 +2287,10 @@ let check_vampire_live_not_forall_if_requested () =
             flush stdout;
             raise (Failure "Vampire native live not-forall-exists proof missing")
         | Some proof ->
+            vampire_check_shifted_live_basis_proof
+              ("not-forall-exists " ^ label)
+              proof
+              proposition;
             begin match check_propofpf sigdelta sigtmof [] [] proof proposition [] with
             | Some _ ->
                 Printf.printf
@@ -2509,12 +2537,18 @@ let vampire_debug_bad_proof_application proof_delta symbol_table cx hyps proof =
                             begin match conv expected right_prop proof_delta dl2 with
                             | Some _ -> None
                             | None ->
+                                let first_difference =
+                                  match Vampire_kernel_elab.first_term_difference expected right_prop with
+                                  | Some detail -> "; firstdiff=" ^ detail
+                                  | None -> ""
+                                in
                                 Some
                                   (path
                                    ^ ": implication argument mismatch; expected "
                                    ^ short_tm expected
                                    ^ "; actual "
                                    ^ short_tm right_prop
+                                   ^ first_difference
                                    ^ "; left proof "
                                    ^ short_pf left
                                    ^ "; right proof "

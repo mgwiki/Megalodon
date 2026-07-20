@@ -1775,3 +1775,41 @@ TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.s
 WORK_DIR=/project/tmp/and_prefix_livenotguarded_1784575665 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
 WORK_DIR=/project/tmp/prefix4_livenotguarded_1784575665 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
 ```
+
+## Shifted Live-Basis Diagnostic, 2026-07-20
+
+The next debug pass kept the same fail-closed `and3I` boundary but made the
+first live-expanded mismatch more precise:
+
+```text
+firstdiff=... DB index 18 <> 14
+```
+
+The mismatch appears inside the contextual Skolem/choice replay proof after
+Vampire-emitted branch-choice contracts for `#sK0` and `#sK1` have already been
+selected.  To keep this diagnostic useful without growing `megalodon.ml`, the
+generic first-term-difference reporter was moved into
+`vampire_kernel_elab.ml`.
+
+I also added a focused shifted-basis check for the live logical basis proofs
+used by the replay path.  When the existing live prop-choice and
+not-forall/exists checks run, they now also check the same proof under
+synthetic term-context depths 0 through 4.  This rules out the broad hypothesis
+that `pftmshift` makes those reusable basis proofs invalid under open binders.
+The remaining `and3I` failure should therefore be treated more narrowly: the
+problem is in how emitted branch-choice bodies and witness/body transport are
+closed and replayed inside the source-goal proof, not in the standalone live
+choice or not-forall basis proofs.
+
+Validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+WORK_DIR=/project/tmp/and_prefix_extracteddiff_1784576251 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+WORK_DIR=/project/tmp/prefix4_extracteddiff_1784576251 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+```
+
+The counted frontier remains unchanged: `FalseE`, `andEL`, and `andER` pass
+under `-vampireabyqualifying`; `and3I` still fails closed.

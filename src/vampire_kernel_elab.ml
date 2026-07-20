@@ -7,6 +7,77 @@ exception Error of string
 
 let error msg = raise (Error msg)
 
+let first_term_difference left right =
+  let short_tm tm =
+    let text = tm_to_str tm in
+    if String.length text <= 500 then text
+    else String.sub text 0 500 ^ "..."
+  in
+  let rec diff path left right =
+    match left, right with
+    | _ when left = right -> None
+    | DB i, DB j ->
+        Some
+          (Printf.sprintf
+             "%s: DB index %d <> %d"
+             path
+             i
+             j)
+    | TmH h, TmH k ->
+        Some
+          (Printf.sprintf
+             "%s: symbol %s <> %s"
+             path
+             h
+             k)
+    | Prim i, Prim j ->
+        Some
+          (Printf.sprintf
+             "%s: primitive %d <> %d"
+             path
+             i
+             j)
+    | TpAp (left_body, left_tp), TpAp (right_body, right_tp) ->
+        if left_tp <> right_tp then
+          Some
+            (Printf.sprintf
+               "%s.tp: type %s <> %s"
+               path
+               (tp_to_str left_tp)
+               (tp_to_str right_tp))
+        else
+          diff (path ^ ".body") left_body right_body
+    | Ap (left_fun, left_arg), Ap (right_fun, right_arg) ->
+        begin match diff (path ^ ".left") left_fun right_fun with
+        | Some _ as result -> result
+        | None -> diff (path ^ ".right") left_arg right_arg
+        end
+    | Lam (left_tp, left_body), Lam (right_tp, right_body)
+    | All (left_tp, left_body), All (right_tp, right_body) ->
+        if left_tp <> right_tp then
+          Some
+            (Printf.sprintf
+               "%s.tp: type %s <> %s"
+               path
+               (tp_to_str left_tp)
+               (tp_to_str right_tp))
+        else
+          diff (path ^ ".body") left_body right_body
+    | Imp (left_a, left_b), Imp (right_a, right_b) ->
+        begin match diff (path ^ ".left") left_a right_a with
+        | Some _ as result -> result
+        | None -> diff (path ^ ".right") left_b right_b
+        end
+    | _ ->
+        Some
+          (Printf.sprintf
+             "%s: shape %s <> %s"
+             path
+             (short_tm left)
+             (short_tm right))
+  in
+  diff "root" (tm_beta_eta_norm left) (tm_beta_eta_norm right)
+
 type clause_formula_basis = {
   false_tm : tm;
   or_tm : tm -> tm -> tm;

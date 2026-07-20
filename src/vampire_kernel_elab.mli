@@ -2,6 +2,11 @@
 
 exception Error of string
 
+val first_term_difference :
+  Syntax.tm ->
+  Syntax.tm ->
+  string option
+
 type clause_formula_basis = {
   false_tm : Syntax.tm;
   or_tm : Syntax.tm -> Syntax.tm -> Syntax.tm;
