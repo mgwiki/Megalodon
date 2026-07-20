@@ -1005,6 +1005,44 @@ let check_skolem_branch_contract
            (Printf.sprintf
               "%s: typed Skolem branch contract %d choice predicate does not match its body"
               id index);
+       begin match
+         choice.skolem_branch_choice_transport_rule,
+         choice.skolem_branch_choice_witnessed_body
+       with
+       | None, None -> ()
+       | None, Some _ ->
+           error
+             (Printf.sprintf
+                "%s: typed Skolem branch contract %d choice witnessed body has no transport rule"
+                id index)
+       | Some _, None ->
+           error
+             (Printf.sprintf
+                "%s: typed Skolem branch contract %d choice transport rule has no witnessed body"
+                id index)
+       | Some "choice_witness_substitution", Some witnessed_body ->
+           let witness_term =
+             match choice.skolem_branch_choice_witness_term with
+             | Some witness_term -> witness_term
+             | None -> TmH choice.skolem_branch_choice_symbol
+           in
+           let expected_witnessed_body =
+             subst_tm
+               [choice.skolem_branch_choice_replaced_variable, witness_term]
+               choice.skolem_branch_choice_body
+             |> normalize
+           in
+           if normalize witnessed_body <> expected_witnessed_body then
+             error
+               (Printf.sprintf
+                  "%s: typed Skolem branch contract %d choice witnessed body does not match witness substitution"
+                  id index)
+       | Some rule, Some _ ->
+           error
+             (Printf.sprintf
+                "%s: typed Skolem branch contract %d has unsupported choice transport rule %s"
+                id index rule)
+       end;
        match choice.skolem_branch_choice_witness_term with
        | Some witness_term ->
            begin match term_head witness_term with

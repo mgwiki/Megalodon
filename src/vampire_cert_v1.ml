@@ -9351,6 +9351,12 @@ let native_core_kernel_v1_skolem_branch_contract cert id index prefix =
                    skolem_branch_choice_witness_term =
                      native_core_kernel_v1_tm_field
                        cert id (choice_prefix ^ "_witness_term");
+                   skolem_branch_choice_transport_rule =
+                     native_core_kernel_v1_field
+                       cert id (choice_prefix ^ "_transport_rule");
+                   skolem_branch_choice_witnessed_body =
+                     native_core_kernel_v1_tm_field
+                       cert id (choice_prefix ^ "_witnessed_body");
                  })
       in
       let introduced_symbol_names =

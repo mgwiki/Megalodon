@@ -216,6 +216,10 @@ let () =
       skolem_branch_choice_predicate = Lam (Prop, Ap (DB 0, TmH "a"));
       skolem_branch_choice_body = Ap (TmH "X", TmH "a");
       skolem_branch_choice_witness_term = Some (TmH "#s0");
+      skolem_branch_choice_transport_rule =
+        Some "choice_witness_substitution";
+      skolem_branch_choice_witnessed_body =
+        Some (Ap (TmH "#s0", TmH "a"));
     }
   in
   expect_bool
@@ -336,6 +340,23 @@ let () =
            branch_choice with
            Vampire_kernel_syntax.skolem_branch_choice_predicate =
              Lam (Prop, TmH "wrong");
+         }]);
+  expect_error
+    "check_skolem_branch_contract should reject witnessed-body drift"
+    (fun () ->
+       Vampire_kernel_check.check_skolem_branch_contract
+         ~id:"unit"
+         ~index:0
+         ~normalize:(fun tm -> tm)
+         ~alias_names:aliases
+         ~introduced_symbol_names:["s0"]
+         ~source_formula:None
+         ~target_formula:None
+         ~propositions:[]
+         ~choices:[{
+           branch_choice with
+           Vampire_kernel_syntax.skolem_branch_choice_witnessed_body =
+             Some (Ap (TmH "#s0", TmH "wrong"));
          }]);
   let helper_formula =
     All

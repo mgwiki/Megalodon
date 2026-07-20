@@ -888,3 +888,39 @@ piece of deterministic Skolem/choice proof cleanup has moved into the
 extracted elaboration boundary with unit coverage.  The next proof-counting
 milestone is unchanged: build the scoped Skolem/choice transport proof object
 needed by `and3I`, rather than adding another monolithic fallback.
+
+## Vampire-Emitted Choice Transport Body, 2026-07-20
+
+The next adjustment moves one more Skolem/choice fact from Megalodon-side
+inspection into Vampire-emitted certificate data.  Each Vampire branch-choice
+record can now carry:
+
+```text
+transport_rule=choice_witness_substitution
+witnessed_body=<body with replaced variable substituted by Vampire's witness>
+```
+
+Megalodon parses these fields into `skolem_branch_choice` and checks them in
+`vampire_kernel_check.ml`.  A malformed transport rule, a missing witnessed
+body, or a witnessed body that does not match the explicit witness
+substitution is rejected before any proof cleanup runs.
+
+This is still not a proof-counting advance.  It is a small-kernel boundary
+improvement: Vampire states the source-side proposition needed for the
+Skolem/epsilon transport, and Megalodon validates it deterministically.  The
+remaining work is to elaborate the checked transport descriptor into a live
+Megalodon proof term, not to infer it through broad OCaml search.
+
+Focused validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+WORK_DIR=/project/tmp/prefix4_choice_transport.1784561533 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+WORK_DIR=/project/tmp/and_prefix_choice_transport.1784561549 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+```
+
+The rebuilt Vampire binary also emitted `choice_witness_substitution` and
+`witnessed_body` fields on a real THF Skolem branch-choice probe at
+`/project/tmp/choice_transport_emit.1784561523`.

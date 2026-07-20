@@ -394,6 +394,8 @@ choice records:
 - `skolem_macro_edge_N_contract_branch_choice_M_predicate`
 - `skolem_macro_edge_N_contract_branch_choice_M_body`
 - `skolem_macro_edge_N_contract_branch_choice_M_witness_term` (optional)
+- `skolem_macro_edge_N_contract_branch_choice_M_transport_rule`
+- `skolem_macro_edge_N_contract_branch_choice_M_witnessed_body`
 
 The current intended shape is a single direct branch source
 `vampire_exists_prop (fun x => body)`, where `symbol` is the Skolem symbol
@@ -403,6 +405,13 @@ lambda body still open over `replaced_var`. Megalodon parses standalone
 default. The checker verifies that the choice symbol belongs to the
 branch-introduced witness set and that the emitted predicate/body/witness data
 are mutually consistent after alias rewriting.
+
+The current transport rule is `choice_witness_substitution`.  Under that rule,
+`witnessed_body` must be exactly the branch-choice `body` with `replaced_var`
+substituted by Vampire's emitted witness term, modulo the importer's normal
+term normalization.  This is source-side transport evidence, not a complete
+Megalodon proof of the Skolem/epsilon conversion; it prevents the importer from
+rediscovering that proposition by heuristic proof inspection.
 
 When a branch-choice occurrence is backed by such a contract, Megalodon now
 extracts a typed `skolem_witness_transport` record in `vampire_kernel_elab.ml`.
