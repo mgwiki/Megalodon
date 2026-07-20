@@ -1843,3 +1843,30 @@ TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.s
 WORK_DIR=/project/tmp/prefix4_expanded_live_delta_1784576403 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
 WORK_DIR=/project/tmp/prefix4_expanded_live_delta_debug_1784576419 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire MEGALODON_CERT_DEBUG=1 MEGALODON_CERT_DEBUG_SUPPLIED=1 MEGALODON_CERT_DEBUG_SOURCE_APPLY=1 tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
 ```
+
+## Open Prop-Choice Regression, 2026-07-20
+
+The `DB index 18 <> 14` mismatch first appeared in a proof term whose right
+side begins with the live `Prop` choice theorem instantiated by an open
+predicate.  The previous shifted-basis check only validated the closed theorem
+under extra term context; it did not prove that applying the theorem to a
+predicate mentioning an outer de Bruijn variable remained sound.
+
+The live prop-choice guard now also checks such open instantiations under term
+depths 1 through 4.  This preserves the audit direction: the check is a small
+deterministic kernel check of a fixed logical basis proof, not a new replay
+heuristic.  It also narrows the `and3I` investigation: the standalone live
+choice theorem can be shifted and instantiated by open predicates correctly, so
+the remaining mismatch is in the surrounding Skolem/source-goal orientation
+that chooses or transports the predicate, not in the live prop-choice theorem
+itself.
+
+Validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+WORK_DIR=/project/tmp/and_prefix_open_propchoice_1784576867 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+WORK_DIR=/project/tmp/prefix4_open_propchoice_1784576867 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+```
