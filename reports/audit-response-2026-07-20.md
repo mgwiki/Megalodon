@@ -123,6 +123,10 @@ kept deliberately architectural rather than coverage-driven:
   singular `primitive_expansion_requires=...` field expected by strict
   Megalodon validation.  A fresh Vampire-emitted TH0 certificate was extracted
   and accepted by Megalodon strict checking for 28 steps.
+- Vampire now validates both `primitive_expansion=prefix` and the singular
+  required primitive against the rule's allowed primitive set before emitting
+  `kernel_v1` metadata.  The same TH0 emission and Megalodon strict check
+  passed after this hardening.
 
 This still does not make the project complete, and it does not rehabilitate the
 old 28-command prefix as E1 evidence.  It is, however, the intended correction
