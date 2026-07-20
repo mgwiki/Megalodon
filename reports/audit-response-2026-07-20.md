@@ -1894,3 +1894,56 @@ TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.s
 WORK_DIR=/project/tmp/and_prefix_open_propchoice_1784576867 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
 WORK_DIR=/project/tmp/prefix4_open_propchoice_1784576867 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
 ```
+
+## Generated-Skolem Ambient Shift, 2026-07-20
+
+The `and3I` blocker was the four-index branch-choice mismatch seen in the
+debug logs:
+
+```text
+DB index 18 <> 14
+```
+
+The root cause was not the standalone live prop-choice proof.  Generated
+Skolem definitions are closed over the live theorem variables before replay,
+but the normalizer that expands those generated symbols shifted definition
+bodies only by the local/result-step depth.  In the `and3I` source context this
+omitted the three section variables plus the active theorem binder context,
+which manifested as exactly the missing ambient variable depth in the final
+proof application.
+
+Both native elaboration paths now expand generated Skolem definitions with
+`List.length variables + ambient_shift`.  This is a deterministic replay fix:
+it uses the already-known live source context depth and does not add a fallback
+or candidate search path.
+
+The source-level qualifying frontier moved from three proofs to four:
+
+```text
+FalseE
+andEL
+andER
+and3I
+```
+
+The next theorem, `and3E`, now fails closed earlier and more honestly inside
+native replay:
+
+```text
+u54: native core proof-term equality-factoring supports only shared-left equality literals.
+```
+
+The old prefix4 fail-closed guard has therefore been moved to a prefix5 guard
+that requires the first four proofs to reconstruct and Qed-check, then requires
+the fifth to stop at a deterministic fail-closed boundary without candidate
+fallback.
+
+Validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+WORK_DIR=/project/tmp/and_prefix4_pass_1784577660 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+WORK_DIR=/project/tmp/prefix5_failclosed_eqfact_1784577689 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix5_failclosed_qualifying.sh
+```

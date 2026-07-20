@@ -58,10 +58,10 @@ EOF
 chmod +x "$vampire_wrapper"
 
 prefix_file="$WORK_DIR/hammer_and_prefix_qualifying.mg"
-awk 'NR<=177 {print}' "$SOURCE_FILE" |
+awk 'NR<=184 {print}' "$SOURCE_FILE" |
   sed -E 's/^aby(.*)\.$/vampire\1./' >"$prefix_file"
 
-expected_reconstructed=3
+expected_reconstructed=4
 actual_vampire_commands=$(rg -c '^vampire( .*)?\.$' "$prefix_file" || true)
 if [[ "$actual_vampire_commands" != "$expected_reconstructed" ]]; then
   echo "expected $expected_reconstructed generated vampire commands, got $actual_vampire_commands" >&2

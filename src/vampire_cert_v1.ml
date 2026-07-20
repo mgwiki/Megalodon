@@ -19940,7 +19940,10 @@ let elaborate_core_resolution_refutation_native
   let proof_delta = native_core_close_delta_table variables proof_delta in
   let definition_delta = native_core_close_delta_table variables raw_definition_delta in
   let normalize_generated_skolems ambient_shift =
-    native_core_expand_generated_skolems_tm ~ambient_shift cert definition_delta
+    native_core_expand_generated_skolems_tm
+      ~ambient_shift:(List.length variables + ambient_shift)
+      cert
+      definition_delta
   in
   let proof_delta = native_core_merge_external_delta proof_delta external_delta_table in
   let check_step_proof id clause proof =
@@ -20620,7 +20623,10 @@ let elaborate_preprocess_refutation_native
   let proof_delta = native_core_close_delta_table variables proof_delta in
   let definition_delta = native_core_close_delta_table variables raw_definition_delta in
   let normalize_generated_skolems ambient_shift =
-    native_core_expand_generated_skolems_tm ~ambient_shift cert definition_delta
+    native_core_expand_generated_skolems_tm
+      ~ambient_shift:(List.length variables + ambient_shift)
+      cert
+      definition_delta
   in
   let proof_delta = native_core_merge_external_delta proof_delta external_delta_table in
   let short_tm tm =
