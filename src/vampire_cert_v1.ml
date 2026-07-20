@@ -22887,6 +22887,11 @@ let elaborate_preprocess_refutation_native
   let try_final_cleanup =
     Sys.getenv_opt "MEGALODON_CERT_TRY_FINAL_CLEANUP" = Some "1"
     || Sys.getenv_opt "MEGALODON_CERT_FAIL_FAST_SKOLEM_CPS" = Some "1"
+    || List.exists
+         (fun (_entry_id, _replacement_names, _closed_witness,
+               branch_choice_justified) ->
+            branch_choice_justified)
+         !staged_skolem_branch_witness_replacements
   in
   let try_final_symbol_cleanup =
     Sys.getenv_opt "MEGALODON_CERT_DISABLE_FINAL_SYMBOL_CLEANUP" <> Some "1"
@@ -23047,12 +23052,13 @@ let elaborate_preprocess_refutation_native
                   if branch_choice_justified
                      && List.length staged_branch_replacements_for_entry = 1 then begin
                     let tentative =
-                      Vampire_kernel_elab.contract_backed_branch_choice_term_replacements
+                      Vampire_kernel_elab.contract_backed_skolem_witness_transports
                         ~normalize:(fun tm -> tm_beta_eta_norm tm)
                         ~choice_symbols:native_core_choice_witness_symbols
                         ~replacement_names
                         ~definition:closed_witness
-                        candidate
+                      candidate
+                      |> Vampire_kernel_elab.skolem_witness_transport_symbol_replacements
                     in
                     branch_choice_candidate_replacements :=
                       tentative @ !branch_choice_candidate_replacements

@@ -124,6 +124,25 @@ val contract_backed_branch_choice_term_replacements :
   Syntax.pf ->
   (string * Syntax.tm * Syntax.tm * Syntax.tm) list
 
+type skolem_witness_transport = {
+  skolem_transport_name : string;
+  skolem_transport_choice_occurrence : Syntax.tm;
+  skolem_transport_definition : Syntax.tm;
+  skolem_transport_local_template : Syntax.tm;
+}
+
+val contract_backed_skolem_witness_transports :
+  normalize:(Syntax.tm -> Syntax.tm) ->
+  choice_symbols:string list ->
+  replacement_names:string list ->
+  definition:Syntax.tm ->
+  Syntax.pf ->
+  skolem_witness_transport list
+
+val skolem_witness_transport_symbol_replacements :
+  skolem_witness_transport list ->
+  (string * Syntax.tm * Syntax.tm * Syntax.tm) list
+
 val substitute_named_term :
   string ->
   Syntax.tm ->

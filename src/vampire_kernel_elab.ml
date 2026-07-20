@@ -377,6 +377,45 @@ let contract_backed_branch_choice_term_replacements
                   with _ -> None))
   |> List.sort_uniq compare
 
+type skolem_witness_transport = {
+  skolem_transport_name : string;
+  skolem_transport_choice_occurrence : tm;
+  skolem_transport_definition : tm;
+  skolem_transport_local_template : tm;
+}
+
+let contract_backed_skolem_witness_transports
+    ~normalize
+    ~choice_symbols
+    ~replacement_names
+    ~definition
+    proof =
+  contract_backed_branch_choice_term_replacements
+    ~normalize
+    ~choice_symbols
+    ~replacement_names
+    ~definition
+    proof
+  |> List.map
+       (fun (replacement_name, actual_choice, definition, local_template) ->
+          {
+            skolem_transport_name = replacement_name;
+            skolem_transport_choice_occurrence = actual_choice;
+            skolem_transport_definition = definition;
+            skolem_transport_local_template = local_template;
+          })
+  |> List.sort_uniq compare
+
+let skolem_witness_transport_symbol_replacements transports =
+  transports
+  |> List.map
+       (fun transport ->
+          (transport.skolem_transport_name,
+           transport.skolem_transport_choice_occurrence,
+           transport.skolem_transport_definition,
+           transport.skolem_transport_local_template))
+  |> List.sort_uniq compare
+
 let substitute_named_term name tm =
   let rec subst depth = function
     | TmH candidate when candidate = name -> DB depth

@@ -139,6 +139,30 @@ let () =
        ~replacement_names:["#s1"]
        ~definition:(TmH "def1")
        closed_binder_proof);
+  let transports =
+    Vampire_kernel_elab.contract_backed_skolem_witness_transports
+      ~normalize:(fun tm -> tm)
+      ~choice_symbols:choice_symbols
+      ~replacement_names:["#s1"]
+      ~definition:(TmH "def1")
+      closed_binder_proof
+  in
+  expect_equal
+    "contract_backed_skolem_witness_transports should expose a typed transport record"
+    [
+      {
+        Vampire_kernel_elab.skolem_transport_name = "#s1";
+        skolem_transport_choice_occurrence = closed_binder_witness;
+        skolem_transport_definition = TmH "def1";
+        skolem_transport_local_template = closed_binder_witness;
+      }
+    ]
+    transports;
+  expect_equal
+    "skolem_witness_transport_symbol_replacements should preserve legacy tuple shape"
+    [("#s1", closed_binder_witness, TmH "def1", closed_binder_witness)]
+    (Vampire_kernel_elab.skolem_witness_transport_symbol_replacements
+       transports);
   expect_equal
     "substitute_named_term should preserve vLAM binder convention"
     (Ap (TmH "vLAM", Ap (DB 0, TmH "z")))
