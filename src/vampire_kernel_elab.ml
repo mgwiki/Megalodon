@@ -447,7 +447,12 @@ let skolem_branch_choice_matches_witness
       List.exists (fun name -> List.mem name choice_names) target_names
   | _ -> false
 
-let skolem_branch_choice_body
+type skolem_branch_choice_instantiation = {
+  skolem_choice_body : tm;
+  skolem_choice_predicate : tm;
+}
+
+let skolem_branch_choice_instantiation
     ~normalize
     ~alias_names
     ~replacements
@@ -471,12 +476,47 @@ let skolem_branch_choice_body
                   ~alias_names
                   target_witness
                   choice then
-            Some
-              (choice.skolem_branch_choice_body
-               |> rewrite_head_symbols_by_alias ~alias_names replacements
-               |> substitute_named_term variable)
+            let body =
+              choice.skolem_branch_choice_body
+              |> rewrite_head_symbols_by_alias ~alias_names replacements
+              |> substitute_named_term variable
+            in
+            let predicate =
+              choice.skolem_branch_choice_predicate
+              |> rewrite_head_symbols_by_alias ~alias_names replacements
+            in
+            begin match normalize predicate with
+            | Lam (predicate_type, predicate_body)
+                when predicate_type = choice.skolem_branch_choice_type
+                     && normalize predicate_body = normalize body ->
+                Some
+                  {
+                    skolem_choice_body = body;
+                    skolem_choice_predicate = predicate;
+                  }
+            | Lam _ -> None
+            | _ -> None
+            end
           else
             None)
+
+let skolem_branch_choice_body
+    ~normalize
+    ~alias_names
+    ~replacements
+    ~substitution_name
+    ~target_witness
+    ~witness_type
+    choices =
+  skolem_branch_choice_instantiation
+    ~normalize
+    ~alias_names
+    ~replacements
+    ~substitution_name
+    ~target_witness
+    ~witness_type
+    choices
+  |> Option.map (fun instantiation -> instantiation.skolem_choice_body)
 
 type skolem_helper_record = {
   skolem_helper_index : int;

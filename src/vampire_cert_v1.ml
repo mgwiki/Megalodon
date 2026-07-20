@@ -15258,15 +15258,27 @@ let rec native_core_direct_skolem_formula_proof
     native_core_normalize_bool_constants tm
     |> tm_beta_eta_norm
   in
-  let emitted_branch_choice_body
+  let emitted_branch_choice_instantiation
       local_depth replacements substitution_name target_witness tp =
     let close_choice_body body =
       if closing_variables = [] then body
-      else native_core_close_tm ~depth:(local_depth + 1) closing_variables body
+      else
+        native_core_close_tm
+          ~depth:(ambient_shift + local_depth + 1)
+          closing_variables
+          body
+    in
+    let close_choice_predicate predicate =
+      if closing_variables = [] then predicate
+      else
+        native_core_close_tm
+          ~depth:(ambient_shift + local_depth)
+          closing_variables
+          predicate
     in
     let normalize tm = tm_beta_eta_norm tm in
     match
-      Vampire_kernel_elab.skolem_branch_choice_body
+      Vampire_kernel_elab.skolem_branch_choice_instantiation
         ~normalize
         ~alias_names:native_core_symbol_name_aliases
         ~replacements
@@ -15276,12 +15288,28 @@ let rec native_core_direct_skolem_formula_proof
         skolem_branch_choices
     with
     | None -> None
-    | Some body ->
-        let body = close_choice_body body in
+    | Some instantiation ->
+        let body =
+          close_choice_body
+            instantiation.Vampire_kernel_elab.skolem_choice_body
+        in
+        let predicate =
+          close_choice_predicate
+            instantiation.Vampire_kernel_elab.skolem_choice_predicate
+        in
+        let predicate =
+          match predicate with
+          | Lam (predicate_tp, predicate_body) when predicate_tp = tp ->
+              Lam (tp, checked_formula_prop (local_depth + 1) predicate_body)
+          | Lam _ ->
+              error
+                (id ^ ": emitted Skolem branch choice predicate has the wrong type")
+          | _ ->
+              error
+                (id ^ ": emitted Skolem branch choice predicate is not a lambda")
+        in
         let epsilon_witness =
-          Ap
-            (TmH (native_core_eps_symbol tp),
-             Lam (tp, checked_formula_prop (local_depth + 1) body))
+          Ap (TmH (native_core_eps_symbol tp), predicate)
         in
         register_witness_replacement target_witness epsilon_witness;
         if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
@@ -15289,7 +15317,7 @@ let rec native_core_direct_skolem_formula_proof
             (id
              ^ ": native core skolem used emitted branch choice for "
              ^ tm_to_str target_witness);
-        Some (body, (target_witness, epsilon_witness) :: replacements)
+        Some (body, predicate, (target_witness, epsilon_witness) :: replacements)
   in
   let helper_records =
     Vampire_kernel_elab.skolem_helper_records helper_formulas
@@ -15348,12 +15376,12 @@ let rec native_core_direct_skolem_formula_proof
           | Some name -> contains_named name body
           | None -> false
         in
-        let body, replacements =
+        let body, emitted_predicate, replacements =
           match
-            emitted_branch_choice_body
+            emitted_branch_choice_instantiation
               local_depth replacements substitution_name target_witness tp
           with
-          | Some result -> result
+          | Some (body, predicate, replacements) -> body, Some predicate, replacements
           | None ->
           match substitution_name with
           | Some name when compact_named_body ->
@@ -15362,7 +15390,7 @@ let rec native_core_direct_skolem_formula_proof
                 Ap (TmH (native_core_eps_symbol tp), predicate_for_body abstract_body)
               in
               register_witness_replacement target_witness epsilon_witness;
-              subst_tm [(name, target_witness)] body, replacements
+              subst_tm [(name, target_witness)] body, None, replacements
           | Some name ->
               let body = subst_named_tm name body in
               let epsilon_witness =
@@ -15370,6 +15398,7 @@ let rec native_core_direct_skolem_formula_proof
               in
               register_witness_replacement target_witness epsilon_witness;
               body,
+              None,
               (target_witness, epsilon_witness) :: replacements
           | None ->
               let epsilon_witness =
@@ -15377,9 +15406,14 @@ let rec native_core_direct_skolem_formula_proof
               in
               register_witness_replacement target_witness epsilon_witness;
               body,
+              None,
               (target_witness, epsilon_witness) :: replacements
         in
-        let predicate = predicate_for_body body in
+        let predicate =
+          match emitted_predicate with
+          | Some predicate -> predicate
+          | None -> predicate_for_body body
+        in
         let epsilon_witness = Ap (TmH (native_core_eps_symbol tp), predicate) in
         let choice_proof = PPfAp (PTmAp (Known choice, predicate), proof) in
         let instantiated_body = tmsubst body 0 epsilon_witness in
@@ -15522,12 +15556,12 @@ let rec native_core_direct_skolem_formula_proof
                   | Some name -> contains_named name body
                   | None -> false
                 in
-                let body, replacements =
+                let body, emitted_predicate, replacements =
                   match
-                    emitted_branch_choice_body
+                    emitted_branch_choice_instantiation
                       local_depth replacements substitution_name target_witness tp
                   with
-                  | Some result -> result
+                  | Some (body, predicate, replacements) -> body, Some predicate, replacements
                   | None ->
                   match substitution_name with
                   | Some name when compact_named_body ->
@@ -15538,7 +15572,7 @@ let rec native_core_direct_skolem_formula_proof
                            Lam (tp, checked_formula_prop (local_depth + 1) abstract_body))
                       in
                       register_witness_replacement target_witness epsilon_witness;
-                      subst_tm [(name, target_witness)] body, replacements
+                      subst_tm [(name, target_witness)] body, None, replacements
                   | Some name ->
                       let body = subst_named_tm name body in
                       let epsilon_witness =
@@ -15548,6 +15582,7 @@ let rec native_core_direct_skolem_formula_proof
                       in
                       register_witness_replacement target_witness epsilon_witness;
                       body,
+                      None,
                       (target_witness, epsilon_witness) :: replacements
                   | None ->
                       let epsilon_witness =
@@ -15557,9 +15592,14 @@ let rec native_core_direct_skolem_formula_proof
                       in
                       register_witness_replacement target_witness epsilon_witness;
                       body,
+                      None,
                       (target_witness, epsilon_witness) :: replacements
                 in
-                let predicate = Lam (tp, checked_formula_prop (local_depth + 1) body) in
+                let predicate =
+                  match emitted_predicate with
+                  | Some predicate -> predicate
+                  | None -> Lam (tp, checked_formula_prop (local_depth + 1) body)
+                in
                 let epsilon_witness = Ap (TmH (native_core_eps_symbol tp), predicate) in
                 let choice_proof = PPfAp (PTmAp (Known choice, predicate), proof) in
                 let target_body = tmsubst body 0 epsilon_witness in

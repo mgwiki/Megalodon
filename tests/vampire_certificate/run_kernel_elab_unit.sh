@@ -202,6 +202,43 @@ let () =
        ~target_witness:(TmH "#s0")
        ~witness_type:Prop
        [branch_choice]);
+  begin match
+    Vampire_kernel_elab.skolem_branch_choice_instantiation
+      ~normalize:(fun tm -> tm)
+      ~alias_names:aliases
+      ~replacements:[]
+      ~substitution_name:(Some "X")
+      ~target_witness:(TmH "#s0")
+      ~witness_type:Prop
+      [branch_choice]
+  with
+  | Some instantiation ->
+      expect_equal
+        "skolem_branch_choice_instantiation should return the emitted body"
+        (Ap (DB 0, TmH "a"))
+        instantiation.Vampire_kernel_elab.skolem_choice_body;
+      expect_equal
+        "skolem_branch_choice_instantiation should return the emitted predicate"
+        (Lam (Prop, Ap (DB 0, TmH "a")))
+        instantiation.Vampire_kernel_elab.skolem_choice_predicate
+  | None ->
+      prerr_endline
+        "kernel_elab unit failure: skolem_branch_choice_instantiation should keep emitted predicate and body aligned";
+      exit 1
+  end;
+  expect_equal
+    "skolem_branch_choice_instantiation should reject predicate/body drift"
+    None
+    (Vampire_kernel_elab.skolem_branch_choice_instantiation
+       ~normalize:(fun tm -> tm)
+       ~alias_names:aliases
+       ~replacements:[]
+       ~substitution_name:(Some "X")
+       ~target_witness:(TmH "#s0")
+       ~witness_type:Prop
+       [{ branch_choice with
+          Vampire_kernel_syntax.skolem_branch_choice_predicate =
+            Lam (Prop, Ap (DB 0, TmH "b")) }]);
   Vampire_kernel_check.check_skolem_branch_contract
     ~id:"unit"
     ~index:0

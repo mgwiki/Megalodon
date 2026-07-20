@@ -146,6 +146,21 @@ val skolem_branch_choice_matches_witness :
   Vampire_kernel_syntax.skolem_branch_choice ->
   bool
 
+type skolem_branch_choice_instantiation = {
+  skolem_choice_body : Syntax.tm;
+  skolem_choice_predicate : Syntax.tm;
+}
+
+val skolem_branch_choice_instantiation :
+  normalize:(Syntax.tm -> Syntax.tm) ->
+  alias_names:(string -> string list) ->
+  replacements:(Syntax.tm * Syntax.tm) list ->
+  substitution_name:string option ->
+  target_witness:Syntax.tm ->
+  witness_type:Syntax.tp ->
+  Vampire_kernel_syntax.skolem_branch_choice list ->
+  skolem_branch_choice_instantiation option
+
 val skolem_branch_choice_body :
   normalize:(Syntax.tm -> Syntax.tm) ->
   alias_names:(string -> string list) ->

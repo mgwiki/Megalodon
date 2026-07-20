@@ -651,3 +651,36 @@ the three original-source qualifying proofs still pass, and `and3I` still
 fails closed.  The point of the change is architectural alignment with the
 audit: Skolem contract validation is now part of the extracted checker, not a
 private importer-side rule.
+
+## Branch-Choice Predicate Elaboration, 2026-07-20
+
+The Skolem branch-choice elaborator now returns an explicit
+predicate/body instantiation pair instead of only returning the body and
+letting `vampire_cert_v1.ml` rebuild the predicate later.  The new API rejects
+metadata whose emitted predicate no longer matches the emitted body after
+alias and witness-replacement rewriting.  The direct Skolem replay path uses
+that emitted predicate when applying the choice theorem, and closes emitted
+branch-choice metadata under the same ambient result-variable context used for
+the already-closed source and target formulas.
+
+This is an architectural tightening, not a new proof frontier.  The focused
+validation passed:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh
+TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh
+WORK_DIR=/project/tmp/and3I_ambient_close.1784555747 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire MEGALODON_CERT_DEBUG=1 MEGALODON_CERT_DEBUG_TIMING=1 tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh
+```
+
+The first three qualifying proofs still pass.  `and3I` still fails closed; the
+new artifact is `/project/tmp/and3I_ambient_close.1784555747`.  The remaining
+failure is no longer a missing branch-choice selection: both `#sK0` and
+`#sK1` choose emitted branch metadata.  The live-expanded candidate still
+checks only with certificate-local delta and is rejected in qualifying mode,
+with a proof/proposition mismatch around nested epsilon-expanded Skolem
+witnesses.  The next small-kernel step should make the Skolem witness
+definition itself an explicit replayed equality/transport step or avoid
+producing proof terms whose validity depends on the certificate-local
+`sK := Eps P` conversion.
