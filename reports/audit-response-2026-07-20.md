@@ -279,6 +279,30 @@ step should move the relevant Skolem/choice transformation replay out of the
 monolithic importer and into the extracted small-kernel checker/elaborator
 modules before claiming additional counted proofs.
 
+## Nested Prop-Choice Guard, 2026-07-20
+
+The live prop-choice basis proof is now checked not only as a closed theorem
+and under shifted term contexts, but also after instantiating its predicate
+argument with both the earlier open function-variable predicate and additional
+open propositions containing nested proposition binders.  This is a targeted
+guard for the current `and3I` failure shape: the observed mismatch is not a
+theorem-name problem, but a de Bruijn-depth disagreement inside nested
+Skolem/choice transformation replay.
+
+The guard passed together with:
+
+- `TMPDIR=/project/tmp ./makeopt`
+- `TMPDIR=/project/tmp tests/vampire_certificate/run_vampireaby_qualifying_guards.sh`
+- `TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_elab_unit.sh`
+- `WORK_DIR=/project/tmp/and_prefix_open_cases_1784577328 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_and_prefix_qualifying.sh`
+- `WORK_DIR=/project/tmp/prefix4_open_cases_1784577328 TMPDIR=/project/tmp VAMPIRE=/project/tmp/vampire-cmake-megalodon6/vampire tests/vampire_reconstruction/run_live_hammer_prefix4_failclosed_qualifying.sh`
+
+This does not advance the counted E1 frontier beyond `FalseE`, `andEL`, and
+`andER`.  It narrows the next `and3I` investigation: the generic live
+prop-choice theorem checks under nested open predicates, so the remaining bug is
+more likely in the branch-choice predicate/body transport around the emitted
+Skolem contract than in the proof of prop-choice itself.
+
 ## Qualifying Frontier Diagnostics, 2026-07-20
 
 After another audit pass, I deliberately did not add a new Skolem/choice

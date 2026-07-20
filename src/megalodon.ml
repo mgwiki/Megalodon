@@ -2219,26 +2219,42 @@ let vampire_check_shifted_live_basis_proof label proof proposition =
   List.iter check_depth [0; 1; 2; 3; 4]
 
 let vampire_check_open_prop_choice_instantiations proof proposition =
+  let cases =
+    [
+      ( "function",
+        (fun depth -> List.init depth (fun _ -> Ar (Prop, Prop))),
+        Lam (Prop, Ap (DB 1, DB 0)) );
+      ( "simple",
+        (fun depth -> List.init depth (fun _ -> Prop)),
+        Lam (Prop, Imp (DB 1, DB 0)) );
+      ( "nested",
+        (fun depth -> List.init depth (fun _ -> Prop)),
+        Lam (Prop, All (Prop, Imp (DB 0, Imp (DB 1, DB 2)))) );
+    ]
+  in
   let check_depth depth =
-    let cx = List.init depth (fun _ -> Ar (Prop, Prop)) in
-    let predicate = Lam (Prop, Ap (DB 1, DB 0)) in
-    let applied = PTmAp (pftmshift 0 depth proof, predicate) in
-    let expected =
-      match tmshift 0 depth proposition with
-      | All (_, body) -> tmsubst body 0 predicate
-      | _ -> raise (Failure "live prop-choice proposition is not universal")
+    let check_case (case_label, cx_of_depth, predicate) =
+      let cx = cx_of_depth depth in
+      let applied = PTmAp (pftmshift 0 depth proof, predicate) in
+      let expected =
+        match tmshift 0 depth proposition with
+        | All (_, body) -> tmsubst body 0 predicate
+        | _ -> raise (Failure "live prop-choice proposition is not universal")
+      in
+      match check_propofpf sigdelta sigtmof cx [] applied expected [] with
+      | Some _ -> ()
+      | None ->
+          Printf.printf
+            "Vampire native live prop-choice proof failed for %s open predicate under term depth %d: %s\n"
+            case_label
+            depth
+            (tm_to_str expected);
+          flush stdout;
+          raise
+            (Failure
+               "Vampire native live prop-choice open instantiation did not check")
     in
-    match check_propofpf sigdelta sigtmof cx [] applied expected [] with
-    | Some _ -> ()
-    | None ->
-        Printf.printf
-          "Vampire native live prop-choice proof failed for open predicate under term depth %d: %s\n"
-          depth
-          (tm_to_str expected);
-        flush stdout;
-        raise
-          (Failure
-             "Vampire native live prop-choice open instantiation did not check")
+    List.iter check_case cases
   in
   List.iter check_depth [1; 2; 3; 4]
 
