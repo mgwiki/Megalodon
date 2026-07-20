@@ -62,6 +62,10 @@ val replace_literal_atom :
   Syntax.tm ->
   Vampire_kernel_syntax.literal
 
+val application_spine :
+  Syntax.tm ->
+  Syntax.tm * Syntax.tm list
+
 type definition_rewrite = {
   definition_parent : string;
   definition_literal : int;
@@ -143,6 +147,37 @@ val check_paramodulate :
   position_candidates:int list list ->
   from_tm:Syntax.tm ->
   to_tm:Syntax.tm ->
+  result:Vampire_kernel_syntax.clause ->
+  unit
+
+val check_equality_factoring :
+  id:string ->
+  equality_sides:(Syntax.tm -> (Syntax.tm * Syntax.tm) option) ->
+  diseq_literal_like:
+    (Syntax.tm -> Syntax.tm -> Syntax.tm -> Vampire_kernel_syntax.literal) ->
+  clause_matches:
+    (Vampire_kernel_syntax.clause -> Vampire_kernel_syntax.clause -> bool) ->
+  parent:Vampire_kernel_syntax.clause ->
+  selected_index:int ->
+  other_index:int ->
+  explicit_sides:(Syntax.tm * Syntax.tm) option ->
+  subst:(string * Syntax.tm) list ->
+  result:Vampire_kernel_syntax.clause ->
+  unit
+
+val check_equality_factoring_constraints :
+  id:string ->
+  equality_sides:(Syntax.tm -> (Syntax.tm * Syntax.tm) option) ->
+  diseq_literal_like:
+    (Syntax.tm -> Syntax.tm -> Syntax.tm -> Vampire_kernel_syntax.literal) ->
+  clause_matches:
+    (Vampire_kernel_syntax.clause -> Vampire_kernel_syntax.clause -> bool) ->
+  parent:Vampire_kernel_syntax.clause ->
+  selected_index:int ->
+  other_index:int ->
+  explicit_sides:(Syntax.tm * Syntax.tm) option ->
+  subst:(string * Syntax.tm) list ->
+  constraints:Vampire_kernel_syntax.clause ->
   result:Vampire_kernel_syntax.clause ->
   unit
 

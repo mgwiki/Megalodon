@@ -3758,174 +3758,44 @@ let equality_atom_like equality_atom left right =
 let diseq_literal_like equality_atom left right =
   Neg (equality_atom_like equality_atom left right)
 
-let rec term_disagreement_constraints equality_atom left right =
-  if left = right then []
-  else
-    let left_head, left_args = application_spine left in
-    let right_head, right_args = application_spine right in
-    if left_head = right_head && List.length left_args = List.length right_args then
-      let rec collect acc = function
-        | [], [] -> List.rev acc
-        | l :: ls, r :: rs ->
-            let constraints =
-              if l = r then []
-              else
-                let nested = term_disagreement_constraints equality_atom l r in
-                if nested = [] then [diseq_literal_like equality_atom l r] else nested
-            in
-            collect (List.rev_append constraints acc) (ls, rs)
-        | _ -> [diseq_literal_like equality_atom left right]
-      in
-      collect [] (left_args, right_args)
-    else
-      [diseq_literal_like equality_atom left right]
-
-let equality_factoring_constraint_candidates equality_atom selected_sides other_sides =
-  let selected_left, selected_right = selected_sides in
-  let other_left, other_right = other_sides in
-  let candidates = ref [] in
-  let add_simple shared selected_other other_other =
-    if shared then begin
-      candidates := [diseq_literal_like equality_atom selected_other other_other] :: !candidates;
-      candidates := [diseq_literal_like equality_atom other_other selected_other] :: !candidates
-    end
-  in
-  let add_decomposed selected_shared selected_other other_shared other_other =
-    let constraints =
-      diseq_literal_like equality_atom selected_shared other_shared
-      :: term_disagreement_constraints equality_atom selected_other other_other
-    in
-    let reversed =
-      diseq_literal_like equality_atom other_shared selected_shared
-      :: term_disagreement_constraints equality_atom other_other selected_other
-    in
-    candidates := constraints :: reversed :: !candidates
-  in
-  add_simple (selected_right = other_right) selected_left other_left;
-  add_simple (selected_right = other_left) selected_left other_right;
-  add_simple (selected_left = other_right) selected_right other_left;
-  add_simple (selected_left = other_left) selected_right other_right;
-  add_decomposed selected_right selected_left other_right other_left;
-  add_decomposed selected_right selected_left other_left other_right;
-  add_decomposed selected_left selected_right other_right other_left;
-  add_decomposed selected_left selected_right other_left other_right;
-  List.filter (fun constraints -> constraints <> []) !candidates
-
-let equality_factoring_explicit_constraint_candidates id equality_atom selected_sides other_sides selected_lhs other_rhs =
-  let selected_left, selected_right = selected_sides in
-  let other_left, other_right = other_sides in
-  let selected_choices =
-    List.filter
-      (fun (lhs, _) -> lhs = selected_lhs)
-      [(selected_left, selected_right); (selected_right, selected_left)]
-  in
-  let other_choices =
-    List.filter
-      (fun (rhs, _) -> rhs = other_rhs)
-      [(other_left, other_right); (other_right, other_left)]
-  in
-  if selected_choices = [] then
-    error (id ^ ": equality-factoring selected_lhs does not name a selected equality side");
-  if other_choices = [] then
-    error (id ^ ": equality-factoring other_rhs does not name an other equality side");
-  let candidates =
-    List.fold_left
-      (fun acc (selected_shared, selected_other) ->
-        List.fold_left
-          (fun acc (other_other, other_shared) ->
-            if selected_shared = other_shared then
-              [diseq_literal_like equality_atom selected_other other_other] :: acc
-            else
-              acc)
-          acc other_choices)
-      [] selected_choices
-  in
-  if candidates = [] then
-    error (id ^ ": equality-factoring explicit sides do not identify matching unified sides");
-  candidates
-
-let check_negative_equality_constraints id constraints =
-  List.iter
-    (function
-      | Neg atom ->
-          begin match equality_sides atom with
-          | Some _ -> ()
-          | None -> error (id ^ ": equality-factoring constraint is not an equality atom")
-          end
-      | Pos _ -> error (id ^ ": equality-factoring constraint must be negative"))
-    constraints
-
-let equality_factoring_context checked id parent_id selected_index other_index subst =
-  if selected_index = other_index then error (id ^ ": equality-factoring literal indices must be distinct");
-  let parent_clause = lookup_clause checked parent_id in
-  let selected_literal = nth selected_index parent_clause (id ^ " selected equality") in
-  let other_literal = nth other_index parent_clause (id ^ " other equality") in
-  let selected_sub = subst_literal subst selected_literal in
-  let other_sub = subst_literal subst other_literal in
-  let selected_atom, selected_sides =
-    match selected_sub with
-    | Pos atom ->
-        begin match equality_sides atom with
-        | Some sides -> atom, sides
-        | None -> error (id ^ ": selected literal is not an equality")
-        end
-    | Neg _ -> error (id ^ ": selected literal must be positive")
-  in
-  let other_sides =
-    match other_sub with
-    | Pos atom ->
-        begin match equality_sides atom with
-        | Some sides -> sides
-        | None -> error (id ^ ": other literal is not an equality")
-        end
-    | Neg _ -> error (id ^ ": other literal must be positive")
-  in
-  let substituted_parent = subst_clause subst parent_clause in
-  let without_selected = remove_at selected_index substituted_parent (id ^ " selected equality") in
-  selected_atom, selected_sides, other_sides, without_selected
-
 let check_equality_factoring checked id parent_id selected_index other_index explicit_sides subst result =
-  let selected_atom, selected_sides, other_sides, without_selected =
-    equality_factoring_context checked id parent_id selected_index other_index subst
+  let parent_clause = lookup_clause checked parent_id in
+  let clause_matches expected result =
+    same_clause_multiset expected result || same_clause_set_mod_equality expected result
   in
-  let candidates =
-    match explicit_sides with
-    | None -> equality_factoring_constraint_candidates selected_atom selected_sides other_sides
-    | Some (selected_lhs, other_rhs) ->
-        equality_factoring_explicit_constraint_candidates
-          id selected_atom selected_sides other_sides selected_lhs other_rhs
-  in
-  if candidates = [] then error (id ^ ": selected and other equalities do not yield factoring constraints");
-  if not (List.exists
-      (fun candidate_constraints ->
-        let expected = without_selected @ candidate_constraints in
-        same_clause_multiset expected result
-        || same_clause_set_mod_equality expected result)
-      candidates) then
-    error (id ^ ": equality-factoring result does not match explicit factoring")
+  try
+    Vampire_kernel_check.check_equality_factoring
+      ~id
+      ~equality_sides
+      ~diseq_literal_like
+      ~clause_matches
+      ~parent:parent_clause
+      ~selected_index
+      ~other_index
+      ~explicit_sides
+      ~subst
+      ~result
+  with Vampire_kernel_check.Error msg -> error msg
 
 let check_equality_factoring_constraints checked id parent_id selected_index other_index explicit_sides subst constraints result =
-  if constraints = [] then error (id ^ ": equality-factoring constraints must be non-empty");
-  check_negative_equality_constraints id constraints;
-  let selected_atom, selected_sides, other_sides, without_selected =
-    equality_factoring_context checked id parent_id selected_index other_index subst
+  let parent_clause = lookup_clause checked parent_id in
+  let clause_matches expected result =
+    same_clause_multiset expected result || same_clause_set_mod_equality expected result
   in
-  let expected = without_selected @ constraints in
-  if not (same_clause_multiset expected result || same_clause_set_mod_equality expected result) then
-    error (id ^ ": equality-factoring constraints do not explain result");
-  let candidates =
-    match explicit_sides with
-    | None -> equality_factoring_constraint_candidates selected_atom selected_sides other_sides
-    | Some (selected_lhs, other_rhs) ->
-        equality_factoring_explicit_constraint_candidates
-          id selected_atom selected_sides other_sides selected_lhs other_rhs
-  in
-  if not (List.exists
-      (fun candidate ->
-        same_clause_multiset candidate constraints
-        || same_clause_set_mod_equality candidate constraints)
-      candidates) then
-    error (id ^ ": equality-factoring constraints are not explained by selected and other equalities")
+  try
+    Vampire_kernel_check.check_equality_factoring_constraints
+      ~id
+      ~equality_sides
+      ~diseq_literal_like
+      ~clause_matches
+      ~parent:parent_clause
+      ~selected_index
+      ~other_index
+      ~explicit_sides
+      ~subst
+      ~constraints
+      ~result
+  with Vampire_kernel_check.Error msg -> error msg
 
 let check_truth_conflict checked id parent_id literal_index result =
   let parent_clause = lookup_clause checked parent_id in
