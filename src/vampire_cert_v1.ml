@@ -23034,8 +23034,7 @@ let elaborate_preprocess_refutation_native
                            ^ ": native preprocess Skolem CPS found no choice term while diagnosing non-exact branch witness")
                     end
                   end;
-                  if branch_choice_justified
-                     && List.length staged_branch_replacements_for_entry = 1 then begin
+                  if branch_choice_justified then begin
                     let tentative =
                       Vampire_kernel_elab.contract_backed_skolem_witness_transports
                         ~normalize:(fun tm -> tm_beta_eta_norm tm)
@@ -23065,10 +23064,50 @@ let elaborate_preprocess_refutation_native
                 candidate then begin
 	             let debug = Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" in
 	             let fail_fast = fail_fast_skolem_cps () in
-             let branch_choice_candidate_replacements =
-               !branch_choice_candidate_replacements
-               |> List.sort_uniq compare
-             in
+	             let branch_choice_candidate_replacements =
+	               let candidates =
+	                 !branch_choice_candidate_replacements
+	                 |> List.sort_uniq compare
+	               in
+	               let ambiguous_choice_occurrences =
+	                 candidates
+	                 |> List.map
+	                      (fun (_replacement_name, actual_choice, definition,
+	                            _local_template) ->
+	                         (actual_choice, definition))
+	                 |> List.fold_left
+	                      (fun grouped (actual_choice, definition) ->
+	                         let definitions =
+	                           match List.assoc_opt actual_choice grouped with
+	                           | Some definitions -> definitions
+	                           | None -> []
+	                         in
+	                         (actual_choice,
+	                          definition :: definitions
+	                          |> List.sort_uniq compare)
+	                         :: List.remove_assoc actual_choice grouped)
+	                      []
+	                 |> List.filter_map
+	                      (fun (actual_choice, definitions) ->
+	                         match definitions with
+	                         | [] | [_] -> None
+	                         | _ -> Some actual_choice)
+	                 |> List.sort_uniq compare
+	               in
+	               if debug && ambiguous_choice_occurrences <> [] then
+	                 prerr_endline
+	                   (id
+	                    ^ ": native preprocess Skolem CPS discarded "
+	                    ^ string_of_int
+	                        (List.length ambiguous_choice_occurrences)
+	                    ^ " ambiguous contract-backed branch-choice occurrences");
+	               candidates
+	               |> List.filter
+	                    (fun (_replacement_name, actual_choice, _definition,
+	                          _local_template) ->
+	                       not
+	                         (List.mem actual_choice ambiguous_choice_occurrences))
+	             in
              let candidate_witness_replacements =
                !skolem_witness_replacements
                |> List.sort_uniq compare
